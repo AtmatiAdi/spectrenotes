@@ -29,9 +29,12 @@ schodzić do DirectComposition z niezależną warstwą mokrego atramentu.
 ## Etap 2 — Realny renderer
 
 - Cache kafli 512×512, LRU, warstwa sucha vs mokra
-- Pan/zoom z inercją, kryterium: 100 000 stroke'ów przy 120 fps
+- Kamera: przewijanie w pionie + zoom (stała szerokość kolumny — Z9),
+  ustalenie szerokości w jednostkach canvasu i zachowania przy zmianie zoomu
+- Kryterium: 100 000 stroke'ów przy 120 fps
 - Wybór adaptera GPU (MINIMUM_POWER + weryfikacja wyjścia)
-- Pixel shift, rampa przygaszania, paleta AMOLED
+- Pixel shift, rampa przygaszania, paleta AMOLED (niskie luminancje, bez czystej bieli)
+- Jedna warstwa atramentu — bez zakreślacza w v1 (Z11), ale bez zamykania sobie drogi
 
 ## Etap 3 — Trwałość lokalna
 
@@ -45,7 +48,9 @@ schodzić do DirectComposition z niezależną warstwą mokrego atramentu.
 - Tray, `RegisterHotKey`, chowanie okna zamiast zamykania
 - `Trim()` + `EmptyWorkingSet` przy ukryciu
 - **Kryteria: <30 ms hotkey→klatka, ≤20 MB working set w tle**
-- Minimalne UI: przełącznik narzędzi, lista notatek, wszystko auto-chowane
+- Minimalne UI: pióro / gumka / kolor, lista notatek, wszystko auto-chowane
+- Odrzucanie `PT_TOUCH` na wejściu (Z10) i **rozstrzygnięcie, czym przewijać
+  w trybie tabletu bez klawiatury** — to jest realny brak w Z10, nie detal
 
 ## Etap 5 — Git jako warstwa trwała
 
@@ -69,8 +74,14 @@ schodzić do DirectComposition z niezależną warstwą mokrego atramentu.
 
 ## Poza v1
 
-Import z Samsung Notes (`.sdocx`), OCR, PDF, port na Androida (tablet + S Pen),
-szyfrowanie at-rest, tryb prezentacji.
+**Import z Samsung Notes (`.sdocx`)** — pierwszy na liście po v1. Nie blokuje
+przesiadki: nowe notatki powstają w SpectreNotes, stare zostają do wglądu tam,
+gdzie są. Format to zip z XML i binarnymi stroke'ami, więc jest wykonalny,
+ale to praca na osobny etap i nie ma powodu robić jej przed działającą aplikacją.
+
+Dalej: zakreślacz i lasso (`StrokeTransform` + LWW), wstawianie obrazków
+(content-addressed store, pytanie o Git LFS), OCR, eksport PDF, port na Androida
+(tablet + S Pen), szyfrowanie at-rest, tryb prezentacji.
 
 ## Otwarte problemy
 

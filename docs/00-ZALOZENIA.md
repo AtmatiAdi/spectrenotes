@@ -85,6 +85,43 @@ hybrydowe GPU (musimy *świadomie* zostać na iGPU — patrz `docs/04-ENERGIA-I-
 - Rozdawanie innym: pojedynczy przenośny `.exe`, bez instalatora, bez runtime'u.
 - Uwaga do rozwiązania: SmartScreen (podpis kodu) — `docs/06-DYSTRYBUCJA.md`.
 
+### Z9. Canvas: nieskończony w pionie, stała szerokość
+Notatka jest jak długa rolka papieru — przewijasz w dół, szerokość jest stała.
+
+Konsekwencje:
+- kamera ma **jeden** stopień swobody plus zoom, więc nawigacja, cache kafli
+  i eksport do PDF są znacznie prostsze niż przy canvasie nieograniczonym w obu osiach;
+- rysowanie szerokich schematów „w bok" jest wykluczone — to świadomy koszt;
+- pixel shift (Z7) działa nadal, bo tło jest czarne i krawędzie „kartki" nie są
+  widoczne: przesuwamy zawartość, a nie ramkę. Poziomy dryf wymaga tylko tego,
+  żeby renderer nie zakładał, że kolumna treści jest przyklejona do krawędzi okna.
+- do ustalenia przy Etapie 2: szerokość kolumny w jednostkach canvasu i to,
+  jak zachowuje się przy zmianie zoomu oraz na monitorze zewnętrznym.
+
+### Z10. Dotyk wyłączony w trybie notatki
+Rysuje **wyłącznie** pióro. Dotyk jest ignorowany całkowicie, nie warunkowo.
+
+Konsekwencje:
+- odrzucanie dłoni przestaje być problemem — nie ma heurystyk, nie ma strojenia,
+  nie ma przypadkowych kresek od nadgarstka. Odrzucamy `PT_TOUCH` na wejściu i koniec;
+- znika cały rozpoznawacz gestów, co jest sporą oszczędnością złożoności;
+- **otwarty problem**: to jest konwertowalny 2-in-1. W trybie tabletu, z odłączoną
+  klawiaturą, nie ma czym przewijać. Kandydaci: przeciąganie z wciśniętym
+  przyciskiem bocznym rysika, pasek przewijania przy krawędzi obsługiwany piórem,
+  albo wyjątek dopuszczający dwa palce wyłącznie do przewijania. Do rozstrzygnięcia
+  przy Etapie 4, gdy powstanie realne UI.
+
+### Z11. Narzędzia v1: pióro, gumka, kilka kolorów
+Nic więcej. Bez zakreślacza, bez lassa, bez obrazków.
+
+Konsekwencje:
+- renderer potrzebuje **jednej** warstwy atramentu, bez blendowania półprzezroczystego
+  pod spodem — upraszcza to projekt cache'u kafli;
+- operacja `StrokeTransform` nie jest w v1 potrzebna, więc **cały CRDT jest w v1
+  czysto przemienny** i nie ma ani jednego miejsca z LWW (por. `adr/0004`).
+  Format zostawia na nią miejsce, żeby lasso dało się dołożyć bez migracji;
+- paleta kolorów dobierana pod AMOLED: niskie luminancje, brak czystej bieli.
+
 ## Nie-cele (świadomie poza zakresem v1)
 
 - OCR / rozpoznawanie pisma odręcznego
