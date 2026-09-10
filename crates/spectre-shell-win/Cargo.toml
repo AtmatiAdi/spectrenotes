@@ -1,0 +1,10 @@
+[package]
+name = "spectre-shell-win"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+spectre-ink = { path = "../spectre-ink" }
+spectre-render = { path = "../spectre-render" }

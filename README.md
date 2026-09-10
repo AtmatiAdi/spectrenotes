@@ -1,0 +1,95 @@
+# SpectreNotes
+
+Notatnik rysunkowy dla Windows na ekrany AMOLED i pióra MPP 2.0.
+Własny zamiennik Samsung Notes — bez zależności od cudzej chmury i cudzej decyzji
+o tym, które komputery są wystarczająco właściwe, żeby uruchomić aplikację.
+
+**Stan: Etap 0** — weryfikacja odczucia pióra. Reszta jest zaprojektowana, ale
+świadomie jeszcze nie zbudowana (`docs/05-ROADMAPA.md`).
+
+## Uruchomienie demo
+
+```bash
+cargo run --release -p inkdemo
+```
+
+Czarny canvas, rysuj piórem. `F11` = pełny ekran, `H` chowa HUD.
+
+| Klawisz | Działanie |
+|---|---|
+| `I` | interpolacja centripetal Catmull-Rom |
+| `S` | filtr wygładzający 1-Euro (domyślnie wył.) |
+| `P` | predykcja: 0 → 4 ms → 8 ms |
+| `1` `2` `3` | nacisk→szerokość: stały / liniowy / gamma |
+| `[` `]` | grubość pióra |
+| `V` | vsync ↔ immediate + tearing |
+| `C` | wyczyść |
+| `F11` / `Esc` | pełny ekran / wyjście |
+
+Odwrócenie pióra (gumka) przełącza na wymazywanie automatycznie.
+
+### Co obserwować
+
+HUD pokazuje to, co realnie decyduje o odczuciu:
+
+- **Hz pióra** — powinno być wyraźnie więcej niż odświeżanie ekranu (rzędu 180–240).
+  Jeśli pokazuje ~120, znaczy że historia próbek nie działa i gubimy połowę danych.
+- **próbki/komunikat** i **z historii** — dowód, że `GetPointerPenInfoHistory`
+  faktycznie dokłada próbki ponad tę jedną z komunikatu.
+- **wejście→present** — od znacznika czasu najnowszej próbki do wywołania `Present`.
+  To jest ta część łańcucha latencji, na którą mamy wpływ.
+- **GPU** — musi pokazywać iGPU. Jeśli pokazuje RTX, wybór adaptera jest zepsuty
+  i notatnik wybudza dedykowaną kartę.
+
+Bezwzględnej latencji pen-to-photon HUD nie zmierzy — to się robi kamerą 240 fps
+(telefon), licząc klatki między dotknięciem rysika a pojawieniem się piksela.
+
+### Porównania, które warto zrobić od razu
+
+1. `S` włączony vs. wyłączony — czy wygładzanie faktycznie przeszkadza, czy tylko
+   teoretycznie (założenie Z6 mówi, że przeszkadza; to jest test tego założenia).
+2. `P` 0 vs. 8 ms — czy niższa odczuwalna latencja jest warta „haczyków" na zwrotach.
+3. `V` vsync vs. tearing — czy różnica jednej klatki jest wyczuwalna przy pisaniu.
+4. To samo w oknie i na pełnym ekranie — pełny ekran powinien być zauważalnie lepszy,
+   bo DWM wypada z łańcucha prezentacji.
+
+## Struktura
+
+```
+crates/
+  spectre-proto      format on-disk i wire (jedno zrodlo prawdy)
+  spectre-core       op-log CRDT, zegar Lamporta, undo, kamera
+  spectre-ink        probki -> krzywa nacisku -> interpolacja -> geometria   [dziala]
+  spectre-render     wgpu: cache kafli, warstwa mokra/sucha, AMOLED
+  spectre-sync       git (gix) + live P2P (quinn/QUIC)
+  spectre-shell-win  okno Win32, WM_POINTER, tray, hotkey, DXGI
+  spectre-app        binarka spinajaca calosc
+tools/
+  inkdemo            demo odczucia piora (Etap 0)                            [dziala]
+docs/                zalozenia, architektura, ADR-y
+```
+
+`spectre-proto`, `-core`, `-ink` i `-sync` nie mają żadnej zależności od Windows.
+To jest cała przenośność rdzenia: port polega na napisaniu nowego `spectre-shell-*`.
+
+## Dokumentacja
+
+| Dokument | O czym |
+|---|---|
+| [`docs/00-ZALOZENIA.md`](docs/00-ZALOZENIA.md) | założenia produktowe, kryteria akceptacji |
+| [`docs/01-ARCHITEKTURA.md`](docs/01-ARCHITEKTURA.md) | podział na crate'y, model wątków, rezydentność |
+| [`docs/02-PIORO-I-LATENCJA.md`](docs/02-PIORO-I-LATENCJA.md) | łańcuch pen-to-photon, gdzie giną klatki |
+| [`docs/03-FORMAT-I-SYNC.md`](docs/03-FORMAT-I-SYNC.md) | format `.ops`, model repo, warstwa live |
+| [`docs/04-ENERGIA-I-AMOLED.md`](docs/04-ENERGIA-I-AMOLED.md) | pobór mocy, wypalanie, wybór GPU |
+| [`docs/05-ROADMAPA.md`](docs/05-ROADMAPA.md) | kolejność prac i dlaczego taka |
+| [`docs/06-DYSTRYBUCJA.md`](docs/06-DYSTRYBUCJA.md) | aktualizacje, rozdawanie, SmartScreen |
+| [`docs/adr/`](docs/adr/) | decyzje architektoniczne wraz z odrzuconymi wariantami |
+
+## Wymagania budowania
+
+- Rust stable (MSVC), Windows 10 1809+ / Windows 11
+- VS Build Tools z workloadem C++ oraz Windows SDK 10
+
+## Licencja
+
+MIT

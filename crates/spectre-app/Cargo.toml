@@ -1,0 +1,13 @@
+[package]
+name = "spectre-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+spectre-core = { path = "../spectre-core" }
+spectre-ink = { path = "../spectre-ink" }
+spectre-render = { path = "../spectre-render" }
+spectre-shell-win = { path = "../spectre-shell-win" }
+spectre-sync = { path = "../spectre-sync" }
