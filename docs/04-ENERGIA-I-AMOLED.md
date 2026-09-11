@@ -62,8 +62,11 @@ Po przeniesieniu okna na monitor zewnętrzny podpięty do dGPU przełączamy si�
 
 - **Zero pętli klatkowej.** Klatka powstaje na zdarzenie. Idle to 0% CPU i brak
   wybudzeń GPU.
-- **Brak timerów.** Nawet pixel shift nie tyka zegara: przelicza się przy okazji
-  klatki, która i tak powstaje, a przy pełnej bezczynności po prostu stoi w miejscu.
+- **Prawie brak timerów.** Pixel shift to jeden tik co 4 s (jedna tania klatka),
+  rampa przygaszania budzi się raz po 3 min i potem przez 2 s co 50 ms. Oba timery
+  gasną, gdy okno jest ukryte — w tle proces nie budzi się w ogóle. Decyzja: pełna
+  bezczynność to dokładnie ten moment, w którym ochrona przed wypaleniem ma sens,
+  więc "zero timerów" ustąpiło "zero wybudzeń w tle".
 - **MMCSS tylko w trakcie stroke'a.** Podnosimy priorytet wątku na czas rysowania
   i oddajemy natychmiast po `WM_POINTERUP`.
 - **Świadomość zasilania.** `RegisterPowerSettingNotification`: na baterii obniżamy

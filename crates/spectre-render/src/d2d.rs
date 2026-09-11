@@ -128,6 +128,9 @@ pub struct Overlay<'a> {
     /// Okrag gumki: (x, y, promien) w pikselach ekranu.
     pub cursor: Option<(f32, f32, f32)>,
     pub ui: &'a [UiPrim],
+    /// Przygaszenie 0..1 (0 = brak). Realizowane czarna warstwa, nie zmiana
+    /// jasnosci panelu - bez migotania i bez API producenta.
+    pub darken: f32,
 }
 
 pub struct Renderer {
@@ -726,6 +729,25 @@ impl Renderer {
             self.draw_ui(overlay.ui)?;
             if let Some(text) = overlay.hud {
                 self.draw_hud(text);
+            }
+            // Rampa przygaszania (Z7): czarna warstwa o zadanym kryciu na wszystkim.
+            if overlay.darken > 0.001 {
+                let (w, h) = self.size;
+                let brush = self.brush(Rgba {
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                    a: (overlay.darken.clamp(0.0, 1.0) * 255.0) as u8,
+                })?;
+                self.ctx.FillRectangle(
+                    &D2D_RECT_F {
+                        left: 0.0,
+                        top: 0.0,
+                        right: w as f32,
+                        bottom: h as f32,
+                    },
+                    &brush,
+                );
             }
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);

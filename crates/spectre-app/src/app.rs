@@ -40,6 +40,19 @@ const SYNC_IDLE_MS: u32 = 400;
 const UI_HIDE_MS: u32 = 2500;
 const TIMER_SYNC: usize = 1;
 const TIMER_UI: usize = 2;
+const TIMER_SHIFT: usize = 3;
+const TIMER_DIM: usize = 4;
+/// Pixel shift (Z7): krok co tyle ms. Amplituda +-4 px, tor Lissajous o okresach
+/// 61 i 89 s - nie okrag, zeby slad nie byl powtarzalny. Jedna klatka na krok
+/// to koszt pomijalny wobec ochrony panelu przed wypaleniem.
+const SHIFT_STEP_MS: u32 = 4000;
+const SHIFT_AMP: f32 = 4.0;
+/// Rampa przygaszania (Z7): po tylu ms bez wejscia jasnosc schodzi do `DIM_FLOOR`
+/// krokami co `DIM_STEP_MS`. Powrot do pelnej przy pierwszym ruchu rysika/klawisza.
+const DIM_IDLE_MS: u32 = 3 * 60 * 1000;
+const DIM_STEP_MS: u32 = 50;
+const DIM_FLOOR: f32 = 0.4;
+const DIM_RAMP_S: f32 = 2.0;
 const ZOOM_MIN: f32 = 0.25;
 const ZOOM_MAX: f32 = 4.0;
 
@@ -117,6 +130,11 @@ pub struct App {
     /// (Z5). `T` przelacza na tryb bez tearingu do porownan.
     pan_tearing: bool,
     fullscreen: Fullscreen,
+    /// Start procesu - zegar toru pixel shiftu.
+    started: Instant,
+    /// Jasnosc 1.0 = pelna; ponizej trwa albo skonczyla sie rampa przygaszania.
+    dim: f32,
+    dim_armed: Instant,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -163,6 +181,9 @@ pub fn install(hwnd: HWND, space_dir: &Path) -> Result<()> {
     }
     if let Err(e) = tray::register_toggle_hotkey(hwnd, 'N') {
         eprintln!("hotkey Win+Shift+N zajety: {e}");
+    }
+    if let Some(app) = unsafe { app_of(hwnd) } {
+        app.arm_amoled_timers();
     }
     Ok(())
 }
@@ -223,6 +244,9 @@ impl App {
             vsync: false,
             pan_tearing: true,
             fullscreen: Fullscreen::default(),
+            started: Instant::now(),
+            dim: 1.0,
+            dim_armed: Instant::now(),
             toolbar,
             menu,
             config,
@@ -437,6 +461,7 @@ impl App {
             zoom: self.cam.zoom,
             maximized: window::is_maximized(self.hwnd),
             menu_open: self.menu.open,
+            shift: self.cam.shift,
         }
     }
 
@@ -719,6 +744,70 @@ impl App {
         self.sync_entry();
     }
 
+    // ----- AMOLED (Z7) -------------------------------------------------------
+
+    /// Timery ochrony panelu dzialaja tylko, gdy okno jest widoczne - w tle
+    /// proces ma nie wybudzac sie w ogole (Z2).
+    fn arm_amoled_timers(&self) {
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_SHIFT, SHIFT_STEP_MS, None);
+            SetTimer(Some(self.hwnd), TIMER_DIM, DIM_IDLE_MS, None);
+        }
+    }
+
+    fn kill_amoled_timers(&self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_SHIFT);
+            let _ = KillTimer(Some(self.hwnd), TIMER_DIM);
+        }
+    }
+
+    /// Krok pixel shiftu: cel z toru Lissajous, zaokraglony do calych pikseli
+    /// (warstwa sucha przesuwa sie o cale piksele). Nie w trakcie akcji rysikiem -
+    /// skok tresci pod czubkiem bylby wyczuwalny.
+    fn step_shift(&mut self) {
+        if self.mode != Mode::Idle {
+            return;
+        }
+        let t = self.started.elapsed().as_secs_f32();
+        let sx = (SHIFT_AMP * (std::f32::consts::TAU * t / 61.0).sin()).round();
+        let sy = (SHIFT_AMP * (std::f32::consts::TAU * t / 89.0 + 1.0).sin()).round();
+        if (sx, sy) != self.cam.shift {
+            self.cam.shift = (sx, sy);
+            self.dirty = Dirty::Full;
+            self.render();
+        }
+    }
+
+    /// Dowolne wejscie uzytkownika: pelna jasnosc i odliczanie bezczynnosci od nowa.
+    fn activity(&mut self) {
+        // Rysik daje 266 zdarzen/s - timer przestawiamy najwyzej raz na sekunde.
+        if self.dim_armed.elapsed().as_secs_f32() > 1.0 || self.dim < 1.0 {
+            self.dim_armed = Instant::now();
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_DIM, DIM_IDLE_MS, None);
+            }
+        }
+        if self.dim < 1.0 {
+            self.dim = 1.0;
+            self.render();
+        }
+    }
+
+    /// Tik rampy: pierwszy po `DIM_IDLE_MS`, kolejne co `DIM_STEP_MS` az do podlogi.
+    fn dim_tick(&mut self) {
+        let step = (1.0 - DIM_FLOOR) * DIM_STEP_MS as f32 / (DIM_RAMP_S * 1000.0);
+        self.dim = (self.dim - step).max(DIM_FLOOR);
+        unsafe {
+            if self.dim > DIM_FLOOR {
+                SetTimer(Some(self.hwnd), TIMER_DIM, DIM_STEP_MS, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), TIMER_DIM);
+            }
+        }
+        self.render();
+    }
+
     // ----- okno --------------------------------------------------------------
 
     /// Chowanie zamiast zamykania (Z2). Proces zyje, GPU oddaje bufory.
@@ -728,6 +817,8 @@ impl App {
         self.sync_now();
         self.save_placement();
         self.hidden = true;
+        self.kill_amoled_timers();
+        self.dim = 1.0;
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
@@ -742,6 +833,7 @@ impl App {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hwnd);
         }
+        self.arm_amoled_timers();
         self.render();
     }
 
@@ -835,6 +927,7 @@ impl App {
                 hud: hud.as_deref(),
                 cursor,
                 ui: &prims,
+                darken: 1.0 - self.dim,
             },
             if self.vsync {
                 PresentMode::VSync
@@ -867,7 +960,7 @@ impl App {
         };
         format!(
             "SpectreNotes   notatka {}/{}   kresek: {}   {}   zoom {:.0}%\n\
-             narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
+             narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   shift: ({:+.0},{:+.0}) jasnosc: {:.0}%   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
              [1-6] kolor  [E] gumka  [[ ]] grubosc  [Ctrl+Z/Y] cofnij/ponow  [Home] gora  [Ctrl+kolko] zoom\n\
              [przycisk boczny]/[kolko] przewijanie   [PgUp/PgDn] notatki  [Ctrl+N] nowa   [Win+Shift+N] pokaz/ukryj\n\
              [F11] pelny ekran  [H] hud  [V] vsync  [T] przewijanie: {}  [Esc] ukryj  [Ctrl+Q] zakoncz{}",
@@ -883,6 +976,9 @@ impl App {
             tool,
             self.ink.base_width,
             self.cam.scroll_y,
+            self.cam.shift.0,
+            self.cam.shift.1,
+            self.dim * 100.0,
             self.frame_ms,
             self.frame_max_ms,
             self.renderer.adapter_name(),
@@ -974,6 +1070,7 @@ pub unsafe extern "system" fn wndproc(
 
     match msg {
         WM_POINTERDOWN => {
+            app.activity();
             if let Some(batch) = app.read(pointer_id, false) {
                 let (x, y) = app.last_screen;
                 if let Some(t) = app.toolbar.title_hit(x, y) {
@@ -1000,6 +1097,7 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_POINTERUPDATE => {
+            app.activity();
             // Koalescencja: jesli w kolejce czeka juz nastepny komunikat piora,
             // przetwarzamy probki, ale nie renderujemy - narysuje ostatni z serii.
             let more_pending = {
@@ -1082,6 +1180,7 @@ pub unsafe extern "system" fn wndproc(
         // Rysik nad niewidzialna ramka do zmiany rozmiaru: obszar nieklientowy,
         // wiec zwykly WM_POINTERUPDATE nie przychodzi. Hover ma tam nadal odslaniac pasek.
         WM_NCPOINTERUPDATE => {
+            app.activity();
             let (x, y) = window::nc_point_to_client(hwnd, lparam);
             let ui_changed = app.toolbar.hover(x, y);
             app.last_screen = (x, y);
@@ -1105,6 +1204,7 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_POINTERWHEEL | WM_MOUSEWHEEL => {
+            app.activity();
             let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as f32;
             // lparam kolka = pozycja ekranowa, tak samo jak w WM_NCHITTEST.
             let (mx, my) = window::nc_point_to_client(hwnd, lparam);
@@ -1140,6 +1240,7 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_KEYDOWN => {
+            app.activity();
             let vk = VIRTUAL_KEY(wparam.0 as u16);
             let ctrl = ctrl_down();
             if app.toolbar.title_edit.is_some() {
@@ -1268,6 +1369,8 @@ pub unsafe extern "system" fn wndproc(
                         app.render();
                     }
                 }
+                TIMER_SHIFT => app.step_shift(),
+                TIMER_DIM => app.dim_tick(),
                 TIMER_UI => {
                     let _ = KillTimer(Some(hwnd), TIMER_UI);
                     if app.toolbar.idle(app.last_screen) {

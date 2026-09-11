@@ -41,7 +41,11 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       płacona raz — przy otwarciu notatki). Pen-up przerysowuje prostokąt kreski
       z tej samej geometrii; undo/redo to repaint regionu, nie pełny rebuild
 - [ ] Cache kafli — dopiero gdy przewijanie przyrostowe okaże się za wolne
-- [ ] Pixel shift, rampa przygaszania
+- [x] Pixel shift: ±4 px po torze Lissajous (61 s / 89 s), krok co 4 s tylko w bezczynności
+      rysika, całe piksele; treść paska tytułowego dryfuje razem z canvasem
+- [x] Rampa przygaszania: po 3 min bez wejścia płynnie (2 s) do 40 %, powrót przy
+      pierwszym ruchu; czarna warstwa w `present`, nie jasność panelu. Timery gasną
+      przy ukryciu okna (Z2: zero wybudzeń w tle)
 - [ ] Szerokość kolumny (Z9) w jednostkach canvasu i zachowanie przy zmianie zoomu
 - [ ] Kryterium: 100 000 stroke'ów przy 120 fps — do zmierzenia
 - [ ] Weryfikacja wyjścia okna przy przenoszeniu na monitor z dGPU
@@ -75,7 +79,7 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       folderami, nowa notatka/folder; zakładki Ustawienia i Konto jako wydmuszki
       (ustawienia przełączają to, co już jest; logowanie czeka na Etap 5)
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
-- [ ] Pixel shift i rampa przygaszania (Z7)
+- [x] Pixel shift i rampa przygaszania (Z7) — patrz Etap 2
 
 ## Etap 5 — Git jako warstwa trwała
 
