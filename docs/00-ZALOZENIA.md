@@ -143,3 +143,12 @@ Konsekwencje:
 4. Dwie maszyny po Tailscale rysują na jednej notatce; rozjazd wizualny <20 ms.
 5. Wyłączenie zasilania w trakcie rysowania nie gubi więcej niż 1 s pracy.
 6. Working set w tle ≤ 20 MB.
+
+## Decyzje z testów na żywo
+
+- **2026-09-11, prezentacja przewijania: tearing.** Test A/B (`T` w aplikacji):
+  tryb bez tearingu daje czysty obraz, ale reakcję opóźnioną o klatkę; tearing
+  daje powidoki przy bardzo szybkim przewijaniu. Werdykt: tearing wszędzie —
+  powidoki są akceptowalne, bo obraz w pracy jest statyczny, a reakcja
+  w czasie rzeczywistym jest priorytetem nadrzędnym. Tag `v0.1-latency-baseline`
+  jest punktem odniesienia dla przyszłych porównań odczucia.

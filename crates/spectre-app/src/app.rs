@@ -97,9 +97,9 @@ pub struct App {
     dirty: Dirty,
     show_hud: bool,
     vsync: bool,
-    /// Tearing takze przy przewijaniu. Domyslnie nie: przy szybkim ruchu calej
-    /// tresci rozdarcie klatki jest widoczne jako ta sama linia w kilku miejscach.
-    /// Pioro i gumka zawsze uzywaja tearingu - tam rozdarcie jest niewidoczne.
+    /// Tearing takze przy przewijaniu. Domyslnie TAK - decyzja uzytkownika po tescie
+    /// A/B: powidoki przy szybkim ruchu sa akceptowalne, reakcja jest priorytetem
+    /// (Z5). `T` przelacza na tryb bez tearingu do porownan.
     pan_tearing: bool,
     fullscreen: Fullscreen,
 
@@ -171,7 +171,7 @@ impl App {
             dirty: Dirty::Full,
             show_hud: true,
             vsync: false,
-            pan_tearing: false,
+            pan_tearing: true,
             fullscreen: Fullscreen::default(),
             commit_buf: Vec::with_capacity(4096),
             pending_commit: Vec::new(),
