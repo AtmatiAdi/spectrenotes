@@ -97,6 +97,10 @@ pub struct App {
     dirty: Dirty,
     show_hud: bool,
     vsync: bool,
+    /// Tearing takze przy przewijaniu. Domyslnie nie: przy szybkim ruchu calej
+    /// tresci rozdarcie klatki jest widoczne jako ta sama linia w kilku miejscach.
+    /// Pioro i gumka zawsze uzywaja tearingu - tam rozdarcie jest niewidoczne.
+    pan_tearing: bool,
     fullscreen: Fullscreen,
 
     commit_buf: Vec<Segment>,
@@ -167,6 +171,7 @@ impl App {
             dirty: Dirty::Full,
             show_hud: true,
             vsync: false,
+            pan_tearing: false,
             fullscreen: Fullscreen::default(),
             commit_buf: Vec::with_capacity(4096),
             pending_commit: Vec::new(),
@@ -410,6 +415,8 @@ impl App {
 
     fn render(&mut self) {
         let t0 = std::time::Instant::now();
+        // Klatka przewijania - z piora albo z kolka; decyduje o trybie prezentacji.
+        let scrolling = self.mode == Mode::Pan || matches!(self.dirty, Dirty::Scrolled(_));
         match self.dirty {
             Dirty::Clean => {}
             Dirty::Scrolled(old) => {
@@ -463,10 +470,10 @@ impl App {
             },
             // Tearing tylko dla mokrego atramentu; poza rysowaniem "najnowsza klatka"
             // bez blokowania - vsync tutaj kolejkowal komunikaty piora i dawal lag.
-            // Tearing zawsze (poza jawnym vsync): kazdy inny tryb czeka na vblank,
-            // a na panelu 60 Hz to 16-33 ms lagu przy przewijaniu i gumce.
             if self.vsync {
                 PresentMode::VSync
+            } else if scrolling && !self.pan_tearing {
+                PresentMode::Latest
             } else {
                 PresentMode::Immediate
             },
@@ -494,7 +501,7 @@ impl App {
              narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
              [1-6] kolor  [E] gumka  [[ ]] grubosc  [Ctrl+Z/Y] cofnij/ponow  [Home] gora\n\
              [przycisk boczny]/[kolko] przewijanie   [PgUp/PgDn] notatki  [Ctrl+N] nowa\n\
-             [F11] pelny ekran  [H] hud  [V] vsync  [Esc] wyjscie{}",
+             [F11] pelny ekran  [H] hud  [V] vsync  [T] przewijanie: {}  [Esc] wyjscie{}",
             self.note_idx + 1,
             self.notes.len(),
             title,
@@ -510,6 +517,11 @@ impl App {
             self.frame_ms,
             self.frame_max_ms,
             self.renderer.adapter_name(),
+            if self.pan_tearing {
+                "tearing (reakcja)"
+            } else {
+                "bez tearingu (czysty obraz)"
+            },
             if self.status.is_empty() {
                 String::new()
             } else {
@@ -665,6 +677,8 @@ pub unsafe extern "system" fn wndproc(
                 0x48 => app.show_hud = !app.show_hud,
                 // V
                 0x56 => app.vsync = !app.vsync,
+                // T
+                0x54 => app.pan_tearing = !app.pan_tearing,
                 // Z / Y
                 0x5A if ctrl => app.undo(),
                 0x59 if ctrl => app.redo(),
