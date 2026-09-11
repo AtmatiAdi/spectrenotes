@@ -3,7 +3,7 @@ use std::path::Path;
 use spectre_core::hittest::stroke_hit;
 use spectre_core::{Camera, Document, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
-use spectre_render::{Overlay, Renderer};
+use spectre_render::{Overlay, PresentMode, Renderer};
 use spectre_shell_win::window::{self, Fullscreen};
 use spectre_shell_win::{PenBatch, PenButtons, PenDecoder};
 use spectre_sync::{AuthorName, NoteStore, Space};
@@ -420,9 +420,15 @@ impl App {
                 hud: hud.as_deref(),
                 cursor,
             },
-            // Tearing tylko dla mokrego atramentu - przy przewijaniu rozdarcie
-            // klatki jest widoczne jako "przerwana" linia w polowie ekranu.
-            self.vsync || self.mode != Mode::Draw,
+            // Tearing tylko dla mokrego atramentu; poza rysowaniem "najnowsza klatka"
+            // bez blokowania - vsync tutaj kolejkowal komunikaty piora i dawal lag.
+            if self.vsync {
+                PresentMode::VSync
+            } else if self.mode == Mode::Draw {
+                PresentMode::Immediate
+            } else {
+                PresentMode::Latest
+            },
         );
         self.tail_buf = tail;
     }
@@ -514,6 +520,21 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_POINTERUPDATE => {
+            // Koalescencja: jesli w kolejce czeka juz nastepny komunikat piora,
+            // przetwarzamy probki, ale nie renderujemy - narysuje ostatni z serii.
+            // Bez tego kazdy zalegly komunikat kosztowal osobna klatke i lag rosl
+            // liniowo z zaleglościa.
+            let more_pending = {
+                let mut m = MSG::default();
+                PeekMessageW(
+                    &mut m,
+                    Some(hwnd),
+                    WM_POINTERUPDATE,
+                    WM_POINTERUPDATE,
+                    PM_NOREMOVE,
+                )
+                .as_bool()
+            };
             match app.mode {
                 Mode::Idle => {
                     if app.pen.is_pen(pointer_id) {
@@ -531,7 +552,7 @@ pub unsafe extern "system" fn wndproc(
                         app.buttons = b;
                         app.hover = true;
                         app.last_screen = pos;
-                        if changed {
+                        if changed && !more_pending {
                             app.render();
                         }
                     }
@@ -546,7 +567,9 @@ pub unsafe extern "system" fn wndproc(
                                 Mode::Idle => {}
                             }
                         }
-                        app.render();
+                        if !more_pending {
+                            app.render();
+                        }
                     }
                 }
             }

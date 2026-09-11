@@ -12,5 +12,5 @@
 mod d2d;
 mod tess;
 
-pub use d2d::{Overlay, Renderer};
+pub use d2d::{Overlay, PresentMode, Renderer};
 pub use tess::stroke_segments;

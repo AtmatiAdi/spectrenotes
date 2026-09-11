@@ -48,6 +48,19 @@ pub const BG_COLOR: D2D1_COLOR_F = D2D1_COLOR_F {
     a: 1.0,
 };
 
+/// Jak prezentowac klatke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentMode {
+    /// Tearing: najnizsza latencja, dla mokrego atramentu. Rozdarcie klatki przy
+    /// cienkiej linii jest niewidoczne.
+    Immediate,
+    /// Bez czekania na vblank i bez tearingu - DWM bierze najnowsza klatke.
+    /// Dla przewijania: rozdarcie byloby widoczne jako uskok tresci, a czekanie
+    /// na vblank blokuje watek i kolejkuje komunikaty piora.
+    Latest,
+    VSync,
+}
+
 /// Co narysowac na wierzchu klatki, poza dokumentem.
 #[derive(Default, Clone, Copy)]
 pub struct Overlay<'a> {
@@ -457,7 +470,7 @@ impl Renderer {
         color: Rgba,
         cam: &Camera,
         overlay: Overlay,
-        vsync: bool,
+        mode: PresentMode,
     ) -> Result<()> {
         let (Some(back), Some(dry)) = (self.backbuffer.clone(), self.dry[self.dry_cur].clone())
         else {
@@ -484,12 +497,12 @@ impl Renderer {
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
 
-            let (interval, flags) = if vsync {
-                (1u32, DXGI_PRESENT(0))
-            } else if self.tearing_supported {
-                (0u32, DXGI_PRESENT_ALLOW_TEARING)
-            } else {
-                (0u32, DXGI_PRESENT(0))
+            let (interval, flags) = match mode {
+                PresentMode::VSync => (1u32, DXGI_PRESENT(0)),
+                PresentMode::Immediate if self.tearing_supported => {
+                    (0u32, DXGI_PRESENT_ALLOW_TEARING)
+                }
+                PresentMode::Immediate | PresentMode::Latest => (0u32, DXGI_PRESENT(0)),
             };
             self.swapchain.Present(interval, flags).ok()?;
         }
