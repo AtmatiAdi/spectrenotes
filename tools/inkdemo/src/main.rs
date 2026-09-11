@@ -263,6 +263,33 @@ impl App {
         self.mode = Mode::Idle;
     }
 
+    /// Przyciski rysika decyduja o roli w kazdym momencie, nie tylko przy
+    /// dotknieciu: boczny = przewijanie, gumka = wymazywanie, nic = pioro.
+    /// Zmiana w trakcie ruchu konczy biezaca kreske i natychmiast zaczyna nowa
+    /// role od tej samej probki. Zwraca `true`, gdy doszlo do przelaczenia.
+    fn apply_buttons(&mut self, batch: &PenBatch) -> bool {
+        let want_pan = batch.buttons.barrel;
+        let want_erase = batch.buttons.eraser;
+        let unchanged = match self.mode {
+            Mode::Pan => want_pan,
+            Mode::Draw => !want_pan && self.erasing == want_erase,
+            Mode::Idle => false,
+        };
+        if unchanged {
+            return false;
+        }
+        match self.mode {
+            Mode::Draw => self.end_stroke(),
+            Mode::Pan | Mode::Idle => self.mode = Mode::Idle,
+        }
+        if want_pan {
+            self.begin_pan(batch);
+        } else {
+            self.begin_stroke(batch);
+        }
+        true
+    }
+
     fn begin_pan(&mut self, batch: &PenBatch) {
         if let Some(last) = batch.samples.last() {
             self.pan_start = (last.y, self.scroll_y);
@@ -581,28 +608,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
         match msg {
             WM_POINTERDOWN => {
                 if let Some(batch) = app.read(hwnd, pointer_id, false) {
-                    // Decyzja "rysuj czy przewijaj" zapada przy dotknieciu i trzyma sie
-                    // do uniesienia rysika - zmiana w polowie ruchu bylaby zaskoczeniem.
-                    if batch.buttons.barrel {
-                        app.begin_pan(&batch);
-                    } else {
-                        app.begin_stroke(&batch);
-                    }
+                    app.apply_buttons(&batch);
                     app.render();
                 }
                 LRESULT(0)
             }
             WM_POINTERUPDATE => {
                 match app.mode {
-                    Mode::Draw => {
+                    Mode::Draw | Mode::Pan => {
                         if let Some(batch) = app.read(hwnd, pointer_id, true) {
-                            app.feed(&batch);
-                            app.render();
-                        }
-                    }
-                    Mode::Pan => {
-                        if let Some(batch) = app.read(hwnd, pointer_id, true) {
-                            app.update_pan(&batch);
+                            if !app.apply_buttons(&batch) {
+                                match app.mode {
+                                    Mode::Draw => app.feed(&batch),
+                                    Mode::Pan => app.update_pan(&batch),
+                                    Mode::Idle => {}
+                                }
+                            }
                             app.render();
                         }
                     }

@@ -109,9 +109,9 @@ Konsekwencje:
   utrzymywać go jako opcję, skoro jest precyzyjny rysik. Nie ma trybu „dotyk
   włączony" — nie projektujemy pod niego nawet w przyszłości;
 - **nawigacja bez dotyku**: kandydatem jest **przycisk boczny rysika** —
-  wciśnięty przy dotknięciu ekranu przełącza rysik z rysowania na przewijanie,
-  aż do uniesienia. Decyzja zapada przy kontakcie i nie zmienia się w trakcie
-  ruchu, bo zmiana w połowie byłaby zaskoczeniem. `tools/inkdemo` implementuje
+  trzymany przełącza rysik na przewijanie, gumka na wymazywanie. Przyciski
+  działają w każdym momencie: wciśnięcie w trakcie kreski kończy ją i od razu
+  zaczyna nową rolę od tej samej próbki (model „przycisk trzymany = funkcja"). `tools/inkdemo` implementuje
   to i pokazuje w HUD, czy sterownik w ogóle raportuje ten przycisk
   (`PEN_FLAG_BARREL` albo `POINTER_FLAG_SECONDBUTTON`). Jeśli tak — temat
   zamknięty. Jeśli nie — pasek przewijania przy krawędzi obsługiwany piórem.

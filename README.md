@@ -22,7 +22,8 @@ Czarny canvas, rysuj piórem. `F11` = pełny ekran, `H` chowa HUD.
 
 | Klawisz | Działanie |
 |---|---|
-| **przycisk boczny + ruch** | przewijanie (decyzja zapada przy dotknięciu) |
+| **przycisk boczny (trzymany)** | przewijanie — także w trakcie kreski: kończy ją i przewija |
+| **przycisk gumki (trzymany)** | wymazywanie — także w trakcie kreski |
 | kółko myszy | przewijanie |
 | `Ctrl+Z` | cofnij ostatnią kreskę |
 | `I` | interpolacja centripetal Catmull-Rom |
