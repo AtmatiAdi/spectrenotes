@@ -49,8 +49,8 @@ schodzić do DirectComposition z niezależną warstwą mokrego atramentu.
 - `Trim()` + `EmptyWorkingSet` przy ukryciu
 - **Kryteria: <30 ms hotkey→klatka, ≤20 MB working set w tle**
 - Minimalne UI: pióro / gumka / kolor, lista notatek, wszystko auto-chowane
-- Odrzucanie `PT_TOUCH` na wejściu (Z10) i **rozstrzygnięcie, czym przewijać
-  w trybie tabletu bez klawiatury** — to jest realny brak w Z10, nie detal
+- Odrzucanie `PT_TOUCH` na wejściu (Z10); przewijanie przyciskiem bocznym
+  rysika — jeśli test w `inkdemo` potwierdzi, że sterownik go raportuje
 
 ## Etap 5 — Git jako warstwa trwała
 

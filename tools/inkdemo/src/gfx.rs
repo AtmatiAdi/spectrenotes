@@ -301,7 +301,7 @@ impl Gfx {
 
     /// Wypala odcinki do warstwy suchej. Koszt zalezy tylko od liczby NOWYCH
     /// odcinkow, nigdy od tego, ile atramentu jest juz na canvasie.
-    pub fn commit(&mut self, segs: &[Segment], erase: bool) -> Result<()> {
+    pub fn commit(&mut self, segs: &[Segment], erase: bool, scroll_y: f32) -> Result<()> {
         if segs.is_empty() {
             return Ok(());
         }
@@ -311,14 +311,22 @@ impl Gfx {
         unsafe {
             self.ctx.SetTarget(&canvas);
             self.ctx.BeginDraw();
-            self.draw_segments(segs, erase);
+            self.draw_segments(segs, erase, scroll_y);
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
         }
         Ok(())
     }
 
-    pub fn clear_canvas(&mut self) -> Result<()> {
+    /// Pelna przebudowa warstwy suchej - po przewinieciu albo cofnieciu.
+    ///
+    /// W docelowym rendererze zastapi to cache kafli; w demo liczba stroke'ow
+    /// jest na tyle mala, ze przerysowanie wszystkiego miesci sie w ulamku klatki.
+    pub fn rebuild<'a>(
+        &mut self,
+        strokes: impl Iterator<Item = (&'a [Segment], bool)>,
+        scroll_y: f32,
+    ) -> Result<()> {
         let Some(canvas) = self.canvas.clone() else {
             return Ok(());
         };
@@ -326,18 +334,28 @@ impl Gfx {
             self.ctx.SetTarget(&canvas);
             self.ctx.BeginDraw();
             self.ctx.Clear(Some(&BG_COLOR));
+            for (segs, erase) in strokes {
+                self.draw_segments(segs, erase, scroll_y);
+            }
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
         }
         Ok(())
     }
 
-    unsafe fn draw_segments(&self, segs: &[Segment], erase: bool) {
+    /// Odcinki sa w przestrzeni canvasu; `scroll_y` przelicza je na ekran.
+    unsafe fn draw_segments(&self, segs: &[Segment], erase: bool, scroll_y: f32) {
         let brush = if erase { &self.eraser } else { &self.ink };
         for s in segs {
             self.ctx.DrawLine(
-                Vector2 { X: s.a.x, Y: s.a.y },
-                Vector2 { X: s.b.x, Y: s.b.y },
+                Vector2 {
+                    X: s.a.x,
+                    Y: s.a.y - scroll_y,
+                },
+                Vector2 {
+                    X: s.b.x,
+                    Y: s.b.y - scroll_y,
+                },
                 brush,
                 s.width.max(0.4),
                 &self.round,
@@ -352,6 +370,7 @@ impl Gfx {
         &mut self,
         tail: &[Segment],
         erase: bool,
+        scroll_y: f32,
         hud: Option<&str>,
         vsync: bool,
     ) -> Result<()> {
@@ -365,7 +384,7 @@ impl Gfx {
                 .DrawImage(&canvas, None, None, Default::default(), Default::default());
             // Czubek rysujemy tylko na backbufferze - nastepna klatka narysuje go
             // od nowa, juz z poprawna krzywizna.
-            self.draw_segments(tail, erase);
+            self.draw_segments(tail, erase, scroll_y);
             if let Some(text) = hud {
                 self.draw_hud(text);
             }
@@ -389,7 +408,7 @@ impl Gfx {
         let rect = D2D_RECT_F {
             left: 16.0,
             top: 16.0,
-            right: 16.0 + 470.0,
+            right: 16.0 + 640.0,
             bottom: 16.0 + lines * 18.0 + 14.0,
         };
         self.ctx.FillRectangle(&rect, &self.hud_bg);

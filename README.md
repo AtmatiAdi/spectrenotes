@@ -9,14 +9,22 @@ o tym, które komputery są wystarczająco właściwe, żeby uruchomić aplikacj
 
 ## Uruchomienie demo
 
-```bash
-cargo run --release -p inkdemo
 ```
+.\dev.cmd -Demo
+```
+
+`dev.cmd` (wrapper na `dev.ps1`) sprawdza toolchain, dodaje `cargo` do PATH sesji
+i odpala demo. `.\dev.cmd -Install` doinstalowuje braki (rustup, VS Build Tools),
+`.\dev.cmd -Persist` dopisuje `.cargo\bin` do PATH użytkownika na stałe.
+Gdy `cargo` jest już w PATH: `cargo run --release -p inkdemo`.
 
 Czarny canvas, rysuj piórem. `F11` = pełny ekran, `H` chowa HUD.
 
 | Klawisz | Działanie |
 |---|---|
+| **przycisk boczny + ruch** | przewijanie (decyzja zapada przy dotknięciu) |
+| kółko myszy | przewijanie |
+| `Ctrl+Z` | cofnij ostatnią kreskę |
 | `I` | interpolacja centripetal Catmull-Rom |
 | `S` | filtr wygładzający 1-Euro (domyślnie wył.) |
 | `P` | predykcja: 0 → 4 ms → 8 ms |
@@ -26,7 +34,10 @@ Czarny canvas, rysuj piórem. `F11` = pełny ekran, `H` chowa HUD.
 | `C` | wyczyść |
 | `F11` / `Esc` | pełny ekran / wyjście |
 
-Odwrócenie pióra (gumka) przełącza na wymazywanie automatycznie.
+Odwrócenie pióra (gumka) przełącza na wymazywanie automatycznie. Dotyk palcem jest
+ignorowany całkowicie (Z10). HUD pokazuje na żywo stan przycisku bocznego —
+jeśli przy wciśniętym przycisku wciąż pokazuje `---`, sterownik nie raportuje
+ani `PEN_FLAG_BARREL`, ani `POINTER_FLAG_SECONDBUTTON` i trzeba szukać innej drogi.
 
 ### Co obserwować
 

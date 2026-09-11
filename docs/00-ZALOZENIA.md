@@ -105,11 +105,16 @@ Konsekwencje:
 - odrzucanie dłoni przestaje być problemem — nie ma heurystyk, nie ma strojenia,
   nie ma przypadkowych kresek od nadgarstka. Odrzucamy `PT_TOUCH` na wejściu i koniec;
 - znika cały rozpoznawacz gestów, co jest sporą oszczędnością złożoności;
-- **otwarty problem**: to jest konwertowalny 2-in-1. W trybie tabletu, z odłączoną
-  klawiaturą, nie ma czym przewijać. Kandydaci: przeciąganie z wciśniętym
-  przyciskiem bocznym rysika, pasek przewijania przy krawędzi obsługiwany piórem,
-  albo wyjątek dopuszczający dwa palce wyłącznie do przewijania. Do rozstrzygnięcia
-  przy Etapie 4, gdy powstanie realne UI.
+- decyzja jest **bezwarunkowa**: dotyk na laptopie jest zbyt frustrujący, żeby
+  utrzymywać go jako opcję, skoro jest precyzyjny rysik. Nie ma trybu „dotyk
+  włączony" — nie projektujemy pod niego nawet w przyszłości;
+- **nawigacja bez dotyku**: kandydatem jest **przycisk boczny rysika** —
+  wciśnięty przy dotknięciu ekranu przełącza rysik z rysowania na przewijanie,
+  aż do uniesienia. Decyzja zapada przy kontakcie i nie zmienia się w trakcie
+  ruchu, bo zmiana w połowie byłaby zaskoczeniem. `tools/inkdemo` implementuje
+  to i pokazuje w HUD, czy sterownik w ogóle raportuje ten przycisk
+  (`PEN_FLAG_BARREL` albo `POINTER_FLAG_SECONDBUTTON`). Jeśli tak — temat
+  zamknięty. Jeśli nie — pasek przewijania przy krawędzi obsługiwany piórem.
 
 ### Z11. Narzędzia v1: pióro, gumka, kilka kolorów
 Nic więcej. Bez zakreślacza, bez lassa, bez obrazków.

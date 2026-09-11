@@ -2,8 +2,9 @@
 //!
 //! Jedyny cel: rozstrzygnac, czy surowa sciezka `WM_POINTER` + flip-model present
 //! daje na tym digitizerze i tym panelu odczucie porownywalne z Samsung Notes.
-//! Wszystko, co nie sluzy tej ocenie (notatki, zapis, pan/zoom, sync), jest celowo
-//! poza zakresem tego pliku.
+//! Wszystko, co nie sluzy tej ocenie (notatki, zapis, sync), jest celowo poza
+//! zakresem tego pliku. Przewijanie jest tu tylko po to, zeby sprawdzic przycisk
+//! boczny rysika jako kandydata na nawigacje bez dotyku (Z9, Z10).
 //!
 //! Sterowanie wypisuje HUD; `H` go chowa.
 
@@ -12,7 +13,7 @@ mod pen;
 
 use std::time::Instant;
 
-use spectre_ink::{InkConfig, PressureCurve, Segment, StrokeBuilder};
+use spectre_ink::{InkConfig, PressureCurve, Sample, Segment, StrokeBuilder};
 use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -30,16 +31,18 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VIRTUAL_KEY, VK_ESCAPE, VK_F11, VK_OEM_4, VK_OEM_6,
+    GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_F11, VK_OEM_4, VK_OEM_6,
 };
 use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::gfx::Gfx;
-use crate::pen::PenDecoder;
+use crate::pen::{PenBatch, PenButtons, PenDecoder};
 
 /// Ile ostatnich odstepow miedzy probkami usredniamy przy liczeniu Hz piora.
 const HZ_WINDOW: usize = 64;
+/// Ile pikseli na jeden "zab" kolka myszy.
+const WHEEL_STEP_PX: f32 = 80.0;
 
 struct Stats {
     /// Odstepy miedzy kolejnymi probkami [us] - z zegara stosu wejscia, nie naszego.
@@ -95,6 +98,20 @@ impl Stats {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Idle,
+    Draw,
+    /// Przycisk boczny wcisniety przy dotknieciu: rysik przewija zamiast rysowac.
+    Pan,
+}
+
+/// Zakonczona kreska w przestrzeni canvasu.
+struct StoredStroke {
+    segs: Vec<Segment>,
+    erase: bool,
+}
+
 struct App {
     gfx: Gfx,
     pen: PenDecoder,
@@ -102,8 +119,23 @@ struct App {
     cfg: InkConfig,
     stats: Stats,
 
-    drawing: bool,
+    mode: Mode,
     erasing: bool,
+    /// Odcinki biezacej kreski juz wypalone do warstwy suchej - potrzebne, zeby
+    /// po zakonczeniu odlozyc cala kreske do `strokes`.
+    current_segs: Vec<Segment>,
+    strokes: Vec<StoredStroke>,
+
+    /// Przewiniecie w pionie (Z9): `screen_y = canvas_y - scroll_y`.
+    scroll_y: f32,
+    /// (y ekranu przy rozpoczeciu, scroll_y przy rozpoczeciu)
+    pan_start: (f32, f32),
+    /// Warstwa sucha wymaga przebudowy (po przewinieciu lub cofnieciu).
+    dirty_dry: bool,
+
+    buttons: PenButtons,
+    hover: bool,
+
     vsync: bool,
     show_hud: bool,
     fullscreen: bool,
@@ -139,8 +171,15 @@ impl App {
             stroke: StrokeBuilder::new(cfg),
             cfg,
             stats: Stats::new(),
-            drawing: false,
+            mode: Mode::Idle,
             erasing: false,
+            current_segs: Vec::with_capacity(4096),
+            strokes: Vec::new(),
+            scroll_y: 0.0,
+            pan_start: (0.0, 0.0),
+            dirty_dry: false,
+            buttons: PenButtons::default(),
+            hover: false,
             vsync: false,
             show_hud: true,
             fullscreen: false,
@@ -164,15 +203,14 @@ impl App {
         ((c as f64 / self.qpc_freq as f64) * 1_000_000.0) as u64
     }
 
-    fn ingest(&mut self, hwnd: HWND, pointer_id: u32, with_history: bool) {
+    /// Odczyt probek z komunikatu + statystyki. Nic jeszcze nie rysuje.
+    fn read(&mut self, hwnd: HWND, pointer_id: u32, with_history: bool) -> Option<PenBatch> {
         if !self.pen.is_pen(pointer_id) {
-            return;
+            return None;
         }
-        let Some(batch) = self.pen.decode(hwnd, pointer_id, with_history) else {
-            return;
-        };
+        let batch = self.pen.decode(hwnd, pointer_id, with_history)?;
 
-        self.erasing = batch.eraser;
+        self.buttons = batch.buttons;
         self.stats.samples_last_msg = batch.samples.len();
         self.stats.history_last_msg = batch.history_len;
         self.stats.total_samples += batch.samples.len() as u64;
@@ -185,8 +223,78 @@ impl App {
             self.last_sample_t_us = s.t_us;
             self.stats.pressure = s.pressure;
             self.stats.tilt = (s.tilt_x, s.tilt_y);
-            self.stroke.push(*s);
         }
+        Some(batch)
+    }
+
+    /// Probki (w pikselach ekranu) -> biezaca kreska (w przestrzeni canvasu).
+    fn feed(&mut self, batch: &PenBatch) {
+        for s in &batch.samples {
+            self.stroke.push(Sample {
+                y: s.y + self.scroll_y,
+                ..*s
+            });
+        }
+    }
+
+    fn begin_stroke(&mut self, batch: &PenBatch) {
+        self.stroke.clear();
+        self.current_segs.clear();
+        self.erasing = batch.buttons.eraser;
+        self.mode = Mode::Draw;
+        self.feed(batch);
+    }
+
+    fn end_stroke(&mut self) {
+        let mut segs = std::mem::take(&mut self.commit_buf);
+        segs.clear();
+        self.stroke.finish(&mut segs);
+        let _ = self.gfx.commit(&segs, self.erasing, self.scroll_y);
+        self.current_segs.extend_from_slice(&segs);
+        self.commit_buf = segs;
+
+        if !self.current_segs.is_empty() {
+            self.strokes.push(StoredStroke {
+                segs: std::mem::take(&mut self.current_segs),
+                erase: self.erasing,
+            });
+        }
+        self.stroke.clear();
+        self.mode = Mode::Idle;
+    }
+
+    fn begin_pan(&mut self, batch: &PenBatch) {
+        if let Some(last) = batch.samples.last() {
+            self.pan_start = (last.y, self.scroll_y);
+            self.mode = Mode::Pan;
+        }
+    }
+
+    fn update_pan(&mut self, batch: &PenBatch) {
+        if let Some(last) = batch.samples.last() {
+            // Tresc idzie za rysikiem: rysik w dol = canvas w dol = scroll maleje.
+            self.set_scroll(self.pan_start.1 - (last.y - self.pan_start.0));
+        }
+    }
+
+    fn set_scroll(&mut self, y: f32) {
+        // Gora rolki to 0 - poza nia nie ma nic (Z9).
+        let y = y.max(0.0);
+        if (y - self.scroll_y).abs() > f32::EPSILON {
+            self.scroll_y = y;
+            self.dirty_dry = true;
+        }
+    }
+
+    fn undo(&mut self) {
+        if self.strokes.pop().is_some() {
+            self.dirty_dry = true;
+        }
+    }
+
+    fn clear_all(&mut self) {
+        self.strokes.clear();
+        self.dirty_dry = true;
     }
 
     /// Rysuje klatke. Wolane synchronicznie z obslugi komunikatu piora - kolejka
@@ -194,15 +302,25 @@ impl App {
     fn render(&mut self) {
         let t0 = Instant::now();
 
+        if self.dirty_dry {
+            let scroll = self.scroll_y;
+            let _ = self.gfx.rebuild(
+                self.strokes.iter().map(|s| (s.segs.as_slice(), s.erase)),
+                scroll,
+            );
+            self.dirty_dry = false;
+        }
+
         self.commit_buf.clear();
         self.tail_buf.clear();
-        if self.drawing {
+        if self.mode == Mode::Draw {
             self.stroke.commit(&mut self.commit_buf);
             self.stroke.tail(&mut self.tail_buf);
         }
         if !self.commit_buf.is_empty() {
             let segs = std::mem::take(&mut self.commit_buf);
-            let _ = self.gfx.commit(&segs, self.erasing);
+            let _ = self.gfx.commit(&segs, self.erasing, self.scroll_y);
+            self.current_segs.extend_from_slice(&segs);
             self.commit_buf = segs;
         }
 
@@ -212,9 +330,13 @@ impl App {
             None
         };
         let tail = std::mem::take(&mut self.tail_buf);
-        let _ = self
-            .gfx
-            .present(&tail, self.erasing, hud.as_deref(), self.vsync);
+        let _ = self.gfx.present(
+            &tail,
+            self.erasing,
+            self.scroll_y,
+            hud.as_deref(),
+            self.vsync,
+        );
         self.tail_buf = tail;
 
         self.stats.frame_ms = t0.elapsed().as_secs_f32() * 1000.0;
@@ -244,15 +366,24 @@ impl App {
             PressureCurve::Linear => "liniowy".to_string(),
             PressureCurve::Gamma(g) => format!("gamma {g:.2}"),
         };
+        let tool = match (self.mode, self.buttons.eraser) {
+            (Mode::Pan, _) => "PRZEWIJANIE",
+            (Mode::Draw, true) => "GUMKA",
+            (Mode::Draw, false) => "pioro",
+            (Mode::Idle, true) => "gumka (hover)",
+            (Mode::Idle, false) => "pioro (hover)",
+        };
         format!(
             "SpectreNotes - demo piora    GPU: {gpu}\n\
              pioro: {hz:6.1} Hz   probki/komunikat: {spm:2}  (z historii: {hist:2})   lacznie: {tot}\n\
              nacisk: {press:5.3}   tilt: {tx:+5.1} / {ty:+5.1}   narzedzie: {tool}\n\
+             przycisk boczny: {barrel}   w zasiegu: {hover}   przewiniecie: {scroll:.0} px   kresek: {n}\n\
              klatka: {frame:5.2} ms   wejscie->present: {lat:5.2} ms   {fps:5.1} fps   present: {mode}\n\
              \n\
              [I] interpolacja: {interp}      [S] wygladzanie: {smooth}      [P] predykcja: {pred}\n\
              [1/2/3] nacisk->szerokosc: {curve}      [[ / ]] grubosc: {w:.1} px\n\
-             [V] vsync/tearing   [C] czysc   [F11] pelny ekran   [H] hud   [Esc] wyjscie",
+             [przycisk boczny + ruch] / [kolko] przewijanie    [Ctrl+Z] cofnij    [C] czysc\n\
+             [V] vsync/tearing   [F11] pelny ekran   [H] hud   [Esc] wyjscie",
             gpu = self.gfx.adapter_name,
             hz = self.stats.pen_hz(),
             spm = self.stats.samples_last_msg,
@@ -261,7 +392,15 @@ impl App {
             press = self.stats.pressure,
             tx = self.stats.tilt.0,
             ty = self.stats.tilt.1,
-            tool = if self.erasing { "GUMKA" } else { "pioro" },
+            tool = tool,
+            barrel = if self.buttons.barrel {
+                "WCISNIETY"
+            } else {
+                "---"
+            },
+            hover = if self.hover { "tak" } else { "nie" },
+            scroll = self.scroll_y,
+            n = self.strokes.len(),
             frame = self.stats.frame_ms,
             lat = self.stats.input_to_present_ms,
             fps = self.stats.fps,
@@ -428,6 +567,10 @@ unsafe fn app_of(hwnd: HWND) -> Option<&'static mut App> {
     }
 }
 
+unsafe fn ctrl_down() -> bool {
+    GetKeyState(VK_CONTROL.0 as i32) < 0
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         let Some(app) = app_of(hwnd) else {
@@ -437,31 +580,80 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
 
         match msg {
             WM_POINTERDOWN => {
-                app.stroke.clear();
-                app.drawing = true;
-                app.ingest(hwnd, pointer_id, false);
-                app.render();
+                if let Some(batch) = app.read(hwnd, pointer_id, false) {
+                    // Decyzja "rysuj czy przewijaj" zapada przy dotknieciu i trzyma sie
+                    // do uniesienia rysika - zmiana w polowie ruchu bylaby zaskoczeniem.
+                    if batch.buttons.barrel {
+                        app.begin_pan(&batch);
+                    } else {
+                        app.begin_stroke(&batch);
+                    }
+                    app.render();
+                }
                 LRESULT(0)
             }
             WM_POINTERUPDATE => {
-                if app.drawing {
-                    app.ingest(hwnd, pointer_id, true);
-                    app.render();
+                match app.mode {
+                    Mode::Draw => {
+                        if let Some(batch) = app.read(hwnd, pointer_id, true) {
+                            app.feed(&batch);
+                            app.render();
+                        }
+                    }
+                    Mode::Pan => {
+                        if let Some(batch) = app.read(hwnd, pointer_id, true) {
+                            app.update_pan(&batch);
+                            app.render();
+                        }
+                    }
+                    Mode::Idle => {
+                        // Hover: interesuje nas tylko stan przyciskow do HUD-u.
+                        // Render wylacznie przy zmianie - inaczej hover przy 240 Hz
+                        // zamienilby sie w petle klatkowa, ktorej unikamy (Z1).
+                        if app.pen.is_pen(pointer_id) {
+                            let b = app.pen.buttons(pointer_id).unwrap_or_default();
+                            if b != app.buttons || !app.hover {
+                                app.buttons = b;
+                                app.hover = true;
+                                app.render();
+                            }
+                        }
+                    }
                 }
                 LRESULT(0)
             }
             WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
-                if app.drawing {
-                    app.ingest(hwnd, pointer_id, true);
-                    let mut segs = std::mem::take(&mut app.commit_buf);
-                    segs.clear();
-                    app.stroke.finish(&mut segs);
-                    let _ = app.gfx.commit(&segs, app.erasing);
-                    app.commit_buf = segs;
-                    app.drawing = false;
-                    app.stroke.clear();
-                    app.render();
+                match app.mode {
+                    Mode::Draw => {
+                        if let Some(batch) = app.read(hwnd, pointer_id, true) {
+                            app.feed(&batch);
+                        }
+                        app.end_stroke();
+                        app.render();
+                    }
+                    Mode::Pan => {
+                        app.mode = Mode::Idle;
+                        app.render();
+                    }
+                    Mode::Idle => {}
                 }
+                LRESULT(0)
+            }
+            WM_POINTERENTER => {
+                app.hover = true;
+                app.render();
+                LRESULT(0)
+            }
+            WM_POINTERLEAVE => {
+                app.hover = false;
+                app.buttons = PenButtons::default();
+                app.render();
+                LRESULT(0)
+            }
+            WM_POINTERWHEEL | WM_MOUSEWHEEL => {
+                let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as f32;
+                app.set_scroll(app.scroll_y - delta / 120.0 * WHEEL_STEP_PX);
+                app.render();
                 LRESULT(0)
             }
             WM_KEYDOWN => {
@@ -492,11 +684,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     // V
                     0x56 => app.vsync = !app.vsync,
                     // C
-                    0x43 => {
-                        let _ = app.gfx.clear_canvas();
-                    }
+                    0x43 => app.clear_all(),
                     // H
                     0x48 => app.show_hud = !app.show_hud,
+                    // Ctrl+Z
+                    0x5A if ctrl_down() => app.undo(),
                     // 1 / 2 / 3
                     0x31 => {
                         app.cfg.curve = PressureCurve::Fixed;
@@ -535,6 +727,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 let w = (lparam.0 & 0xffff) as u32;
                 let h = ((lparam.0 >> 16) & 0xffff) as u32;
                 let _ = app.gfx.resize(w, h);
+                // Nowa bitmapa warstwy suchej - odtwarzamy ja z listy kresek zamiast
+                // przenosic stara, bo to daje poprawny wynik takze po przewinieciu.
+                app.dirty_dry = true;
                 app.render();
                 LRESULT(0)
             }

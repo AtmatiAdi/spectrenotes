@@ -15,11 +15,11 @@ use windows::Win32::Foundation::{HANDLE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::Pointer::{
     GetPointerDeviceRects, GetPointerInfo, GetPointerPenInfo, GetPointerPenInfoHistory,
-    GetPointerType, POINTER_INFO, POINTER_PEN_INFO,
+    GetPointerType, POINTER_FLAG_SECONDBUTTON, POINTER_INFO, POINTER_PEN_INFO,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, PEN_MASK_TILT_X, PEN_MASK_TILT_Y,
-    POINTER_INPUT_TYPE, PT_MOUSE, PT_PEN,
+    PEN_FLAG_BARREL, PEN_FLAG_ERASER, PEN_FLAG_INVERTED, PEN_MASK_PRESSURE, PEN_MASK_TILT_X,
+    PEN_MASK_TILT_Y, POINTER_INPUT_TYPE, PT_MOUSE, PT_PEN,
 };
 
 /// Zakres wspolrzednych digitizera i odpowiadajacy mu prostokat ekranu.
@@ -38,10 +38,31 @@ pub struct PenDecoder {
     scratch: Vec<POINTER_PEN_INFO>,
 }
 
+/// Stan przyciskow rysika.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PenButtons {
+    /// Przycisk boczny. Sprawdzamy dwa zrodla, bo sterowniki roznia sie tym,
+    /// ktore ustawiaja: `PEN_FLAG_BARREL` w `penFlags` albo
+    /// `POINTER_FLAG_SECONDBUTTON` w `pointerFlags` (Windows mapuje boczny
+    /// przycisk na "drugi przycisk", czyli prawy klik).
+    pub barrel: bool,
+    /// Odwrocony rysik (gumka) - w hoverze lub w kontakcie.
+    pub eraser: bool,
+}
+
+impl PenButtons {
+    fn from_info(info: &POINTER_PEN_INFO) -> Self {
+        let barrel = (info.penFlags & PEN_FLAG_BARREL) != 0
+            || (info.pointerInfo.pointerFlags & POINTER_FLAG_SECONDBUTTON).0 != 0;
+        let eraser = (info.penFlags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) != 0;
+        Self { barrel, eraser }
+    }
+}
+
 /// Co powiedzialo pioro w jednym komunikacie.
 pub struct PenBatch {
     pub samples: Vec<Sample>,
-    pub eraser: bool,
+    pub buttons: PenButtons,
     /// Ile probek faktycznie przyszlo z historii (do HUD-u).
     pub history_len: usize,
 }
@@ -55,9 +76,18 @@ impl PenDecoder {
         }
     }
 
+    /// Pioro albo mysz. Dotyk (`PT_TOUCH`) jest odrzucany tutaj i nigdzie
+    /// dalej nie istnieje - zalozenie Z10.
     pub fn is_pen(&self, pointer_id: u32) -> bool {
         let mut t = POINTER_INPUT_TYPE::default();
         unsafe { GetPointerType(pointer_id, &mut t).is_ok() && (t == PT_PEN || t == PT_MOUSE) }
+    }
+
+    /// Sam stan przyciskow, bez probek - do HUD-u w trakcie hoveru.
+    pub fn buttons(&self, pointer_id: u32) -> Option<PenButtons> {
+        let mut info = POINTER_PEN_INFO::default();
+        unsafe { GetPointerPenInfo(pointer_id, &mut info).ok()? };
+        Some(PenButtons::from_info(&info))
     }
 
     /// Odczytuje wszystkie probki zwiazane z danym komunikatem.
@@ -108,16 +138,15 @@ impl PenDecoder {
 
             let origin = client_origin(hwnd);
             let mut samples = Vec::with_capacity(self.scratch.len());
-            let mut eraser = false;
+            let mut buttons = PenButtons::default();
 
             // `scratch` jest pozyczany niemutowalnie w petli, a `self.rects` mutowalnie
             // w `to_sample`, wiec zdejmujemy bufor z `self` na czas konwersji.
             let batch = std::mem::take(&mut self.scratch);
             for info in &batch {
-                let flags = info.penFlags;
-                if (flags & (PEN_FLAG_INVERTED | PEN_FLAG_ERASER)) != 0 {
-                    eraser = true;
-                }
+                let b = PenButtons::from_info(info);
+                buttons.barrel |= b.barrel;
+                buttons.eraser |= b.eraser;
                 if let Some(s) = self.make_sample(info, origin) {
                     samples.push(s);
                 }
@@ -130,7 +159,7 @@ impl PenDecoder {
             }
             Some(PenBatch {
                 samples,
-                eraser,
+                buttons,
                 history_len,
             })
         }
