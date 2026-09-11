@@ -366,7 +366,14 @@ impl Renderer {
         ink: &InkConfig,
     ) -> Result<()> {
         let (w, h) = self.size;
-        let dy = ((cam.scroll_y - old_scroll) * cam.zoom).round();
+        let exact = (cam.scroll_y - old_scroll) * cam.zoom;
+        let dy = exact.round();
+        // Kamera kwantuje przewiniecie do pikseli (Camera::scroll_to), wiec
+        // przesuniecie jest calkowite. Gdyby nie bylo - przebudowa zamiast
+        // dryfu, ktory kumulowalby sie z kazdym krokiem.
+        if (exact - dy).abs() > 1e-3 {
+            return self.rebuild(doc, cam, ink);
+        }
         if dy == 0.0 {
             return Ok(());
         }

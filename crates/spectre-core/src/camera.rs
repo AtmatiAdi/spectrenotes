@@ -56,8 +56,14 @@ impl Camera {
     }
 
     /// Przewiniecie z ograniczeniem: gora rolki to 0, dol - koniec tresci plus zapas.
+    ///
+    /// Wynik jest kwantowany do **calych pikseli ekranu**. Warstwa sucha jest
+    /// przesuwana o calkowita liczbe pikseli, wiec kamera musi sie z nia zgadzac
+    /// co do piksela - inaczej kazdy krok mniejszy niz 0,5 px zostawialby
+    /// ulamek rozjazdu, ktory kumulowalby sie w duplikaty i zniekształcenia kresek.
     pub fn scroll_to(&mut self, y: f32, content_bottom: f32, view_h: f32) {
         let max = (content_bottom + view_h * 0.5 / self.zoom).max(0.0);
-        self.scroll_y = y.clamp(0.0, max);
+        let clamped = y.clamp(0.0, max);
+        self.scroll_y = (clamped * self.zoom).round() / self.zoom;
     }
 }

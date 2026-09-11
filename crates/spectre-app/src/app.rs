@@ -82,6 +82,9 @@ pub struct App {
     fullscreen: Fullscreen,
 
     commit_buf: Vec<Segment>,
+    /// Zakonczone kreski czekajace na wypalenie. Ida przez `render`, ZA obsluga
+    /// `dirty` - wypalenie wprost trafialoby do bitmapy sprzed przewiniecia.
+    pending_commit: Vec<(Vec<Segment>, Rgba)>,
     tail_buf: Vec<Segment>,
     hit_buf: Vec<StrokeId>,
     status: String,
@@ -144,6 +147,7 @@ impl App {
             vsync: false,
             fullscreen: Fullscreen::default(),
             commit_buf: Vec::with_capacity(4096),
+            pending_commit: Vec::new(),
             tail_buf: Vec::with_capacity(256),
             hit_buf: Vec::new(),
             status: String::new(),
@@ -218,11 +222,11 @@ impl App {
     }
 
     fn end_stroke(&mut self) {
-        self.commit_buf.clear();
-        self.stroke.finish(&mut self.commit_buf);
-        let segs = std::mem::take(&mut self.commit_buf);
-        let _ = self.renderer.commit(&segs, self.color(), &self.cam);
-        self.commit_buf = segs;
+        let mut segs = Vec::new();
+        self.stroke.finish(&mut segs);
+        if !segs.is_empty() {
+            self.pending_commit.push((segs, self.color()));
+        }
 
         let samples = self.stroke.samples().to_vec();
         self.stroke.clear();
@@ -379,6 +383,10 @@ impl App {
         }
         self.dirty = Dirty::Clean;
 
+        for (segs, color) in self.pending_commit.drain(..) {
+            let _ = self.renderer.commit(&segs, color, &self.cam);
+        }
+
         self.commit_buf.clear();
         self.tail_buf.clear();
         if self.mode == Mode::Draw {
@@ -412,7 +420,9 @@ impl App {
                 hud: hud.as_deref(),
                 cursor,
             },
-            self.vsync,
+            // Tearing tylko dla mokrego atramentu - przy przewijaniu rozdarcie
+            // klatki jest widoczne jako "przerwana" linia w polowie ekranu.
+            self.vsync || self.mode != Mode::Draw,
         );
         self.tail_buf = tail;
     }
