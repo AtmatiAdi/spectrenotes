@@ -30,13 +30,21 @@ Aplikacja **żyje w tray'u**: `Esc`, zamknięcie okna i `Win+Shift+N` chowają j
 (w tle ~2 MB), `Win+Shift+N` lub klik w ikonę odsłania w ~20 ms. Zakończenie:
 `Ctrl+Q` albo prawy klik na ikonie → Zakończ.
 
-**Pasek narzędzi** wyjeżdża, gdy rysik zbliży się do lewej krawędzi, i chowa się
-po 2,5 s bezczynności (Z7). Tytuł notatki: tap w nagłówek u góry, wpisz, `Enter`.
+**Okno nie ma systemowej ramki** — pasek tytułowy rysuje aplikacja: po lewej nazwa
+i numer notatki, na środku edytowalny tytuł (tap, wpisz, `Enter`), po prawej
+minimalizuj / maksymalizuj / zamknij (= ukryj do tray). Przeciąganie za pusty
+fragment paska, dwuklik maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
+
+**Pasek narzędzi** wyjeżdża, gdy rysik zbliży się do krawędzi, przy której jest
+zadokowany, i chowa się po 2,5 s bezczynności (Z7). **Jest dokowalny**: złap za
+uchwyt (kropki na początku paska) i upuść przy dowolnej krawędzi — góra/dół
+przełącza go w orientację poziomą. Dok i położenie okna zapisują się
+w `%APPDATA%SpectreNotesnfig.txt` (jawny `klucz=wartość`).
 
 | Sterowanie | Działanie |
 |---|---|
 | pióro | rysowanie |
-| rysik przy lewej krawędzi | pasek: pióro, gumka, kolory, grubość, undo/redo, notatki |
+| rysik przy krawędzi doku | pasek: uchwyt, pióro, gumka, kolory, grubość, undo/redo, notatki |
 | `Ctrl+kółko` | zoom wokół kursora |
 | **przycisk gumki (trzymany)** | gumka kresek — usuwa całe kreski, które dotknie |
 | **przycisk boczny (trzymany)** | przewijanie |

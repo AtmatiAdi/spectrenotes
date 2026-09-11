@@ -1,7 +1,7 @@
 //! Okno Win32 i drobiazgi wokol niego, wspolne dla aplikacji i demo.
 
 use windows::core::{Result, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
@@ -203,4 +203,141 @@ pub fn trim_working_set() {
             windows::Win32::System::Threading::GetCurrentProcess(),
         );
     }
+}
+
+// ----- okno bez systemowej ramki --------------------------------------------
+//
+// Okno zostaje WS_OVERLAPPEDWINDOW (snap, Win+strzalki, animacje, przeciaganie
+// do krawedzi dzialaja), ale WM_NCCALCSIZE oddaje caly prostokat jako obszar
+// klienta, a WM_NCHITTEST mowi systemowi, gdzie jest uchwyt do przesuwania
+// i gdzie krawedzie do zmiany rozmiaru. Ramke i przyciski rysuje aplikacja.
+
+/// Grubosc niewidzialnej ramki do zmiany rozmiaru, z uwzglednieniem DPI.
+pub fn frame_thickness(hwnd: HWND) -> i32 {
+    unsafe {
+        let dpi = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd);
+        windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi)
+            + windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+    }
+}
+
+pub fn is_maximized(hwnd: HWND) -> bool {
+    unsafe { IsZoomed(hwnd).as_bool() }
+}
+
+/// Obsluga WM_NCCALCSIZE: caly prostokat okna to obszar klienta. Przy
+/// zmaksymalizowanym oknie system wysuwa ramke poza monitor - wtedy trzeba
+/// ja odjac, inaczej tresc bylaby obcieta z czterech stron.
+pub fn nc_calc_size(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if wparam.0 == 0 {
+        return unsafe { DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam) };
+    }
+    if is_maximized(hwnd) {
+        let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+        let t = frame_thickness(hwnd);
+        unsafe {
+            let rc = &mut (*params).rgrc[0];
+            rc.left += t;
+            rc.top += t;
+            rc.right -= t;
+            rc.bottom -= t;
+        }
+    }
+    LRESULT(0)
+}
+
+/// Punkt z WM_NCHITTEST (ekran) -> wspolrzedne klienta.
+pub fn nc_point_to_client(hwnd: HWND, lparam: LPARAM) -> (f32, f32) {
+    let x = (lparam.0 & 0xffff) as u16 as i16 as i32;
+    let y = ((lparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
+    let mut p = POINT { x, y };
+    unsafe {
+        let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
+    }
+    (p.x as f32, p.y as f32)
+}
+
+/// Krawedzie i rogi do zmiany rozmiaru (HTLEFT..HTBOTTOMRIGHT), albo `None`.
+pub fn resize_hit(hwnd: HWND, cx: f32, cy: f32) -> Option<u32> {
+    if is_maximized(hwnd) {
+        return None;
+    }
+    let (w, h) = client_size(hwnd);
+    let t = frame_thickness(hwnd) as f32;
+    let left = cx < t;
+    let right = cx >= w as f32 - t;
+    let top = cy < t;
+    let bottom = cy >= h as f32 - t;
+    let ht = match (left, right, top, bottom) {
+        (true, _, true, _) => HTTOPLEFT,
+        (_, true, true, _) => HTTOPRIGHT,
+        (true, _, _, true) => HTBOTTOMLEFT,
+        (_, true, _, true) => HTBOTTOMRIGHT,
+        (true, _, _, _) => HTLEFT,
+        (_, true, _, _) => HTRIGHT,
+        (_, _, true, _) => HTTOP,
+        (_, _, _, true) => HTBOTTOM,
+        _ => return None,
+    };
+    Some(ht)
+}
+
+/// Po podmianie procedury okna: wymusza ponowne policzenie ramki.
+pub fn apply_frame_change(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Polozenie okna do zapisu w konfiguracji: `x,y,w,h,max`.
+pub fn placement_string(hwnd: HWND) -> Option<String> {
+    let mut wp = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        GetWindowPlacement(hwnd, &mut wp).ok()?;
+    }
+    let r = wp.rcNormalPosition;
+    let max = wp.showCmd == SW_SHOWMAXIMIZED.0 as u32;
+    Some(format!(
+        "{},{},{},{},{}",
+        r.left,
+        r.top,
+        r.right - r.left,
+        r.bottom - r.top,
+        max as u8
+    ))
+}
+
+/// Odtworzenie polozenia zapisanego przez `placement_string`.
+pub fn apply_placement(hwnd: HWND, s: &str) -> bool {
+    let v: Vec<i32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    if v.len() != 5 || v[2] < 200 || v[3] < 150 {
+        return false;
+    }
+    let wp = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        showCmd: if v[4] != 0 {
+            SW_SHOWMAXIMIZED.0 as u32
+        } else {
+            SW_SHOWNORMAL.0 as u32
+        },
+        rcNormalPosition: RECT {
+            left: v[0],
+            top: v[1],
+            right: v[0] + v[2],
+            bottom: v[1] + v[3],
+        },
+        ..Default::default()
+    };
+    unsafe { SetWindowPlacement(hwnd, &wp).is_ok() }
 }

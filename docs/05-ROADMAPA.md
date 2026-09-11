@@ -59,6 +59,11 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       kolory, grubość, undo/redo, poprzednia/następna/nowa notatka
 - [x] Tytuł notatki: tap w nagłówek, edycja z klawiatury, `Enter`/`Esc`
 - [x] Zoom `Ctrl+kółko` wokół kursora
+- [x] Okno bez systemowej ramki (WM_NCCALCSIZE/NCHITTEST): własny pasek tytułowy
+      z tytułem notatki i przyciskami okna; snap i Win+strzałki zachowane
+- [x] Pasek narzędzi dokowalny do 4 krawędzi (przeciąganie za uchwyt), orientacja
+      pozioma dla góra/dół; dok i położenie okna w `config.txt`
+- [ ] Więcej narzędzi (zaznaczanie, kształty) — po Etapie 5, wymaga `StrokeTransform`
 - [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
 - [ ] Lista notatek (na razie tylko poprzednia/następna)
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne

@@ -18,7 +18,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::ui::{Action, Toolbar, UiState};
+use crate::config::Config;
+use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
 const PALETTE: [Rgba; 6] = [
@@ -47,6 +48,8 @@ enum Mode {
     Draw,
     Erase,
     Pan,
+    /// Przeciaganie paska narzedzi za uchwyt do innej krawedzi.
+    DragBar,
 }
 
 /// Co trzeba zrobic z warstwa sucha przed nastepna klatka.
@@ -113,6 +116,7 @@ pub struct App {
     fullscreen: Fullscreen,
 
     toolbar: Toolbar,
+    config: Config,
     ui_prims: Vec<UiPrim>,
     _tray: Tray,
     hidden: bool,
@@ -141,9 +145,20 @@ pub fn install(hwnd: HWND, space_dir: &Path) -> Result<()> {
     eprintln!("space: {}", space_dir.display());
     eprintln!("autor: {}", app.author.dir_name());
     eprintln!("hotkey: Win+Shift+N   tray: klik = pokaz/ukryj, prawy = menu");
+    let placement = app.config.get("window").map(str::to_string);
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(app) as isize);
-        let _ = ShowWindow(hwnd, SW_SHOW);
+    }
+    // Od teraz WM_NCCALCSIZE obsluguje aplikacja - system musi przeliczyc ramke.
+    window::apply_frame_change(hwnd);
+    let restored = placement
+        .as_deref()
+        .map(|p| window::apply_placement(hwnd, p))
+        .unwrap_or(false);
+    if !restored {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
     }
     if let Err(e) = tray::register_toggle_hotkey(hwnd, 'N') {
         eprintln!("hotkey Win+Shift+N zajety: {e}");
@@ -168,7 +183,12 @@ impl App {
         let tray = Tray::add(hwnd, "SpectreNotes")
             .map_err(|e| std::io::Error::other(format!("tray: {e}")))?;
         let ink = InkConfig::default();
-        let mut toolbar = Toolbar::new();
+        let config = Config::load();
+        let dock = config
+            .get("dock")
+            .and_then(Dock::parse)
+            .unwrap_or(Dock::Left);
+        let mut toolbar = Toolbar::new(dock);
         toolbar.layout(w as f32, h as f32, PALETTE.len());
 
         Ok(Self {
@@ -198,6 +218,7 @@ impl App {
             pan_tearing: true,
             fullscreen: Fullscreen::default(),
             toolbar,
+            config,
             ui_prims: Vec::with_capacity(64),
             _tray: tray,
             hidden: false,
@@ -242,6 +263,9 @@ impl App {
     /// Przycisk trzymany = funkcja. Zmiana w trakcie ruchu konczy biezaca
     /// akcje i zaczyna nowa od tej samej probki.
     fn apply_buttons(&mut self, batch: &PenBatch) -> bool {
+        if self.mode == Mode::DragBar {
+            return false; // przyciski nie przerywaja przenoszenia paska
+        }
         let want = if batch.buttons.barrel {
             Mode::Pan
         } else if batch.buttons.eraser || self.eraser_tool {
@@ -257,7 +281,7 @@ impl App {
             Mode::Draw => self.begin_stroke(batch),
             Mode::Erase => self.begin_erase(batch),
             Mode::Pan => self.begin_pan(batch),
-            Mode::Idle => {}
+            Mode::Idle | Mode::DragBar => {}
         }
         true
     }
@@ -266,6 +290,7 @@ impl App {
         match self.mode {
             Mode::Draw => self.end_stroke(),
             Mode::Erase => self.last_erase_canvas = None,
+            Mode::DragBar => self.end_drag_bar(),
             Mode::Pan | Mode::Idle => {}
         }
         self.mode = Mode::Idle;
@@ -404,6 +429,7 @@ impl App {
             notes_len: self.notes.len(),
             title: "",
             zoom: self.cam.zoom,
+            maximized: window::is_maximized(self.hwnd),
         }
     }
 
@@ -419,6 +445,11 @@ impl App {
             return false;
         };
         match action {
+            Action::Grip => {
+                self.end_action();
+                self.mode = Mode::DragBar;
+                self.toolbar.dragging = Some((x, y));
+            }
             Action::Pen => self.eraser_tool = false,
             Action::Eraser => self.eraser_tool = true,
             Action::Color(i) => {
@@ -432,15 +463,51 @@ impl App {
             Action::PrevNote => self.switch_note(self.note_idx.saturating_sub(1)),
             Action::NextNote => self.switch_note(self.note_idx + 1),
             Action::NewNote => self.new_note(),
-            Action::EditTitle => {
+        }
+        self.arm_ui_timer();
+        true
+    }
+
+    /// Dotkniecie paska tytulowego: przyciski okna albo edycja tytulu.
+    fn title_tap(&mut self, action: TitleAction) {
+        match action {
+            TitleAction::EditTitle => {
                 self.toolbar.title_edit = Some(self.title());
                 unsafe {
                     let _ = SetFocus(Some(self.hwnd));
                 }
             }
+            TitleAction::Minimize => unsafe {
+                let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
+            },
+            TitleAction::Maximize => unsafe {
+                let cmd = if window::is_maximized(self.hwnd) {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                };
+                let _ = ShowWindow(self.hwnd, cmd);
+            },
+            TitleAction::Close => self.hide(),
         }
+    }
+
+    fn end_drag_bar(&mut self) {
+        let (x, y) = self.last_screen;
+        if self.toolbar.drop_at(x, y, PALETTE.len()) {
+            self.config.set("dock", self.toolbar.dock.name());
+            self.config.save();
+        }
+        self.toolbar.visible = true;
         self.arm_ui_timer();
-        true
+    }
+
+    fn save_placement(&mut self) {
+        if let Some(p) = window::placement_string(self.hwnd) {
+            self.config.set("window", p);
+        }
+        self.config.set("dock", self.toolbar.dock.name());
+        self.config.save();
     }
 
     fn set_width(&mut self, w: f32) {
@@ -536,6 +603,7 @@ impl App {
         self.end_action();
         self.commit_title();
         self.sync_now();
+        self.save_placement();
         self.hidden = true;
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -654,6 +722,7 @@ impl App {
     fn hud_text(&self) -> String {
         let tool = match self.mode {
             Mode::Pan => "PRZEWIJANIE".to_string(),
+            Mode::DragBar => "PRZENOSZENIE PASKA".to_string(),
             Mode::Erase => "GUMKA".to_string(),
             Mode::Draw => format!("pioro #{}", self.color_idx + 1),
             Mode::Idle if self.buttons.eraser || self.eraser_tool => "gumka".to_string(),
@@ -735,7 +804,9 @@ pub unsafe extern "system" fn wndproc(
         WM_POINTERDOWN => {
             if let Some(batch) = app.read(pointer_id, false) {
                 let (x, y) = app.last_screen;
-                if app.toolbar.pointer_inside(x, y) {
+                if let Some(t) = app.toolbar.title_hit(x, y) {
+                    app.title_tap(t);
+                } else if app.toolbar.pointer_inside(x, y) {
                     app.toolbar_tap(x, y);
                 } else {
                     if app.toolbar.title_edit.is_some() {
@@ -795,6 +866,7 @@ pub unsafe extern "system" fn wndproc(
                                 Mode::Draw => app.feed(&batch),
                                 Mode::Erase => app.erase_with(&batch),
                                 Mode::Pan => app.update_pan(&batch),
+                                Mode::DragBar => app.toolbar.dragging = Some(app.last_screen),
                                 Mode::Idle => {}
                             }
                         }
@@ -908,9 +980,11 @@ pub unsafe extern "system" fn wndproc(
                         app.switch_note(i);
                     } else if vk == VK_F11 {
                         app.fullscreen.toggle(hwnd);
+                        app.toolbar.title_bar = !app.fullscreen.is_active();
                     } else if vk == VK_ESCAPE {
                         if app.fullscreen.is_active() {
                             app.fullscreen.toggle(hwnd);
+                            app.toolbar.title_bar = true;
                         } else {
                             app.hide();
                             return LRESULT(0);
@@ -940,6 +1014,18 @@ pub unsafe extern "system" fn wndproc(
                 _ => {}
             }
             LRESULT(0)
+        }
+        WM_NCCALCSIZE => window::nc_calc_size(hwnd, wparam, lparam),
+        WM_NCHITTEST => {
+            let (x, y) = window::nc_point_to_client(hwnd, lparam);
+            if let Some(ht) = window::resize_hit(hwnd, x, y) {
+                return LRESULT(ht as isize);
+            }
+            // Pasek tytulowy bez przyciskow i tytulu = uchwyt do przesuwania okna.
+            if app.toolbar.in_title_bar(x, y) && app.toolbar.title_hit(x, y).is_none() {
+                return LRESULT(HTCAPTION as isize);
+            }
+            LRESULT(HTCLIENT as isize)
         }
         WM_CLOSE => {
             app.hide();
@@ -995,6 +1081,7 @@ pub unsafe extern "system" fn wndproc(
             if !ptr.is_null() {
                 let mut app = Box::from_raw(ptr);
                 app.end_action();
+                app.save_placement();
                 app.commit_title();
                 app.sync_now();
                 drop(app);

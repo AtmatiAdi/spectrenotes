@@ -10,6 +10,7 @@
 
 mod app;
 mod bench;
+mod config;
 mod ui;
 
 use std::path::PathBuf;
