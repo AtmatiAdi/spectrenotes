@@ -7,3 +7,6 @@ license.workspace = true
 
 [dependencies]
 spectre-proto = { path = "../spectre-proto" }
+
+[dev-dependencies]
+proptest = "1"

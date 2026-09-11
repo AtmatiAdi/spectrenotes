@@ -24,27 +24,19 @@ impl Point {
     }
 }
 
-/// Pojedyncza probka piora, dokladnie tak jak zaraportowal ja digitizer.
-///
+/// Probka piora - typ kanoniczny zyje w `spectre-proto`, bo jest czescia formatu.
 /// `x`/`y` sa juz przeliczone z `ptHimetricLocationRaw` na piksele, wiec maja
 /// czesc ulamkowa - to jest cala roznica miedzy gladka a schodkowana kreska
 /// (patrz `docs/02-PIORO-I-LATENCJA.md`).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Sample {
-    pub x: f32,
-    pub y: f32,
-    /// Znormalizowany nacisk 0.0..1.0 (Windows raportuje 0..1024).
-    pub pressure: f32,
-    /// Pochylenie w stopniach, -90..90.
-    pub tilt_x: f32,
-    pub tilt_y: f32,
-    /// Znacznik czasu w mikrosekundach, z zegara o wysokiej rozdzielczosci.
-    pub t_us: u64,
+pub use spectre_proto::Sample;
+
+pub trait SampleExt {
+    fn point(&self) -> Point;
 }
 
-impl Sample {
+impl SampleExt for Sample {
     #[inline]
-    pub fn point(&self) -> Point {
+    fn point(&self) -> Point {
         Point::new(self.x, self.y)
     }
 }

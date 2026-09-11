@@ -5,5 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# Zero zaleznosci - to jest jedno zrodlo prawdy dla formatu on-disk i wire,
+# musi dac sie skompilowac i przeczytac wszedzie (docs/03-FORMAT-I-SYNC.md).
 [dependencies]
 
+[dev-dependencies]
+proptest = "1"

@@ -1,6 +1,6 @@
 use crate::curve::{self, PressureCurve};
 use crate::filter::{LinearPredictor, OneEuro};
-use crate::sample::{Point, Sample};
+use crate::sample::{Point, Sample, SampleExt};
 
 /// Kawalek kreski gotowy do narysowania: odcinek o zadanej szerokosci.
 ///

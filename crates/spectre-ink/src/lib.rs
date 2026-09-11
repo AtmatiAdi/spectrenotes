@@ -15,5 +15,5 @@ pub mod stroke;
 
 pub use curve::PressureCurve;
 pub use filter::{LinearPredictor, OneEuro};
-pub use sample::{Point, Sample};
+pub use sample::{Point, Sample, SampleExt};
 pub use stroke::{InkConfig, Segment, StrokeBuilder};

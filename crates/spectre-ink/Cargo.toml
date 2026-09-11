@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Zero zaleznosci i zero kodu platformowego - ten crate musi dac sie skompilowac
-# wszedzie, bo od niego zalezy przenosnosc rdzenia (patrz docs/01-ARCHITEKTURA.md).
+# Zero kodu platformowego - ten crate musi dac sie skompilowac wszedzie,
+# bo od niego zalezy przenosnosc rdzenia (patrz docs/01-ARCHITEKTURA.md).
 [dependencies]
+spectre-proto = { path = "../spectre-proto" }
