@@ -4,9 +4,9 @@ Notatnik rysunkowy dla Windows na ekrany AMOLED i pióra MPP 2.0.
 Własny zamiennik Samsung Notes — bez zależności od cudzej chmury i cudzej decyzji
 o tym, które komputery są wystarczająco właściwe, żeby uruchomić aplikację.
 
-**Stan: Etapy 0–1 zamknięte, 2–3 częściowo.** Etap 0 dał 266 Hz próbkowania
-i pozytywny werdykt odczucia. Działa aplikacja z trwałymi notatkami na dysku
-(`docs/05-ROADMAPA.md`).
+**Stan: Etapy 0–1 zamknięte, 2–4 w większości.** 266 Hz próbkowania, pozytywny werdykt
+odczucia (tag `v0.1-latency-baseline`), trwałe notatki, pasek narzędzi, rezydentność
+w tray'u: 2 MB w tle, 20 ms do klatki po hotkeyu (`docs/05-ROADMAPA.md`).
 
 ## Uruchomienie
 
