@@ -14,7 +14,7 @@ use spectre_render::UiPrim;
 /// Grubosc paska narzedzi w osi poprzecznej.
 pub const BAR_THICK: f32 = 56.0;
 /// Strefa przy krawedzi, ktora odslania pasek.
-pub const EDGE_ZONE: f32 = 10.0;
+pub const EDGE_ZONE: f32 = 18.0;
 pub const ITEM_LEN: f32 = 44.0;
 pub const COLOR_LEN: f32 = 30.0;
 pub const GRIP_LEN: f32 = 22.0;

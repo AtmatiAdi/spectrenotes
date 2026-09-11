@@ -892,6 +892,21 @@ pub unsafe extern "system" fn wndproc(
             }
             LRESULT(0)
         }
+        // Rysik nad niewidzialna ramka do zmiany rozmiaru: obszar nieklientowy,
+        // wiec zwykly WM_POINTERUPDATE nie przychodzi. Hover ma tam nadal odslaniac pasek.
+        WM_NCPOINTERUPDATE => {
+            let (x, y) = window::nc_point_to_client(hwnd, lparam);
+            let ui_changed = app.toolbar.hover(x, y);
+            app.last_screen = (x, y);
+            app.hover = true;
+            if ui_changed {
+                if app.toolbar.visible {
+                    app.arm_ui_timer();
+                }
+                app.render();
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_POINTERENTER => {
             app.hover = true;
             LRESULT(0)
