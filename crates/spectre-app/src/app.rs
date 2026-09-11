@@ -120,7 +120,10 @@ pub struct App {
     last_screen: (f32, f32),
     /// Ostatnia pozycja gumki w canvasie - poczatek nastepnej kapsuly hit-testu.
     last_erase_canvas: Option<(f32, f32)>,
-    pan_start: (f32, f32),
+    /// Poczatek przewijania rysikiem: (pozycja ekranowa, (scroll_x, scroll_y)).
+    pan_start: ((f32, f32), (f32, f32)),
+    /// Zoom "dopasuj szerokosc" aktywny - podaza za rozmiarem okna.
+    fit_zoom: bool,
 
     dirty: Dirty,
     show_hud: bool,
@@ -216,6 +219,8 @@ impl App {
         toolbar.layout(w as f32, h as f32, PALETTE.len());
         let mut menu = Menu::new();
         menu.layout(w as f32, h as f32, toolbar.content_top());
+        let mut cam = Camera::default();
+        cam.fit_width(w as f32);
 
         Ok(Self {
             hwnd,
@@ -226,7 +231,7 @@ impl App {
             note_idx,
             store,
             doc,
-            cam: Camera::default(),
+            cam,
             renderer,
             pen: PenDecoder::new(window::qpc_freq()),
             ink,
@@ -238,7 +243,8 @@ impl App {
             hover: false,
             last_screen: (0.0, 0.0),
             last_erase_canvas: None,
-            pan_start: (0.0, 0.0),
+            pan_start: ((0.0, 0.0), (0.0, 0.0)),
+            fit_zoom: true,
             dirty: Dirty::Full,
             show_hud: false,
             vsync: false,
@@ -402,15 +408,18 @@ impl App {
 
     fn begin_pan(&mut self, batch: &PenBatch) {
         if let Some(s) = batch.samples.last() {
-            self.pan_start = (s.y, self.cam.scroll_y);
+            self.pan_start = ((s.x, s.y), (self.cam.scroll_x, self.cam.scroll_y));
             self.mode = Mode::Pan;
         }
     }
 
     fn update_pan(&mut self, batch: &PenBatch) {
         if let Some(s) = batch.samples.last() {
-            let target = self.pan_start.1 - (s.y - self.pan_start.0) / self.cam.zoom;
-            self.scroll_to(target);
+            let ((sx0, sy0), (cx0, cy0)) = self.pan_start;
+            let target_y = cy0 - (s.y - sy0) / self.cam.zoom;
+            self.scroll_to(target_y);
+            let target_x = cx0 - (s.x - sx0) / self.cam.zoom;
+            self.scroll_x_to(target_x);
         }
     }
 
@@ -429,19 +438,48 @@ impl App {
         }
     }
 
+    /// Przesuniecie w poziomie (tylko gdy kolumna jest szersza niz okno).
+    /// Warstwa sucha nie ma sciezki przyrostowej dla osi X - pelna przebudowa,
+    /// ktora po Etapie 2 kosztuje pojedyncze ms.
+    fn scroll_x_to(&mut self, x: f32) {
+        let old = self.cam.scroll_x;
+        let w = self.renderer.size().0 as f32;
+        self.cam.scroll_x_to(x, w, self.doc.content_bbox());
+        if (self.cam.scroll_x - old).abs() > f32::EPSILON {
+            self.dirty = Dirty::Full;
+        }
+    }
+
     /// Zoom wokol punktu ekranu (kursora), zeby tresc pod rysikiem stala w miejscu.
     fn zoom_at(&mut self, factor: f32, sx: f32, sy: f32) {
         let new_zoom = (self.cam.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
         if (new_zoom - self.cam.zoom).abs() < 1e-4 {
             return;
         }
-        let (_, cy) = self.cam.to_canvas(sx, sy);
+        self.fit_zoom = false;
+        let (cx, cy) = self.cam.to_canvas(sx, sy);
         self.cam.zoom = new_zoom;
         // Po zmianie zoomu ten sam punkt canvasu ma zostac pod kursorem.
         let scroll = cy - (sy - self.cam.shift.1) / new_zoom;
         let bottom = self.doc.content_bottom();
         let h = self.view_h();
         self.cam.scroll_to(scroll, bottom, h);
+        let w = self.renderer.size().0 as f32;
+        let scroll_x = cx - (sx - self.cam.shift.0) / new_zoom;
+        self.cam.scroll_x_to(scroll_x, w, self.doc.content_bbox());
+        self.dirty = Dirty::Full;
+    }
+
+    /// Zoom "dopasuj szerokosc" (Z9): kolumna na cala szerokosc okna. Domyslny
+    /// tryb - trzyma sie przy zmianie rozmiaru okna, dopoki uzytkownik nie
+    /// przyblizy recznie. `0` wraca do niego.
+    fn fit_width(&mut self) {
+        self.fit_zoom = true;
+        let w = self.renderer.size().0 as f32;
+        self.cam.fit_width(w);
+        let bottom = self.doc.content_bottom();
+        let h = self.view_h();
+        self.cam.scroll_to(self.cam.scroll_y, bottom, h);
         self.dirty = Dirty::Full;
     }
 
@@ -710,7 +748,7 @@ impl App {
                 self.doc = doc;
                 self.note_idx = idx;
                 self.cam = Camera::default();
-                self.dirty = Dirty::Full;
+                self.fit_width();
                 self.status.clear();
                 self.sync_entry();
             }
@@ -1272,6 +1310,8 @@ pub unsafe extern "system" fn wndproc(
             match vk.0 {
                 // M
                 0x4D => app.menu.toggle(),
+                // 0 - dopasuj szerokosc kolumny do okna
+                0x30 => app.fit_width(),
                 0x31..=0x36 => {
                     app.color_idx = (vk.0 - 0x31) as usize;
                     app.eraser_tool = false;
@@ -1388,6 +1428,11 @@ pub unsafe extern "system" fn wndproc(
             let h = ((lparam.0 >> 16) & 0xffff) as u32;
             if let Ok(true) = app.renderer.resize(w, h) {
                 app.dirty = Dirty::Full;
+                if app.fit_zoom {
+                    app.fit_width();
+                } else {
+                    app.scroll_x_to(app.cam.scroll_x);
+                }
             }
             app.relayout();
             app.render();

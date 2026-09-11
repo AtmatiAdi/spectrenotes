@@ -95,8 +95,12 @@ Konsekwencje:
 - pixel shift (Z7) działa nadal, bo tło jest czarne i krawędzie „kartki" nie są
   widoczne: przesuwamy zawartość, a nie ramkę. Poziomy dryf wymaga tylko tego,
   żeby renderer nie zakładał, że kolumna treści jest przyklejona do krawędzi okna.
-- do ustalenia przy Etapie 2: szerokość kolumny w jednostkach canvasu i to,
-  jak zachowuje się przy zmianie zoomu oraz na monitorze zewnętrznym.
+- **ustalone (Etap 2):** kolumna ma 2880 jednostek canvasu — tyle, żeby na
+  docelowym panelu 2880 px zoom „dopasuj szerokość" wynosił 1,0 i pióro miało
+  dokładnie tę grubość, która została oceniona jako dobra. Na innym oknie/monitorze
+  domyślnie dopasowanie do szerokości; ręczny zoom wyłącza podążanie za oknem,
+  `0` je przywraca. Przy zoomie większym niż dopasowanie przycisk boczny przewija
+  także w poziomie.
 
 ### Z10. Dotyk wyłączony w trybie notatki
 Rysuje **wyłącznie** pióro. Dotyk jest ignorowany całkowicie, nie warunkowo.

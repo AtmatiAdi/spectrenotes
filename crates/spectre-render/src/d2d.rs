@@ -512,7 +512,7 @@ impl Renderer {
             M12: 0.0,
             M21: 0.0,
             M22: cam.zoom,
-            M31: cam.shift.0,
+            M31: cam.shift.0 - cam.scroll_x * cam.zoom,
             M32: cam.shift.1 - cam.scroll_y * cam.zoom,
         });
         let mut res = Ok(());

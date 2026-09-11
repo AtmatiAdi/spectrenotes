@@ -55,9 +55,9 @@ Dotknięcie poza panelem zamyka go.
 |---|---|
 | pióro | rysowanie |
 | rysik przy krawędzi doku | pasek: uchwyt, pióro, gumka, kolory, grubość, undo/redo, notatki |
-| `Ctrl+kółko` | zoom wokół kursora |
+| `Ctrl+kółko`, `0` | zoom wokół kursora, powrót do „dopasuj szerokość" (kolumna 2880 jednostek) |
 | **przycisk gumki (trzymany)** | gumka kresek — usuwa całe kreski, które dotknie |
-| **przycisk boczny (trzymany)** | przewijanie |
+| **przycisk boczny (trzymany)** | przewijanie (także w poziomie, gdy kolumna jest szersza niż okno) |
 | kółko myszy, `Home` | przewijanie, powrót na górę |
 | `1`–`6` | kolor (paleta pod AMOLED) |
 | `E` | gumka z klawiatury |

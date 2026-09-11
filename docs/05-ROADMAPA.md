@@ -46,7 +46,11 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [x] Rampa przygaszania: po 3 min bez wejścia płynnie (2 s) do 40 %, powrót przy
       pierwszym ruchu; czarna warstwa w `present`, nie jasność panelu. Timery gasną
       przy ukryciu okna (Z2: zero wybudzeń w tle)
-- [ ] Szerokość kolumny (Z9) w jednostkach canvasu i zachowanie przy zmianie zoomu
+- [x] Szerokość kolumny (Z9): `COLUMN_W = 2880` jednostek (na docelowym panelu zoom
+      „dopasuj szerokość" = 1,0). Domyślnie dopasowanie do okna, trzymane przy zmianie
+      rozmiaru do pierwszego ręcznego zoomu; `0` wraca. Kolumna węższa niż okno jest
+      wyśrodkowana; szersza — przewijana w poziomie przyciskiem bocznym (zakres
+      poszerzony o treść poza kolumną, żeby wszystko było osiągalne)
 - [ ] Kryterium: 100 000 stroke'ów przy 120 fps — do zmierzenia
 - [ ] Weryfikacja wyjścia okna przy przenoszeniu na monitor z dGPU
 

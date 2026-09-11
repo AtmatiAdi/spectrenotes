@@ -345,6 +345,16 @@ impl Document {
     pub fn content_bottom(&self) -> f32 {
         self.visible().map(|(_, _, b)| b.max_y).fold(0.0, f32::max)
     }
+
+    /// Obwiednia calej zywej tresci; `None` dla pustej notatki.
+    pub fn content_bbox(&self) -> Option<Bbox> {
+        self.visible().map(|(_, _, b)| *b).reduce(|a, b| Bbox {
+            min_x: a.min_x.min(b.min_x),
+            min_y: a.min_y.min(b.min_y),
+            max_x: a.max_x.max(b.max_x),
+            max_y: a.max_y.max(b.max_y),
+        })
+    }
 }
 
 #[cfg(test)]
