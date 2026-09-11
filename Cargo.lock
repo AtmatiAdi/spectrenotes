@@ -85,6 +85,7 @@ name = "inkdemo"
 version = "0.1.0"
 dependencies = [
  "spectre-ink",
+ "spectre-shell-win",
  "windows",
  "windows-numerics",
 ]
@@ -255,9 +256,11 @@ version = "0.1.0"
 dependencies = [
  "spectre-core",
  "spectre-ink",
+ "spectre-proto",
  "spectre-render",
  "spectre-shell-win",
  "spectre-sync",
+ "windows",
 ]
 
 [[package]]
@@ -288,14 +291,17 @@ version = "0.1.0"
 dependencies = [
  "spectre-core",
  "spectre-ink",
+ "spectre-proto",
+ "windows",
+ "windows-numerics",
 ]
 
 [[package]]
 name = "spectre-shell-win"
 version = "0.1.0"
 dependencies = [
- "spectre-ink",
- "spectre-render",
+ "spectre-proto",
+ "windows",
 ]
 
 [[package]]

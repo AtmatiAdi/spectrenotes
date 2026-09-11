@@ -4,19 +4,46 @@ Notatnik rysunkowy dla Windows na ekrany AMOLED i pióra MPP 2.0.
 Własny zamiennik Samsung Notes — bez zależności od cudzej chmury i cudzej decyzji
 o tym, które komputery są wystarczająco właściwe, żeby uruchomić aplikację.
 
-**Stan: Etap 0** — weryfikacja odczucia pióra. Reszta jest zaprojektowana, ale
-świadomie jeszcze nie zbudowana (`docs/05-ROADMAPA.md`).
+**Stan: Etapy 0–1 zamknięte, 2–3 częściowo.** Etap 0 dał 266 Hz próbkowania
+i pozytywny werdykt odczucia. Działa aplikacja z trwałymi notatkami na dysku
+(`docs/05-ROADMAPA.md`).
 
-## Uruchomienie demo
+## Uruchomienie
 
 ```
-.\dev.cmd -Demo
+.\dev.cmd -App      # SpectreNotes
+.\dev.cmd -Demo     # demo odczucia pióra (Etap 0, narzędzie diagnostyczne)
 ```
 
 `dev.cmd` (wrapper na `dev.ps1`) sprawdza toolchain, dodaje `cargo` do PATH sesji
-i odpala demo. `.\dev.cmd -Install` doinstalowuje braki (rustup, VS Build Tools),
-`.\dev.cmd -Persist` dopisuje `.cargo\bin` do PATH użytkownika na stałe.
-Gdy `cargo` jest już w PATH: `cargo run --release -p inkdemo`.
+i odpala wybraną binarkę. `.\dev.cmd -Install` doinstalowuje braki (rustup, VS Build
+Tools), `.\dev.cmd -Persist` dopisuje `.cargo\bin` do PATH użytkownika na stałe.
+Gdy `cargo` jest już w PATH: `cargo run --release -p spectre-app`.
+
+### Aplikacja
+
+Notatki leżą w `%APPDATA%\SpectreNotes\spaces\default` (inna ścieżka: pierwszy
+argument). Każda kreska trafia do pliku autora natychmiast po zakończeniu,
+`fsync` po 400 ms ciszy — wyrwanie zasilania gubi co najwyżej ostatnie pociągnięcie.
+
+| Sterowanie | Działanie |
+|---|---|
+| pióro | rysowanie |
+| **przycisk gumki (trzymany)** | gumka kresek — usuwa całe kreski, które dotknie |
+| **przycisk boczny (trzymany)** | przewijanie |
+| kółko myszy, `Home` | przewijanie, powrót na górę |
+| `1`–`6` | kolor (paleta pod AMOLED) |
+| `E` | gumka z klawiatury |
+| `[` `]` | grubość |
+| `Ctrl+Z` / `Ctrl+Y` | cofnij / ponów (cofnięcie wymazania odtwarza kreskę) |
+| `PgUp` / `PgDn` | poprzednia / następna notatka |
+| `Ctrl+N` | nowa notatka |
+| `F11`, `H`, `V`, `Esc` | pełny ekran, HUD, vsync, wyjście |
+
+Przyciski rysika działają w każdym momencie: wciśnięcie w trakcie kreski kończy
+ją i od razu zaczyna nową rolę. Dotyk palcem jest ignorowany całkowicie (Z10).
+
+### Demo (Etap 0)
 
 Czarny canvas, rysuj piórem. `F11` = pełny ekran, `H` chowa HUD.
 
@@ -69,20 +96,25 @@ Bezwzględnej latencji pen-to-photon HUD nie zmierzy — to się robi kamerą 24
 
 ```
 crates/
-  spectre-proto      format on-disk i wire (jedno zrodlo prawdy)
-  spectre-core       op-log CRDT, zegar Lamporta, undo, kamera
-  spectre-ink        probki -> krzywa nacisku -> interpolacja -> geometria   [dziala]
-  spectre-render     wgpu: cache kafli, warstwa mokra/sucha, AMOLED
-  spectre-sync       git (gix) + live P2P (quinn/QUIC)
-  spectre-shell-win  okno Win32, WM_POINTER, tray, hotkey, DXGI
-  spectre-app        binarka spinajaca calosc
+  spectre-proto      format .ops: varint, CRC32, kodowanie probek, odzysk po awarii  [dziala]
+  spectre-core       op-log CRDT, zegar Lamporta, undo/redo, hit-test, kamera      [dziala]
+  spectre-ink        probki -> krzywa nacisku -> interpolacja -> geometria         [dziala]
+  spectre-sync       lokalny store (space/notatka/autor); git i QUIC: Etapy 5-6    [lokalnie]
+  spectre-render     Direct2D na DXGI flip-model, przewijanie przyrostowe          [dziala]
+  spectre-shell-win  okno Win32, WM_POINTER, DPI, feedback piora, pelny ekran      [dziala]
+  spectre-app        binarka `spectrenotes`                                       [dziala]
 tools/
-  inkdemo            demo odczucia piora (Etap 0)                            [dziala]
+  inkdemo            demo odczucia piora (Etap 0)                                 [dziala]
 docs/                zalozenia, architektura, ADR-y
 ```
 
 `spectre-proto`, `-core`, `-ink` i `-sync` nie mają żadnej zależności od Windows.
-To jest cała przenośność rdzenia: port polega na napisaniu nowego `spectre-shell-*`.
+To jest cała przenośność rdzenia: port polega na napisaniu nowego `spectre-shell-*`
+i `spectre-render-*` (ADR 0005).
+
+Testy: `cargo test --workspace` — w tym testy własności (proptest) dla formatu
+(roundtrip, obcięte bajty) i dla CRDT (przemienność dla losowych permutacji,
+idempotencja).
 
 ## Dokumentacja
 

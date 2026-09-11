@@ -1,11 +1,16 @@
-//! Git (gix) jako warstwa trwala + QUIC (quinn) jako warstwa live.
+//! Warstwa trwala i (docelowo) live.
 //!
-//! Model repozytorium i dowod, ze konflikt merge jest strukturalnie niemozliwy:
-//! `docs/03-FORMAT-I-SYNC.md` oraz `docs/adr/0003-git-jako-warstwa-trwala.md`.
+//! Dzis: lokalny store notatek w ukladzie z `docs/03-FORMAT-I-SYNC.md` -
+//! space to katalog, notatka to katalog, kazdy autor pisze wylacznie do
+//! wlasnych plikow `.ops`. Ten uklad jest juz gotowy pod git (Etap 5) i pod
+//! QUIC (Etap 6): obie warstwy widza te same bajty operacji.
 //!
-//! Do zrobienia w Etapach 3, 5 i 6:
-//! - zapis/odczyt `.ops`, snapshoty, obcinanie uszkodzonego ogona
-//! - commit na idle, kolejka offline, fetch/merge/push
-//! - QUIC po Tailscale, mDNS w LAN, kanal obecnosci na datagramach
-//!
-//! Twarda zasada: nic z tego crate.a nie moze zablokowac watku wejscia ani renderu.
+//! Twarda zasada: nic z tego crate'a nie moze zablokowac watku wejscia ani
+//! renderu. `NoteStore::append` tylko buforuje; `sync` woła aplikacja na idle.
+
+pub mod author;
+pub mod store;
+pub mod ulid;
+
+pub use author::AuthorName;
+pub use store::{NoteStore, Space};

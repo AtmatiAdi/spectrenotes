@@ -4,6 +4,7 @@
 
 .DESCRIPTION
   Bez parametrow: sprawdza toolchain i dodaje cargo do PATH biezacej sesji.
+  -App       uruchamia SpectreNotes (release)
   -Demo      uruchamia demo odczucia piora (release)
   -Install   doinstalowuje brakujace elementy (rustup, VS Build Tools C++)
   -Persist   dopisuje .cargo\bin do PATH uzytkownika na stale
@@ -13,6 +14,7 @@
 #>
 param(
     [switch]$Demo,
+    [switch]$App,
     [switch]$Install,
     [switch]$Persist
 )
@@ -83,7 +85,12 @@ if (-not $haveCargo -or -not $haveMsvc) {
     return
 }
 
-# --- Demo --------------------------------------------------------------------
+# --- Uruchomienie ---------------------------------------------------------------
+if ($App) {
+    Push-Location $root
+    try { cargo run --release -p spectre-app } finally { Pop-Location }
+    return
+}
 if ($Demo) {
     Push-Location $root
     try {

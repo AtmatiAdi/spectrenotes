@@ -1,11 +1,16 @@
-//! Renderer wgpu: cache kafli, warstwa mokra/sucha, paleta AMOLED.
+//! Renderer: Direct2D na flip-model swapchainie DXGI.
 //!
-//! Celowo odizolowany za wlasnym crate.em: gdyby Etap 0 wykazal, ze wgpu nie daje
-//! wystarczajacej kontroli nad prezentacja, schodzimy tu do D3D12 przez windows-rs,
-//! a reszta workspace.u tego nie zauwazy (`docs/adr/0001-stack.md`).
+//! Decyzja o D2D zamiast wgpu: `docs/adr/0005-renderer-direct2d.md`. Sciezka
+//! prezentacji jest ta sama, ktora Etap 0 zwalidowal pod latencja: frame latency 1,
+//! tearing dla mokrego atramentu, render sterowany zdarzeniami.
 //!
-//! Do zrobienia w Etapie 2:
-//! - kafle 512x512 w przestrzeni canvasu, LRU
-//! - teselacja wstegi przyrostowa, AA w skali szarosci
-//! - wybor adaptera MINIMUM_POWER + weryfikacja wyjscia okna
-//! - pixel shift i rampa przygaszania (`docs/04-ENERGIA-I-AMOLED.md`)
+//! Warstwy:
+//! - **sucha** - bitmapa rozmiaru okna z wypalonymi kreskami. Przewijanie jest
+//!   przyrostowe: przesuwamy bitmape i dorysowujemy tylko odsloniety pas,
+//! - **mokra** - czubek biezacej kreski i overlay, rysowane wprost na backbufferze.
+
+mod d2d;
+mod tess;
+
+pub use d2d::{Overlay, Renderer};
+pub use tess::stroke_segments;

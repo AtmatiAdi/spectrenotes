@@ -22,7 +22,7 @@ Pełne uzasadnienie: `docs/adr/0001-stack.md`.
 crates/
   spectre-core      # model dokumentu, op-log CRDT, undo, geometria, kamera
   spectre-ink       # próbkowanie, krzywe nacisku, interpolacja, teselacja wstęgi
-  spectre-render    # wgpu: pipeline'y, cache kafli, warstwa mokra/sucha, AMOLED
+  spectre-render    # Direct2D na DXGI flip-model (ADR 0005), warstwa mokra/sucha, AMOLED
   spectre-sync      # git (gix) + live P2P (quinn/QUIC) + discovery (mDNS)
   spectre-proto     # format on-disk i wire (jedno źródło prawdy dla obu)
   spectre-shell-win # okno Win32, WM_POINTER, tray, global hotkey, DXGI/DPI
@@ -40,7 +40,8 @@ spectre-app
    └── spectre-ink ────────┘
 ```
 `spectre-core`, `-ink`, `-proto`, `-sync` **nie mają ani jednej zależności od Windows**.
-To jest cała przenośność, o którą chodzi w Z-platformy: port = napisanie nowego `shell-*`.
+To jest cała przenośność, o którą chodzi w Z-platformy: port = napisanie nowego
+`shell-*` i `render-*` (renderer jest Windows-only od ADR 0005).
 
 ## Model wątków
 

@@ -123,7 +123,7 @@ impl OpsWriter {
         let mut file = OpenOptions::new()
             .read(true)
             .create(true)
-            .append(false)
+            .truncate(false)
             .write(true)
             .open(path)?;
         let mut existing = Vec::new();
@@ -187,7 +187,8 @@ impl OpsWriter {
         self.file.sync_data()
     }
 
-    pub fn len(&mut self) -> io::Result<u64> {
+    /// Rozmiar pliku razem z niezapisanym buforem - do rolowania chunkow.
+    pub fn byte_len(&mut self) -> io::Result<u64> {
         Ok(self.file.metadata()?.len() + self.buf.len() as u64)
     }
 }

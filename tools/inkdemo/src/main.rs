@@ -9,7 +9,6 @@
 //! Sterowanie wypisuje HUD; `H` go chowa.
 
 mod gfx;
-mod pen;
 
 use std::time::Instant;
 
@@ -37,7 +36,7 @@ use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::gfx::Gfx;
-use crate::pen::{PenBatch, PenButtons, PenDecoder};
+use spectre_shell_win::{PenBatch, PenButtons, PenDecoder};
 
 /// Ile ostatnich odstepow miedzy probkami usredniamy przy liczeniu Hz piora.
 const HZ_WINDOW: usize = 64;

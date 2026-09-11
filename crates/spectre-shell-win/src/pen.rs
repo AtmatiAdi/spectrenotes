@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use spectre_ink::Sample;
+use spectre_proto::Sample;
 use windows::Win32::Foundation::{HANDLE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::Pointer::{

@@ -186,6 +186,17 @@ impl Document {
 
     /// Wymazanie zbioru kresek jako jednej akcji. Nieznane/juz wymazane sa pomijane.
     pub fn erase_strokes(&mut self, ids: &[StrokeId]) -> Vec<Op> {
+        self.erase_impl(ids, false)
+    }
+
+    /// Jak `erase_strokes`, ale dolacza do poprzedniej grupy wymazania, jesli
+    /// ostatnia akcja nia byla. Jedno pociagniecie gumka to wiele wywolan
+    /// (po jednym na paczke probek), a cofac chcemy je razem.
+    pub fn erase_strokes_continuing(&mut self, ids: &[StrokeId]) -> Vec<Op> {
+        self.erase_impl(ids, true)
+    }
+
+    fn erase_impl(&mut self, ids: &[StrokeId], continue_group: bool) -> Vec<Op> {
         let mut ops = Vec::new();
         let mut group = Vec::new();
         for id in ids {
@@ -200,7 +211,10 @@ impl Document {
         }
         if !group.is_empty() {
             self.redo.clear();
-            self.undo.push(Action::Erased(group));
+            match self.undo.last_mut() {
+                Some(Action::Erased(prev)) if continue_group => prev.extend(group),
+                _ => self.undo.push(Action::Erased(group)),
+            }
         }
         ops
     }

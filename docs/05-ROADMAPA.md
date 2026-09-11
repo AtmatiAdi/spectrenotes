@@ -5,43 +5,50 @@ które mogą wywrócić projekt.** Odczucie pióra jest takim ryzykiem — jeśl
 digitizerze nie da się osiągnąć feelingu Samsung Notes, to reszta planu nie ma znaczenia.
 Sync i UI są ryzykiem znanym i rozwiązywalnym, więc idą później.
 
-## Etap 0 — Weryfikacja odczucia pióra  ← JESTEŚMY TUTAJ
+## Etap 0 — Weryfikacja odczucia pióra  ✔ ZAMKNIĘTY
 
 `tools/inkdemo`, samodzielna binarka.
 
 - [x] Okno Win32, borderless fullscreen, czarne tło
 - [x] `WM_POINTER` + `GetPointerPenInfoHistory` + współrzędne himetric
-- [x] Renderer wgpu, teselacja wstęgi, present immediate/tearing
+- [x] Renderer Direct2D, kapsuły per segment, present immediate/tearing
 - [x] HUD: Hz pióra, próbki/klatkę, czas klatki, nacisk, tilt
 - [x] Przełączniki na żywo: interpolacja, wygładzanie, predykcja, vsync
-- [ ] **Werdykt: czy to jest dobre? Pomiar kamerą 240 fps.**
+- [x] **Werdykt: 266 Hz próbkowania, odczucie ocenione jako dobre.** Przycisk boczny
+      i gumka raportowane przez sterownik ELAN — nawigacja rysikiem potwierdzona.
+- [ ] Pomiar kamerą 240 fps — do zrobienia przy okazji, nie blokuje
 
-Wyjście z etapu: świadoma decyzja, czy surowy `WM_POINTER` wystarcza, czy trzeba
-schodzić do DirectComposition z niezależną warstwą mokrego atramentu.
+Wynik: surowy `WM_POINTER` + flip-model wystarcza. DirectComposition niepotrzebne.
+Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 
-## Etap 1 — Rdzeń dokumentu
+## Etap 1 — Rdzeń dokumentu  ✔ ZAMKNIĘTY
 
-- `spectre-proto`: format operacji, kodowanie próbek, CRC, wersjonowanie
-- `spectre-core`: op-log CRDT, zegar Lamporta, undo/redo, kamera, hit-test gumki
-- `spectre-ink`: krzywe nacisku, interpolacja centripetal, teselacja przyrostowa
-- Testy własności: przemienność i idempotencja operacji (proptest)
+- [x] `spectre-proto`: format operacji, kodowanie próbek (~7 B/próbkę), CRC, wersjonowanie
+- [x] `spectre-core`: op-log CRDT, zegar Lamporta, undo/redo, kamera, hit-test gumki
+- [x] `spectre-ink`: krzywe nacisku, interpolacja centripetal, podział na czubek i część domkniętą
+- [x] Testy własności: przemienność (losowe permutacje, 3 autorów) i idempotencja (proptest)
 
-## Etap 2 — Realny renderer
+## Etap 2 — Realny renderer  ◐ W TOKU
 
-- Cache kafli 512×512, LRU, warstwa sucha vs mokra
-- Kamera: przewijanie w pionie + zoom (stała szerokość kolumny — Z9),
-  ustalenie szerokości w jednostkach canvasu i zachowania przy zmianie zoomu
-- Kryterium: 100 000 stroke'ów przy 120 fps
-- Wybór adaptera GPU (MINIMUM_POWER + weryfikacja wyjścia)
-- Pixel shift, rampa przygaszania, paleta AMOLED (niskie luminancje, bez czystej bieli)
-- Jedna warstwa atramentu — bez zakreślacza w v1 (Z11), ale bez zamykania sobie drogi
+- [x] Direct2D na DXGI flip-model (ADR 0005), warstwa sucha vs mokra
+- [x] Przewijanie przyrostowe: przesunięcie bitmapy + dorysowanie odsłoniętego pasa
+- [x] Wybór adaptera GPU (MINIMUM_POWER) — potwierdzone: Intel Arc, nie RTX
+- [x] Paleta AMOLED (6 kolorów, bez czystej bieli)
+- [ ] Zoom (kamera go wspiera, UI nie)
+- [ ] Cache kafli — dopiero gdy przewijanie przyrostowe okaże się za wolne
+- [ ] Pixel shift, rampa przygaszania
+- [ ] Szerokość kolumny (Z9) w jednostkach canvasu i zachowanie przy zmianie zoomu
+- [ ] Kryterium: 100 000 stroke'ów przy 120 fps — do zmierzenia
+- [ ] Weryfikacja wyjścia okna przy przenoszeniu na monitor z dGPU
 
-## Etap 3 — Trwałość lokalna
+## Etap 3 — Trwałość lokalna  ◐ W TOKU
 
-- Zapis/odczyt `.ops`, snapshoty, przycinanie
-- Odzyskiwanie po utracie zasilania (obcięcie uszkodzonego ogona)
-- Indeks notatek, ładowanie leniwe
-- **Kryterium: wyrwanie zasilania w trakcie rysowania gubi maksymalnie 1 s**
+- [x] Zapis/odczyt `.ops`, chunki per autor z rolowaniem po 2 MB
+- [x] Odzyskiwanie po utracie zasilania (obcięcie uszkodzonego ogona) — test w `opsfile.rs`
+- [x] Space = katalog, notatka = katalog ULID, lista i tworzenie notatek
+- [x] `fsync` po 400 ms ciszy — **kryterium 1 s spełnione konstrukcyjnie**
+- [ ] Snapshoty i przycinanie HEAD (potrzebne dopiero przy dużych notatkach)
+- [ ] Tytuły notatek (format je ma — `Meta`; brak UI do wpisania)
 
 ## Etap 4 — Powłoka i rezydentność
 
@@ -49,8 +56,7 @@ schodzić do DirectComposition z niezależną warstwą mokrego atramentu.
 - `Trim()` + `EmptyWorkingSet` przy ukryciu
 - **Kryteria: <30 ms hotkey→klatka, ≤20 MB working set w tle**
 - Minimalne UI: pióro / gumka / kolor, lista notatek, wszystko auto-chowane
-- Odrzucanie `PT_TOUCH` na wejściu (Z10); przewijanie przyciskiem bocznym
-  rysika — jeśli test w `inkdemo` potwierdzi, że sterownik go raportuje
+- [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
 
 ## Etap 5 — Git jako warstwa trwała
 
