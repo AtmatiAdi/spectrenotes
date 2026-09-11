@@ -9,12 +9,16 @@
 //! rysika (patrz `hud_text`).
 
 mod app;
+mod bench;
 
 use std::path::PathBuf;
 
 use spectre_shell_win::window;
 
 fn main() -> windows::core::Result<()> {
+    if std::env::args().any(|a| a == "--bench") {
+        return bench::run();
+    }
     window::init_process();
 
     let space_dir = std::env::args()

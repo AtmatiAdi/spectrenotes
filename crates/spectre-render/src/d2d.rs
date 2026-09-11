@@ -365,9 +365,10 @@ impl Renderer {
             let key = u32::from_le_bytes([data.color.r, data.color.g, data.color.b, data.color.a]);
             let out = by_color.entry(key).or_default();
             for s in segs.iter() {
-                let lo = s.a.y.min(s.b.y) - s.width;
-                let hi = s.a.y.max(s.b.y) + s.width;
-                if hi >= rect.min_y && lo <= rect.max_y {
+                let w = s.width;
+                let (x0, x1) = (s.a.x.min(s.b.x) - w, s.a.x.max(s.b.x) + w);
+                let (y0, y1) = (s.a.y.min(s.b.y) - w, s.a.y.max(s.b.y) + w);
+                if y1 >= rect.min_y && y0 <= rect.max_y && x1 >= rect.min_x && x0 <= rect.max_x {
                     out.push(*s);
                 }
             }
@@ -376,6 +377,56 @@ impl Renderer {
             let [r, g, b, a] = key.to_le_bytes();
             let brush = self.brush(Rgba { r, g, b, a })?;
             self.draw_segments(&segs, &brush, cam);
+        }
+        Ok(())
+    }
+
+    /// Przebudowa fragmentu warstwy suchej (canvas). Po wymazaniu: czyscimy
+    /// prostokat i rysujemy w nim tylko kreski, ktore go przecinaja - zamiast
+    /// pelnej przebudowy, ktora przy zapisanej stronie kosztuje dziesiatki ms.
+    pub fn repaint(
+        &mut self,
+        doc: &Document,
+        cam: &Camera,
+        ink: &InkConfig,
+        rect: Bbox,
+    ) -> Result<()> {
+        let Some(dry) = self.dry[self.dry_cur].clone() else {
+            return Ok(());
+        };
+        let (w, h) = self.size;
+        let view = cam.visible(w as f32, h as f32);
+        if !rect.intersects(&view) {
+            return Ok(());
+        }
+        let (sx0, sy0) = cam.to_screen(rect.min_x, rect.min_y);
+        let (sx1, sy1) = cam.to_screen(rect.max_x, rect.max_y);
+        let clip = D2D_RECT_F {
+            left: sx0.floor().max(0.0),
+            top: sy0.floor().max(0.0),
+            right: sx1.ceil().min(w as f32),
+            bottom: sy1.ceil().min(h as f32),
+        };
+        // Prostokat w canvasie odpowiadajacy klipowi zaokraglonemu do pikseli.
+        let (cx0, cy0) = cam.to_canvas(clip.left, clip.top);
+        let (cx1, cy1) = cam.to_canvas(clip.right, clip.bottom);
+        let region = Bbox {
+            min_x: cx0,
+            min_y: cy0,
+            max_x: cx1,
+            max_y: cy1,
+        };
+        unsafe {
+            self.ctx.SetTarget(&dry);
+            self.ctx.BeginDraw();
+            self.ctx
+                .PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            self.ctx.Clear(Some(&BG_COLOR));
+            let res = self.draw_document(doc, cam, ink, region);
+            self.ctx.PopAxisAlignedClip();
+            self.ctx.EndDraw(None, None)?;
+            self.ctx.SetTarget(None);
+            res?;
         }
         Ok(())
     }

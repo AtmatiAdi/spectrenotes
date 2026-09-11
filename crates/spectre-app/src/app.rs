@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use spectre_core::hittest::stroke_hit;
-use spectre_core::{Camera, Document, Rgba, StrokeData, StrokeId};
+use spectre_core::{Bbox, Camera, Document, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
 use spectre_render::{Overlay, PresentMode, Renderer};
 use spectre_shell_win::window::{self, Fullscreen};
@@ -46,7 +46,25 @@ enum Dirty {
     Clean,
     /// Przewiniecie z `scroll_y` sprzed zmiany - przyrostowo.
     Scrolled(f32),
+    /// Fragment canvasu do przerysowania (po wymazaniu).
+    Region(Bbox),
     Full,
+}
+
+impl Dirty {
+    fn add_region(self, r: Bbox) -> Dirty {
+        match self {
+            Dirty::Clean => Dirty::Region(r),
+            Dirty::Region(o) => Dirty::Region(Bbox {
+                min_x: o.min_x.min(r.min_x),
+                min_y: o.min_y.min(r.min_y),
+                max_x: o.max_x.max(r.max_x),
+                max_y: o.max_y.max(r.max_y),
+            }),
+            // Przewiniecie i region naraz - najprosciej przebudowac.
+            Dirty::Scrolled(_) | Dirty::Full => Dirty::Full,
+        }
+    }
 }
 
 pub struct App {
@@ -87,7 +105,11 @@ pub struct App {
     pending_commit: Vec<(Vec<Segment>, Rgba)>,
     tail_buf: Vec<Segment>,
     hit_buf: Vec<StrokeId>,
+    hit_bbox: Option<Bbox>,
     status: String,
+    /// Czas ostatniej klatki (render + present), do HUD-u.
+    frame_ms: f32,
+    frame_max_ms: f32,
 }
 
 pub fn install(hwnd: HWND, space_dir: &Path) -> Result<()> {
@@ -150,7 +172,10 @@ impl App {
             pending_commit: Vec::new(),
             tail_buf: Vec::with_capacity(256),
             hit_buf: Vec::new(),
+            hit_bbox: None,
             status: String::new(),
+            frame_ms: 0.0,
+            frame_max_ms: 0.0,
         })
     }
 
@@ -258,6 +283,15 @@ impl App {
             for (id, data, bbox) in self.doc.visible() {
                 if !self.hit_buf.contains(&id) && stroke_hit(data, bbox, prev, cur, radius) {
                     self.hit_buf.push(id);
+                    self.hit_bbox = Some(match self.hit_bbox {
+                        None => *bbox,
+                        Some(b) => Bbox {
+                            min_x: b.min_x.min(bbox.min_x),
+                            min_y: b.min_y.min(bbox.min_y),
+                            max_x: b.max_x.max(bbox.max_x),
+                            max_y: b.max_y.max(bbox.max_y),
+                        },
+                    });
                 }
             }
             self.last_erase_canvas = Some(cur);
@@ -267,7 +301,9 @@ impl App {
             let ops = self.doc.erase_strokes_continuing(&ids);
             self.hit_buf = ids;
             self.persist(&ops);
-            self.dirty = Dirty::Full;
+            if let Some(b) = self.hit_bbox.take() {
+                self.dirty = self.dirty.add_region(b);
+            }
         }
     }
 
@@ -294,6 +330,7 @@ impl App {
             self.dirty = match self.dirty {
                 Dirty::Full => Dirty::Full,
                 Dirty::Scrolled(o) => Dirty::Scrolled(o),
+                Dirty::Region(_) => Dirty::Full,
                 Dirty::Clean => Dirty::Scrolled(old),
             };
         }
@@ -372,10 +409,14 @@ impl App {
     // ----- render ------------------------------------------------------------
 
     fn render(&mut self) {
+        let t0 = std::time::Instant::now();
         match self.dirty {
             Dirty::Clean => {}
             Dirty::Scrolled(old) => {
                 let _ = self.renderer.scroll(&self.doc, &self.cam, old, &self.ink);
+            }
+            Dirty::Region(r) => {
+                let _ = self.renderer.repaint(&self.doc, &self.cam, &self.ink, r);
             }
             Dirty::Full => {
                 let _ = self.renderer.rebuild(&self.doc, &self.cam, &self.ink);
@@ -422,15 +463,17 @@ impl App {
             },
             // Tearing tylko dla mokrego atramentu; poza rysowaniem "najnowsza klatka"
             // bez blokowania - vsync tutaj kolejkowal komunikaty piora i dawal lag.
+            // Tearing zawsze (poza jawnym vsync): kazdy inny tryb czeka na vblank,
+            // a na panelu 60 Hz to 16-33 ms lagu przy przewijaniu i gumce.
             if self.vsync {
                 PresentMode::VSync
-            } else if self.mode == Mode::Draw {
-                PresentMode::Immediate
             } else {
-                PresentMode::Latest
+                PresentMode::Immediate
             },
         );
         self.tail_buf = tail;
+        self.frame_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        self.frame_max_ms = self.frame_max_ms.max(self.frame_ms) * 0.98;
     }
 
     fn hud_text(&self) -> String {
@@ -448,7 +491,7 @@ impl App {
             .unwrap_or_else(|| self.notes[self.note_idx][20..].to_string());
         format!(
             "SpectreNotes   notatka {}/{}  [{}]   kresek: {}   {}\n\
-             narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   GPU: {}\n\
+             narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
              [1-6] kolor  [E] gumka  [[ ]] grubosc  [Ctrl+Z/Y] cofnij/ponow  [Home] gora\n\
              [przycisk boczny]/[kolko] przewijanie   [PgUp/PgDn] notatki  [Ctrl+N] nowa\n\
              [F11] pelny ekran  [H] hud  [V] vsync  [Esc] wyjscie{}",
@@ -464,6 +507,8 @@ impl App {
             tool,
             self.ink.base_width,
             self.cam.scroll_y,
+            self.frame_ms,
+            self.frame_max_ms,
             self.renderer.adapter_name(),
             if self.status.is_empty() {
                 String::new()
