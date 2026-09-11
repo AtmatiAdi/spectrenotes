@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use spectre_proto::{AuthorId, Op, OpKind, StrokeData, StrokeId};
@@ -74,6 +75,13 @@ pub struct Document {
 
     /// Kolejnosc renderowania: (lamport, author) -> id. Deterministyczna u wszystkich.
     order: BTreeMap<(u64, AuthorId), StrokeId>,
+    /// Indeks przestrzenny po Y (Z9: rolka pionowa): pas `BAND` jednostek -> zywe
+    /// kreski, ktorych bbox go przecina. Zapytanie o widoczny prostokat czyta
+    /// kilka pasow zamiast skanowac wszystkie kreski (przy 100 000 kresek skan
+    /// kosztowal ~5 ms na klatke - wiecej niz samo rysowanie).
+    bands: BTreeMap<i32, Vec<StrokeId>>,
+    /// Obwiednia zywej tresci; `None` w cache = do przeliczenia (po wymazaniu).
+    content: Cell<Option<Option<Bbox>>>,
     strokes: HashMap<StrokeId, Entry>,
     /// Nagrobki. Moga wyprzedzac `StrokeAdd` (operacje z sieci przychodza w dowolnej kolejnosci).
     erased: HashSet<StrokeId>,
@@ -93,6 +101,8 @@ impl Document {
             clock: 0,
             next_seq: 1,
             order: BTreeMap::new(),
+            bands: BTreeMap::new(),
+            content: Cell::new(Some(None)),
             strokes: HashMap::new(),
             erased: HashSet::new(),
             meta: HashMap::new(),
@@ -133,12 +143,15 @@ impl Document {
                 );
                 if !self.erased.contains(id) {
                     self.order.insert(key, *id);
+                    self.index_insert(*id);
                 }
             }
             OpKind::StrokeErase { id } => {
                 if self.erased.insert(*id) {
                     if let Some(e) = self.strokes.get(id) {
-                        self.order.remove(&e.key);
+                        let key = e.key;
+                        self.order.remove(&key);
+                        self.index_remove(*id);
                     }
                 }
             }
@@ -334,26 +347,85 @@ impl Document {
     }
 
     /// Zywe kreski przecinajace prostokat, w kolejnosci renderowania.
-    pub fn visible_in(
-        &self,
-        rect: Bbox,
-    ) -> impl Iterator<Item = (StrokeId, &StrokeData, &Bbox)> + '_ {
-        self.visible().filter(move |(_, _, b)| b.intersects(&rect))
+    /// Z indeksu pasow; wynik jest maly (to, co widac), wiec sortowanie po
+    /// kluczu kolejnosci jest tanie.
+    pub fn visible_in(&self, rect: Bbox) -> impl Iterator<Item = (StrokeId, &StrokeData, &Bbox)> {
+        let mut hits: Vec<(&Entry, StrokeId)> = Vec::new();
+        for ids in self
+            .bands
+            .range(band_of(rect.min_y)..=band_of(rect.max_y))
+            .map(|(_, v)| v)
+        {
+            for id in ids {
+                let e = &self.strokes[id];
+                if e.bbox.intersects(&rect) {
+                    hits.push((e, *id));
+                }
+            }
+        }
+        // Kreska lezaca w kilku pasach trafila tu kilka razy.
+        hits.sort_by_key(|(e, _)| e.key);
+        hits.dedup_by_key(|(e, _)| e.key);
+        hits.into_iter().map(|(e, id)| (id, &e.data, &e.bbox))
     }
 
     /// Dolna krawedz tresci - do ograniczenia przewijania.
     pub fn content_bottom(&self) -> f32 {
-        self.visible().map(|(_, _, b)| b.max_y).fold(0.0, f32::max)
+        self.content_bbox().map(|b| b.max_y).unwrap_or(0.0).max(0.0)
     }
 
-    /// Obwiednia calej zywej tresci; `None` dla pustej notatki.
+    /// Obwiednia calej zywej tresci; `None` dla pustej notatki. Cache: rosnie
+    /// przy dodaniu, przeliczana leniwie po wymazaniu.
     pub fn content_bbox(&self) -> Option<Bbox> {
-        self.visible().map(|(_, _, b)| *b).reduce(|a, b| Bbox {
-            min_x: a.min_x.min(b.min_x),
-            min_y: a.min_y.min(b.min_y),
-            max_x: a.max_x.max(b.max_x),
-            max_y: a.max_y.max(b.max_y),
-        })
+        if let Some(c) = self.content.get() {
+            return c;
+        }
+        let c = self.visible().map(|(_, _, b)| *b).reduce(union);
+        self.content.set(Some(c));
+        c
+    }
+
+    fn index_insert(&mut self, id: StrokeId) {
+        let bbox = self.strokes[&id].bbox;
+        for band in band_of(bbox.min_y)..=band_of(bbox.max_y) {
+            self.bands.entry(band).or_default().push(id);
+        }
+        if let Some(c) = self.content.get() {
+            self.content.set(Some(Some(match c {
+                Some(old) => union(old, bbox),
+                None => bbox,
+            })));
+        }
+    }
+
+    fn index_remove(&mut self, id: StrokeId) {
+        let bbox = self.strokes[&id].bbox;
+        for band in band_of(bbox.min_y)..=band_of(bbox.max_y) {
+            if let Some(v) = self.bands.get_mut(&band) {
+                v.retain(|x| *x != id);
+                if v.is_empty() {
+                    self.bands.remove(&band);
+                }
+            }
+        }
+        self.content.set(None);
+    }
+}
+
+/// Wysokosc pasa indeksu w jednostkach canvasu (ok. 1/3 ekranu przy zoomie 1).
+const BAND: f32 = 512.0;
+
+#[inline]
+fn band_of(y: f32) -> i32 {
+    (y / BAND).floor() as i32
+}
+
+fn union(a: Bbox, b: Bbox) -> Bbox {
+    Bbox {
+        min_x: a.min_x.min(b.min_x),
+        min_y: a.min_y.min(b.min_y),
+        max_x: a.max_x.max(b.max_x),
+        max_y: a.max_y.max(b.max_y),
     }
 }
 
@@ -513,5 +585,56 @@ mod tests {
             _ => unreachable!(),
         }
         assert!(next.lamport > ops[1].lamport);
+    }
+
+    #[test]
+    fn indeks_pasow_zgodny_ze_skanem() {
+        let mut d = Document::new(AuthorId(1));
+        let mut ids = Vec::new();
+        for i in 0..400 {
+            // Rozne wysokosci, niektore kreski dlugie w pionie (kilka pasow).
+            let seed = (i as f32 * 37.0) % 3000.0;
+            let mut s = stroke(5, seed);
+            if i % 7 == 0 {
+                s.samples.push(Sample {
+                    x: seed,
+                    y: seed * 2.0 + 1500.0,
+                    pressure: 0.5,
+                    ..Default::default()
+                });
+            }
+            let op = d.add_stroke(s);
+            if let OpKind::StrokeAdd { id, .. } = op.kind {
+                ids.push(id);
+            }
+        }
+        for id in ids.iter().step_by(3) {
+            d.erase_strokes(&[*id]);
+        }
+        for (y0, y1) in [
+            (0.0, 700.0),
+            (1000.0, 1100.0),
+            (-50.0, 6500.0),
+            (5900.0, 5901.0),
+        ] {
+            let rect = Bbox {
+                min_x: -1e9,
+                min_y: y0,
+                max_x: 1e9,
+                max_y: y1,
+            };
+            let fast: Vec<StrokeId> = d.visible_in(rect).map(|(id, _, _)| id).collect();
+            let slow: Vec<StrokeId> = d
+                .visible()
+                .filter(|(_, _, b)| b.intersects(&rect))
+                .map(|(id, _, _)| id)
+                .collect();
+            assert_eq!(fast, slow, "pas {y0}..{y1}");
+        }
+        let slow_bottom = d.visible().map(|(_, _, b)| b.max_y).fold(0.0, f32::max);
+        assert_eq!(d.content_bottom(), slow_bottom);
+        let _ = d.undo();
+        let slow_bottom = d.visible().map(|(_, _, b)| b.max_y).fold(0.0, f32::max);
+        assert_eq!(d.content_bottom(), slow_bottom);
     }
 }

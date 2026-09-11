@@ -94,8 +94,15 @@ pub fn run() -> windows::core::Result<()> {
         r.tearing_supported()
     );
 
-    for &(n, len) in &[(200usize, 150usize), (2000, 150), (10000, 150)] {
-        let doc = synthetic_doc(n, len, w as f32, 20_000.0);
+    // (kresek, probek na kreske, wysokosc rolki). Ostatni przypadek to kryterium
+    // Etapu 2: 100 000 kresek - dlugi notatnik, krotkie kreski, ~250 stron.
+    for &(n, len, height) in &[
+        (200usize, 150usize, 20_000.0f32),
+        (2000, 150, 20_000.0),
+        (10000, 150, 20_000.0),
+        (100_000, 60, 450_000.0),
+    ] {
+        let doc = synthetic_doc(n, len, w as f32, height);
         let mut cam = Camera::default();
         // Zimny rebuild: budowa obrysow kazdej widocznej kreski - to placi
         // zmiana notatki.

@@ -28,7 +28,7 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [x] `spectre-ink`: krzywe nacisku, interpolacja centripetal, podział na czubek i część domkniętą
 - [x] Testy własności: przemienność (losowe permutacje, 3 autorów) i idempotencja (proptest)
 
-## Etap 2 — Realny renderer  ◐ W TOKU
+## Etap 2 — Realny renderer  ◐ PRAWIE ZAMKNIĘTY (zostaje test dGPU)
 
 - [x] Direct2D na DXGI flip-model (ADR 0005), warstwa sucha vs mokra
 - [x] Przewijanie przyrostowe: przesunięcie bitmapy + dorysowanie odsłoniętego pasa
@@ -40,7 +40,8 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       scroll 3,4 → 1,4 ms; zimny rebuild ~0,4 ms/kreskę (podłoga teselacji D2D,
       płacona raz — przy otwarciu notatki). Pen-up przerysowuje prostokąt kreski
       z tej samej geometrii; undo/redo to repaint regionu, nie pełny rebuild
-- [ ] Cache kafli — dopiero gdy przewijanie przyrostowe okaże się za wolne
+- [~] Cache kafli — niepotrzebny: po realizacjach geometrii i indeksie pasów
+      przewijanie przyrostowe mieści się w budżecie z dużym zapasem
 - [x] Pixel shift: ±4 px po torze Lissajous (61 s / 89 s), krok co 4 s tylko w bezczynności
       rysika, całe piksele; treść paska tytułowego dryfuje razem z canvasem
 - [x] Rampa przygaszania: po 3 min bez wejścia płynnie (2 s) do 40 %, powrót przy
@@ -51,7 +52,10 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       rozmiaru do pierwszego ręcznego zoomu; `0` wraca. Kolumna węższa niż okno jest
       wyśrodkowana; szersza — przewijana w poziomie przyciskiem bocznym (zakres
       poszerzony o treść poza kolumną, żeby wszystko było osiągalne)
-- [ ] Kryterium: 100 000 stroke'ów przy 120 fps — do zmierzenia
+- [x] **Kryterium 100 000 kresek: spełnione.** Indeks pasów po Y w `Document`
+      (`visible_in` czyta kilka pasów zamiast skanować wszystko — skan kosztował ~5 ms
+      na klatkę i dominował nad rysowaniem). Bench: rebuild 1,6 ms, scroll +2 px
+      0,014 ms, repaint 0,009 ms przy 100 000 kresek (~190 widocznych)
 - [ ] Weryfikacja wyjścia okna przy przenoszeniu na monitor z dGPU
 
 ## Etap 3 — Trwałość lokalna  ◐ W TOKU
