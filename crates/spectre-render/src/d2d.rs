@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 
-use spectre_core::{Bbox, Camera, Document};
+use spectre_core::{Bbox, Camera, Document, StrokeId};
 use spectre_ink::{InkConfig, Segment};
 use spectre_proto::Rgba;
 use windows::core::{Interface, Result, PCWSTR};
@@ -91,8 +91,14 @@ pub struct Renderer {
     round: ID2D1StrokeStyle1,
     text_fmt: IDWriteTextFormat,
 
-    seg_buf: Vec<Segment>,
+    /// Teselacja per kreska. Kreski sa niezmienne, wiec wpis nigdy sie nie
+    /// dezaktualizuje - czyscimy tylko przy przekroczeniu budzetu pamieci.
+    seg_cache: HashMap<StrokeId, Vec<Segment>>,
+    seg_cache_total: usize,
 }
+
+/// ~40 MB odcinkow; powyzej tego cache jest czyszczony w calosci.
+const SEG_CACHE_BUDGET: usize = 2_000_000;
 
 impl Renderer {
     pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
@@ -203,7 +209,8 @@ impl Renderer {
                 cursor_brush,
                 round,
                 text_fmt,
-                seg_buf: Vec::with_capacity(8192),
+                seg_cache: HashMap::new(),
+                seg_cache_total: 0,
             };
             r.create_size_dependent()?;
             Ok(r)
@@ -338,11 +345,32 @@ impl Renderer {
         rect: Bbox,
     ) -> Result<()> {
         // Zbieramy geometrie per kolor, zeby nie zmieniac pedzla na kazda kreske.
+        // Do D2D ida tylko odcinki, ktore realnie leza w `rect` - przy przewijaniu
+        // pas ma kilka pikseli wysokosci, a klip obcina piksele, nie wywolania.
         let mut by_color: HashMap<u32, Vec<Segment>> = HashMap::new();
-        for (_, data, _) in doc.visible_in(rect) {
+        for (id, data, _) in doc.visible_in(rect) {
+            if self.seg_cache_total > SEG_CACHE_BUDGET {
+                self.seg_cache.clear();
+                self.seg_cache_total = 0;
+            }
+            let segs = match self.seg_cache.entry(id) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let mut v = Vec::new();
+                    stroke_segments(data, ink, &mut v);
+                    self.seg_cache_total += v.len();
+                    e.insert(v)
+                }
+            };
             let key = u32::from_le_bytes([data.color.r, data.color.g, data.color.b, data.color.a]);
             let out = by_color.entry(key).or_default();
-            stroke_segments(data, ink, out);
+            for s in segs.iter() {
+                let lo = s.a.y.min(s.b.y) - s.width;
+                let hi = s.a.y.max(s.b.y) + s.width;
+                if hi >= rect.min_y && lo <= rect.max_y {
+                    out.push(*s);
+                }
+            }
         }
         for (key, segs) in by_color {
             let [r, g, b, a] = key.to_le_bytes();
@@ -506,7 +534,6 @@ impl Renderer {
             };
             self.swapchain.Present(interval, flags).ok()?;
         }
-        let _ = std::mem::take(&mut self.seg_buf);
         Ok(())
     }
 
