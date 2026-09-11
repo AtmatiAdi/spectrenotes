@@ -26,9 +26,18 @@ Notatki leżą w `%APPDATA%\SpectreNotes\spaces\default` (inna ścieżka: pierws
 argument). Każda kreska trafia do pliku autora natychmiast po zakończeniu,
 `fsync` po 400 ms ciszy — wyrwanie zasilania gubi co najwyżej ostatnie pociągnięcie.
 
+Aplikacja **żyje w tray'u**: `Esc`, zamknięcie okna i `Win+Shift+N` chowają ją
+(w tle ~2 MB), `Win+Shift+N` lub klik w ikonę odsłania w ~20 ms. Zakończenie:
+`Ctrl+Q` albo prawy klik na ikonie → Zakończ.
+
+**Pasek narzędzi** wyjeżdża, gdy rysik zbliży się do lewej krawędzi, i chowa się
+po 2,5 s bezczynności (Z7). Tytuł notatki: tap w nagłówek u góry, wpisz, `Enter`.
+
 | Sterowanie | Działanie |
 |---|---|
 | pióro | rysowanie |
+| rysik przy lewej krawędzi | pasek: pióro, gumka, kolory, grubość, undo/redo, notatki |
+| `Ctrl+kółko` | zoom wokół kursora |
 | **przycisk gumki (trzymany)** | gumka kresek — usuwa całe kreski, które dotknie |
 | **przycisk boczny (trzymany)** | przewijanie |
 | kółko myszy, `Home` | przewijanie, powrót na górę |
@@ -38,7 +47,8 @@ argument). Każda kreska trafia do pliku autora natychmiast po zakończeniu,
 | `Ctrl+Z` / `Ctrl+Y` | cofnij / ponów (cofnięcie wymazania odtwarza kreskę) |
 | `PgUp` / `PgDn` | poprzednia / następna notatka |
 | `Ctrl+N` | nowa notatka |
-| `F11`, `H`, `V`, `Esc` | pełny ekran, HUD, vsync, wyjście |
+| `F11`, `H`, `V`, `T` | pełny ekran, HUD (domyślnie wyłączony), vsync, tryb przewijania |
+| `Esc` / `Ctrl+Q` | ukryj do tray / zakończ |
 
 Przyciski rysika działają w każdym momencie: wciśnięcie w trakcie kreski kończy
 ją i od razu zaczyna nową rolę. Dotyk palcem jest ignorowany całkowicie (Z10).

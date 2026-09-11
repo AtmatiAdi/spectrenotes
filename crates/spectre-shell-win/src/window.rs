@@ -193,3 +193,14 @@ impl Fullscreen {
         }
     }
 }
+
+/// Oddaje systemowi nieuzywane strony pamieci procesu. Wolane po schowaniu
+/// okna (Z2: <=20 MB w tle). Nastepne odslonienie zaplaci page-faultami
+/// za to, czego realnie dotknie - reszta zostaje na dysku.
+pub fn trim_working_set() {
+    unsafe {
+        let _ = windows::Win32::System::ProcessStatus::K32EmptyWorkingSet(
+            windows::Win32::System::Threading::GetCurrentProcess(),
+        );
+    }
+}

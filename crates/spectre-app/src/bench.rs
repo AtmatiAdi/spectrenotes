@@ -140,6 +140,7 @@ pub fn run() -> windows::core::Result<()> {
                 Overlay {
                     hud: Some(hud),
                     cursor: None,
+                    ui: &[],
                 },
                 PresentMode::Immediate,
             )

@@ -50,13 +50,19 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [ ] Snapshoty i przycinanie HEAD (potrzebne dopiero przy dużych notatkach)
 - [ ] Tytuły notatek (format je ma — `Meta`; brak UI do wpisania)
 
-## Etap 4 — Powłoka i rezydentność
+## Etap 4 — Powłoka i rezydentność  ◐ W TOKU
 
-- Tray, `RegisterHotKey`, chowanie okna zamiast zamykania
-- `Trim()` + `EmptyWorkingSet` przy ukryciu
-- **Kryteria: <30 ms hotkey→klatka, ≤20 MB working set w tle**
-- Minimalne UI: pióro / gumka / kolor, lista notatek, wszystko auto-chowane
+- [x] Tray (klik = pokaż/ukryj, prawy = menu), `Win+Shift+N`, `Esc`/zamknięcie chowa zamiast kończyć
+- [x] `Trim()` + `EmptyWorkingSet` przy ukryciu
+- [x] **Zmierzone: 2 MB w tle (cel ≤20), 20,1 ms hotkey→klatka (cel <30)**
+- [x] Pasek na lewej krawędzi, rysowany w D2D, auto-chowany po 2,5 s: pióro, gumka,
+      kolory, grubość, undo/redo, poprzednia/następna/nowa notatka
+- [x] Tytuł notatki: tap w nagłówek, edycja z klawiatury, `Enter`/`Esc`
+- [x] Zoom `Ctrl+kółko` wokół kursora
 - [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
+- [ ] Lista notatek (na razie tylko poprzednia/następna)
+- [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
+- [ ] Pixel shift i rampa przygaszania (Z7)
 
 ## Etap 5 — Git jako warstwa trwała
 

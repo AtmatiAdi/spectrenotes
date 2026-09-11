@@ -4,6 +4,7 @@
 //! platforme polega na napisaniu rownoleglego `spectre-shell-*`.
 
 pub mod pen;
+pub mod tray;
 pub mod window;
 
 pub use pen::{PenBatch, PenButtons, PenDecoder};

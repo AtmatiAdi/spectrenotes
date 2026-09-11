@@ -14,8 +14,8 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1StrokeStyle1, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
     D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND,
     D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND, D2D1_STROKE_STYLE_PROPERTIES1,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
+    D2D1_STROKE_STYLE_PROPERTIES1, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
@@ -24,7 +24,7 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
@@ -61,12 +61,52 @@ pub enum PresentMode {
     VSync,
 }
 
+/// Prymityw UI w pikselach ekranu. Logika UI zyje w aplikacji; renderer tylko rysuje.
+#[derive(Debug, Clone)]
+pub enum UiPrim {
+    Rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: Rgba,
+        /// Promien zaokraglenia rogow.
+        r: f32,
+    },
+    Outline {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: Rgba,
+        width: f32,
+        r: f32,
+    },
+    Circle {
+        x: f32,
+        y: f32,
+        radius: f32,
+        color: Rgba,
+    },
+    Text {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        text: String,
+        color: Rgba,
+        big: bool,
+        center: bool,
+    },
+}
+
 /// Co narysowac na wierzchu klatki, poza dokumentem.
 #[derive(Default, Clone, Copy)]
 pub struct Overlay<'a> {
     pub hud: Option<&'a str>,
     /// Okrag gumki: (x, y, promien) w pikselach ekranu.
     pub cursor: Option<(f32, f32, f32)>,
+    pub ui: &'a [UiPrim],
 }
 
 pub struct Renderer {
@@ -90,6 +130,8 @@ pub struct Renderer {
     cursor_brush: ID2D1Brush,
     round: ID2D1StrokeStyle1,
     text_fmt: IDWriteTextFormat,
+    text_fmt_big: IDWriteTextFormat,
+    text_fmt_center: IDWriteTextFormat,
 
     /// Teselacja per kreska. Kreski sa niezmienne, wiec wpis nigdy sie nie
     /// dezaktualizuje - czyscimy tylko przy przekroczeniu budzetu pamieci.
@@ -191,6 +233,26 @@ impl Renderer {
                 14.0,
                 w("en-us"),
             )?;
+            let text_fmt_big = dwrite.CreateTextFormat(
+                w("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                20.0,
+                w("en-us"),
+            )?;
+            let text_fmt_center = dwrite.CreateTextFormat(
+                w("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                15.0,
+                w("en-us"),
+            )?;
+            text_fmt_center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            text_fmt_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
 
             let mut r = Self {
                 adapter_name,
@@ -209,6 +271,8 @@ impl Renderer {
                 cursor_brush,
                 round,
                 text_fmt,
+                text_fmt_big,
+                text_fmt_center,
                 seg_cache: HashMap::new(),
                 seg_cache_total: 0,
             };
@@ -570,6 +634,7 @@ impl Renderer {
                 };
                 self.ctx.DrawEllipse(&e, &self.cursor_brush, 1.0, None);
             }
+            self.draw_ui(overlay.ui)?;
             if let Some(text) = overlay.hud {
                 self.draw_hud(text);
             }
@@ -584,6 +649,105 @@ impl Renderer {
                 PresentMode::Immediate | PresentMode::Latest => (0u32, DXGI_PRESENT(0)),
             };
             self.swapchain.Present(interval, flags).ok()?;
+        }
+        Ok(())
+    }
+
+    unsafe fn draw_ui(&mut self, prims: &[UiPrim]) -> Result<()> {
+        for p in prims {
+            match p {
+                UiPrim::Rect {
+                    x,
+                    y,
+                    w,
+                    h,
+                    color,
+                    r,
+                } => {
+                    let brush = self.brush(*color)?;
+                    let rr = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: *x,
+                            top: *y,
+                            right: x + w,
+                            bottom: y + h,
+                        },
+                        radiusX: *r,
+                        radiusY: *r,
+                    };
+                    self.ctx.FillRoundedRectangle(&rr, &brush);
+                }
+                UiPrim::Outline {
+                    x,
+                    y,
+                    w,
+                    h,
+                    color,
+                    width,
+                    r,
+                } => {
+                    let brush = self.brush(*color)?;
+                    let rr = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: *x,
+                            top: *y,
+                            right: x + w,
+                            bottom: y + h,
+                        },
+                        radiusX: *r,
+                        radiusY: *r,
+                    };
+                    self.ctx.DrawRoundedRectangle(&rr, &brush, *width, None);
+                }
+                UiPrim::Circle {
+                    x,
+                    y,
+                    radius,
+                    color,
+                } => {
+                    let brush = self.brush(*color)?;
+                    let e = D2D1_ELLIPSE {
+                        point: Vector2 { X: *x, Y: *y },
+                        radiusX: *radius,
+                        radiusY: *radius,
+                    };
+                    self.ctx.FillEllipse(&e, &brush);
+                }
+                UiPrim::Text {
+                    x,
+                    y,
+                    w,
+                    h,
+                    text,
+                    color,
+                    big,
+                    center,
+                } => {
+                    let brush = self.brush(*color)?;
+                    let fmt = if *big {
+                        &self.text_fmt_big
+                    } else if *center {
+                        &self.text_fmt_center
+                    } else {
+                        &self.text_fmt
+                    };
+                    let wide: Vec<u16> = text.encode_utf16().collect();
+                    let rect = D2D_RECT_F {
+                        left: *x,
+                        top: *y,
+                        right: x + w,
+                        bottom: y + h,
+                    };
+                    self.ctx.DrawText(
+                        &wide,
+                        fmt,
+                        &rect,
+                        &brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+            }
         }
         Ok(())
     }
