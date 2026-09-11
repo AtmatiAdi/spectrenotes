@@ -128,9 +128,6 @@ pub struct App {
     show_requested: Option<Instant>,
 
     commit_buf: Vec<Segment>,
-    /// Zakonczone kreski czekajace na wypalenie. Ida przez `render`, ZA obsluga
-    /// `dirty` - wypalenie wprost trafialoby do bitmapy sprzed przewiniecia.
-    pending_commit: Vec<(Vec<Segment>, Rgba)>,
     tail_buf: Vec<Segment>,
     hit_buf: Vec<StrokeId>,
     hit_bbox: Option<Bbox>,
@@ -234,7 +231,6 @@ impl App {
             hidden: false,
             show_requested: None,
             commit_buf: Vec::with_capacity(4096),
-            pending_commit: Vec::new(),
             tail_buf: Vec::with_capacity(256),
             hit_buf: Vec::new(),
             hit_bbox: None,
@@ -319,13 +315,11 @@ impl App {
         self.feed(batch);
     }
 
+    /// Koniec kreski: do dokumentu i na dysk. Warstwa sucha dostaje ja przez
+    /// przerysowanie jej prostokata z gotowego obrysu (`repaint`) - ta sama
+    /// geometria, ktora bedzie rysowana przy kazdym kolejnym rebuildzie, wiec
+    /// kreska nie zmienia wygladu pozniej, a jej obrys jest juz w cache.
     fn end_stroke(&mut self) {
-        let mut segs = Vec::new();
-        self.stroke.finish(&mut segs);
-        if !segs.is_empty() {
-            self.pending_commit.push((segs, self.color()));
-        }
-
         let samples = self.stroke.samples().to_vec();
         self.stroke.clear();
         if samples.is_empty() {
@@ -337,8 +331,10 @@ impl App {
             base_width: self.ink.base_width,
             samples,
         };
+        let bbox = Bbox::of(&data);
         let op = self.doc.add_stroke(data);
         self.persist(&[op]);
+        self.dirty = self.dirty.add_region(bbox);
     }
 
     fn begin_erase(&mut self, batch: &PenBatch) {
@@ -646,17 +642,31 @@ impl App {
 
     fn undo(&mut self) {
         let ops = self.doc.undo();
-        if !ops.is_empty() {
-            self.persist(&ops);
-            self.dirty = Dirty::Full;
-        }
+        self.after_history(&ops);
     }
 
     fn redo(&mut self) {
         let ops = self.doc.redo();
-        if !ops.is_empty() {
-            self.persist(&ops);
-            self.dirty = Dirty::Full;
+        self.after_history(&ops);
+    }
+
+    /// Po cofnieciu/ponowieniu: zapis i przerysowanie tylko prostokatow
+    /// dotknietych kresek (dodanych albo wymazanych), nie calej strony.
+    fn after_history(&mut self, ops: &[spectre_core::Op]) {
+        if ops.is_empty() {
+            return;
+        }
+        self.persist(ops);
+        for op in ops {
+            let id = match &op.kind {
+                spectre_core::OpKind::StrokeAdd { id, .. }
+                | spectre_core::OpKind::StrokeErase { id } => *id,
+                spectre_core::OpKind::Meta { .. } => continue,
+            };
+            match self.doc.get(id) {
+                Some(data) => self.dirty = self.dirty.add_region(Bbox::of(data)),
+                None => self.dirty = Dirty::Full,
+            }
         }
     }
 
@@ -765,10 +775,6 @@ impl App {
             }
         }
         self.dirty = Dirty::Clean;
-
-        for (segs, color) in self.pending_commit.drain(..) {
-            let _ = self.renderer.commit(&segs, color, &self.cam);
-        }
 
         self.commit_buf.clear();
         self.tail_buf.clear();

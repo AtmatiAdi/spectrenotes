@@ -35,6 +35,11 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [x] Wybór adaptera GPU (MINIMUM_POWER) — potwierdzone: Intel Arc, nie RTX
 - [x] Paleta AMOLED (6 kolorów, bez czystej bieli)
 - [ ] Zoom (kamera go wspiera, UI nie)
+- [x] Obrys kreski jako `ID2D1GeometryRealization` budowany raz i cache'owany:
+      rebuild 453 widocznych kresek 257 → 3,8 ms (ciepły), repaint 6,4 → 0,5 ms,
+      scroll 3,4 → 1,4 ms; zimny rebuild ~0,4 ms/kreskę (podłoga teselacji D2D,
+      płacona raz — przy otwarciu notatki). Pen-up przerysowuje prostokąt kreski
+      z tej samej geometrii; undo/redo to repaint regionu, nie pełny rebuild
 - [ ] Cache kafli — dopiero gdy przewijanie przyrostowe okaże się za wolne
 - [ ] Pixel shift, rampa przygaszania
 - [ ] Szerokość kolumny (Z9) w jednostkach canvasu i zachowanie przy zmianie zoomu

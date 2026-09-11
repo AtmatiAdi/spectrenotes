@@ -10,11 +10,11 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush, ID2D1DeviceContext, ID2D1Factory1,
-    ID2D1StrokeStyle1, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush, ID2D1DeviceContext, ID2D1DeviceContext1,
+    ID2D1Factory1, ID2D1GeometryRealization, ID2D1StrokeStyle1, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
+    D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
     D2D1_STROKE_STYLE_PROPERTIES1, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
@@ -37,8 +37,9 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
     DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
-use windows_numerics::Vector2;
+use windows_numerics::{Matrix3x2, Vector2};
 
+use crate::geometry;
 use crate::tess::stroke_segments;
 
 /// Czysta czern: na AMOLED piksel jest wtedy fizycznie zgaszony (Z7).
@@ -136,8 +137,10 @@ pub struct Renderer {
 
     device: ID3D11Device,
     swapchain: IDXGISwapChain1,
-    _factory2d: ID2D1Factory1,
+    factory2d: ID2D1Factory1,
     ctx: ID2D1DeviceContext,
+    /// D2D 1.2 - realizacje geometrii (Windows 8.1+).
+    ctx1: ID2D1DeviceContext1,
 
     backbuffer: Option<ID2D1Bitmap1>,
     /// Dwie bitmapy warstwy suchej: biezaca i zapasowa do przewijania przyrostowego.
@@ -154,14 +157,26 @@ pub struct Renderer {
     text_fmt_center: IDWriteTextFormat,
     text_fmt_ui: IDWriteTextFormat,
 
-    /// Teselacja per kreska. Kreski sa niezmienne, wiec wpis nigdy sie nie
-    /// dezaktualizuje - czyscimy tylko przy przekroczeniu budzetu pamieci.
-    seg_cache: HashMap<StrokeId, Vec<Segment>>,
-    seg_cache_total: usize,
+    /// Obrys per kreska zrealizowany do mesha (`geometry.rs`). Kreski sa
+    /// niezmienne, wiec wpis dezaktualizuje sie tylko przy duzej zmianie zoomu
+    /// (tolerancja splaszczania byla liczona dla innej skali).
+    geo_cache: HashMap<StrokeId, GeoEntry>,
+    geo_cache_verts: usize,
+    /// Bufor teselacji wielokrotnego uzytku.
+    seg_scratch: Vec<Segment>,
 }
 
-/// ~40 MB odcinkow; powyzej tego cache jest czyszczony w calosci.
-const SEG_CACHE_BUDGET: usize = 2_000_000;
+struct GeoEntry {
+    real: ID2D1GeometryRealization,
+    zoom: f32,
+    verts: usize,
+}
+
+/// Suma wierzcholkow obrysow w cache; powyzej - czyszczenie w calosci.
+/// Rzad 100-200 MB GPU przy pelnym budzecie.
+const GEO_CACHE_BUDGET: usize = 6_000_000;
+/// Zoom w tym zakresie wzgledem zbudowanego nie wymaga przebudowy obrysu.
+const GEO_ZOOM_TOL: f32 = 1.5;
 
 impl Renderer {
     pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
@@ -223,6 +238,7 @@ impl Renderer {
             let dxgi_device: IDXGIDevice = device.cast()?;
             let device2d = factory2d.CreateDevice(&dxgi_device)?;
             let ctx = device2d.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+            let ctx1: ID2D1DeviceContext1 = ctx.cast()?;
             ctx.SetDpi(96.0, 96.0); // jednostki D2D == piksele fizyczne
             ctx.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             // Skala szarosci, nigdy ClearType - uklad subpikseli OLED daje kolorowe obwodki.
@@ -294,8 +310,9 @@ impl Renderer {
                 size: (width.max(1), height.max(1)),
                 device,
                 swapchain,
-                _factory2d: factory2d,
+                factory2d,
                 ctx,
+                ctx1,
                 backbuffer: None,
                 dry: [None, None],
                 dry_cur: 0,
@@ -308,8 +325,9 @@ impl Renderer {
                 text_fmt_big,
                 text_fmt_center,
                 text_fmt_ui,
-                seg_cache: HashMap::new(),
-                seg_cache_total: 0,
+                geo_cache: HashMap::new(),
+                geo_cache_verts: 0,
+                seg_scratch: Vec::with_capacity(4096),
             };
             r.create_size_dependent()?;
             Ok(r)
@@ -435,7 +453,50 @@ impl Renderer {
         }
     }
 
+    /// Obrys kreski z cache albo zbudowany teraz. `verts` to koszt pamieciowy.
+    unsafe fn stroke_realization(
+        &mut self,
+        id: StrokeId,
+        data: &spectre_proto::StrokeData,
+        ink: &InkConfig,
+        zoom: f32,
+    ) -> Result<ID2D1GeometryRealization> {
+        if let Some(e) = self.geo_cache.get(&id) {
+            let ratio = zoom / e.zoom;
+            if ratio < GEO_ZOOM_TOL && ratio > 1.0 / GEO_ZOOM_TOL {
+                return Ok(e.real.clone());
+            }
+            self.geo_cache_verts -= e.verts;
+            self.geo_cache.remove(&id);
+        }
+        if self.geo_cache_verts > GEO_CACHE_BUDGET {
+            self.geo_cache.clear();
+            self.geo_cache_verts = 0;
+        }
+        let mut segs = std::mem::take(&mut self.seg_scratch);
+        segs.clear();
+        stroke_segments(data, ink, &mut segs);
+        let geo = geometry::build(&self.factory2d, &segs, zoom)?;
+        let verts = segs.len() * 2 + 32;
+        self.seg_scratch = segs;
+        // Tolerancja splaszczania w jednostkach canvasu: 1/4 piksela ekranu.
+        let real = self
+            .ctx1
+            .CreateFilledGeometryRealization(&geo, 0.25 / zoom)?;
+        self.geo_cache.insert(
+            id,
+            GeoEntry {
+                real: real.clone(),
+                zoom,
+                verts,
+            },
+        );
+        self.geo_cache_verts += verts;
+        Ok(real)
+    }
+
     /// Rysuje kreski dokumentu przecinajace `rect` (canvas) na biezacy target.
+    /// Kazda kreska to jedno `DrawGeometryRealization` w transformacji kamery.
     unsafe fn draw_document(
         &mut self,
         doc: &Document,
@@ -443,41 +504,34 @@ impl Renderer {
         ink: &InkConfig,
         rect: Bbox,
     ) -> Result<()> {
-        // Zbieramy geometrie per kolor, zeby nie zmieniac pedzla na kazda kreske.
-        // Do D2D ida tylko odcinki, ktore realnie leza w `rect` - przy przewijaniu
-        // pas ma kilka pikseli wysokosci, a klip obcina piksele, nie wywolania.
-        let mut by_color: HashMap<u32, Vec<Segment>> = HashMap::new();
+        self.ctx.SetTransform(&Matrix3x2 {
+            M11: cam.zoom,
+            M12: 0.0,
+            M21: 0.0,
+            M22: cam.zoom,
+            M31: cam.shift.0,
+            M32: cam.shift.1 - cam.scroll_y * cam.zoom,
+        });
+        let mut res = Ok(());
         for (id, data, _) in doc.visible_in(rect) {
-            if self.seg_cache_total > SEG_CACHE_BUDGET {
-                self.seg_cache.clear();
-                self.seg_cache_total = 0;
-            }
-            let segs = match self.seg_cache.entry(id) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    let mut v = Vec::new();
-                    stroke_segments(data, ink, &mut v);
-                    self.seg_cache_total += v.len();
-                    e.insert(v)
+            let real = match self.stroke_realization(id, data, ink, cam.zoom) {
+                Ok(r) => r,
+                Err(e) => {
+                    res = Err(e);
+                    break;
                 }
             };
-            let key = u32::from_le_bytes([data.color.r, data.color.g, data.color.b, data.color.a]);
-            let out = by_color.entry(key).or_default();
-            for s in segs.iter() {
-                let w = s.width;
-                let (x0, x1) = (s.a.x.min(s.b.x) - w, s.a.x.max(s.b.x) + w);
-                let (y0, y1) = (s.a.y.min(s.b.y) - w, s.a.y.max(s.b.y) + w);
-                if y1 >= rect.min_y && y0 <= rect.max_y && x1 >= rect.min_x && x0 <= rect.max_x {
-                    out.push(*s);
+            let brush = match self.brush(data.color) {
+                Ok(b) => b,
+                Err(e) => {
+                    res = Err(e);
+                    break;
                 }
-            }
+            };
+            self.ctx1.DrawGeometryRealization(&real, &brush);
         }
-        for (key, segs) in by_color {
-            let [r, g, b, a] = key.to_le_bytes();
-            let brush = self.brush(Rgba { r, g, b, a })?;
-            self.draw_segments(&segs, &brush, cam);
-        }
-        Ok(())
+        self.ctx.SetTransform(&Matrix3x2::identity());
+        res
     }
 
     /// Przebudowa fragmentu warstwy suchej (canvas). Po wymazaniu: czyscimy

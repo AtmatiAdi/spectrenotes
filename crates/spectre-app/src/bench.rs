@@ -97,7 +97,11 @@ pub fn run() -> windows::core::Result<()> {
     for &(n, len) in &[(200usize, 150usize), (2000, 150), (10000, 150)] {
         let doc = synthetic_doc(n, len, w as f32, 20_000.0);
         let mut cam = Camera::default();
+        // Zimny rebuild: budowa obrysow kazdej widocznej kreski - to placi
+        // zmiana notatki.
+        let t0 = std::time::Instant::now();
         r.rebuild(&doc, &cam, &ink)?;
+        let rebuild_cold = t0.elapsed().as_secs_f32() * 1000.0;
 
         let (rebuild_avg, rebuild_max) = time(20, || {
             r.rebuild(&doc, &cam, &ink).unwrap();
@@ -170,6 +174,7 @@ pub fn run() -> windows::core::Result<()> {
 
         println!(
             "\n{n} kresek x {len} probek (widocznych ~{}):\n\
+             rebuild zimny    {rebuild_cold:7.2} ms\n\
              rebuild          {rebuild_avg:7.2} ms  (max {rebuild_max:6.2})\n\
              scroll +2px      {scroll_avg:7.3} ms  (max {scroll_max:6.2})\n\
              repaint 300x120  {repaint_avg:7.3} ms  (max {repaint_max:6.2})\n\
