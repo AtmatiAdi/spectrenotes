@@ -39,7 +39,17 @@ fragment paska, dwuklik maksymalizuje, snap i `Win+strzałki` działają jak zwy
 zadokowany, i chowa się po 2,5 s bezczynności (Z7). **Jest dokowalny**: złap za
 uchwyt (kropki na początku paska) i upuść przy dowolnej krawędzi — góra/dół
 przełącza go w orientację poziomą. Dok i położenie okna zapisują się
-w `%APPDATA%SpectreNotesnfig.txt` (jawny `klucz=wartość`).
+w `%APPDATA%\SpectreNotes\config.txt` (jawny `klucz=wartość`).
+
+**Menu** (☰ w lewym rogu paska tytułowego, na pasku narzędzi albo `M`) to panel
+z trzema zakładkami. *Notatki*: lista w folderach, od najnowszej, z datą utworzenia;
+tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,
+na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę,
+`Enter`). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
+zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
+*Ustawienia* i *Konto* to na razie wydmuszki: ustawienia przełączają vsync,
+tearing, HUD, pełny ekran i dok paska, konto pokazuje autora i czeka na Etap 5.
+Dotknięcie poza panelem zamyka go.
 
 | Sterowanie | Działanie |
 |---|---|
@@ -53,6 +63,7 @@ w `%APPDATA%SpectreNotesnfig.txt` (jawny `klucz=wartość`).
 | `E` | gumka z klawiatury |
 | `[` `]` | grubość |
 | `Ctrl+Z` / `Ctrl+Y` | cofnij / ponów (cofnięcie wymazania odtwarza kreskę) |
+| `M` | menu: notatki w folderach, ustawienia, konto |
 | `PgUp` / `PgDn` | poprzednia / następna notatka |
 | `Ctrl+N` | nowa notatka |
 | `F11`, `H`, `V`, `T` | pełny ekran, HUD (domyślnie wyłączony), vsync, tryb przewijania |

@@ -25,6 +25,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
@@ -95,9 +96,28 @@ pub enum UiPrim {
         h: f32,
         text: String,
         color: Rgba,
-        big: bool,
-        center: bool,
+        font: UiFont,
     },
+    /// Od tego miejsca rysowanie jest przycinane do prostokata - do `Unclip`.
+    Clip {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
+    Unclip,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiFont {
+    /// Consolas 14, do lewej, od gory (HUD, wartosci).
+    Mono,
+    /// Segoe UI 15, do lewej, wysrodkowana w pionie, bez zawijania (listy).
+    Ui,
+    /// Segoe UI 15, wysrodkowana w obu osiach (przyciski).
+    Center,
+    /// Segoe UI 20, wysrodkowana (glify).
+    Big,
 }
 
 /// Co narysowac na wierzchu klatki, poza dokumentem.
@@ -132,6 +152,7 @@ pub struct Renderer {
     text_fmt: IDWriteTextFormat,
     text_fmt_big: IDWriteTextFormat,
     text_fmt_center: IDWriteTextFormat,
+    text_fmt_ui: IDWriteTextFormat,
 
     /// Teselacja per kreska. Kreski sa niezmienne, wiec wpis nigdy sie nie
     /// dezaktualizuje - czyscimy tylko przy przekroczeniu budzetu pamieci.
@@ -253,6 +274,19 @@ impl Renderer {
             )?;
             text_fmt_center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
             text_fmt_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            // Listy i etykiety: do lewej, wysrodkowane w pionie, bez zawijania
+            // (za dlugi tytul jest ucinany przez prostokat, nie lamany).
+            let text_fmt_ui = dwrite.CreateTextFormat(
+                w("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                15.0,
+                w("en-us"),
+            )?;
+            text_fmt_ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            text_fmt_ui.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
 
             let mut r = Self {
                 adapter_name,
@@ -273,6 +307,7 @@ impl Renderer {
                 text_fmt,
                 text_fmt_big,
                 text_fmt_center,
+                text_fmt_ui,
                 seg_cache: HashMap::new(),
                 seg_cache_total: 0,
             };
@@ -654,6 +689,7 @@ impl Renderer {
     }
 
     unsafe fn draw_ui(&mut self, prims: &[UiPrim]) -> Result<()> {
+        let mut depth = 0u32;
         for p in prims {
             match p {
                 UiPrim::Rect {
@@ -720,16 +756,14 @@ impl Renderer {
                     h,
                     text,
                     color,
-                    big,
-                    center,
+                    font,
                 } => {
                     let brush = self.brush(*color)?;
-                    let fmt = if *big {
-                        &self.text_fmt_big
-                    } else if *center {
-                        &self.text_fmt_center
-                    } else {
-                        &self.text_fmt
+                    let fmt = match font {
+                        UiFont::Mono => &self.text_fmt,
+                        UiFont::Ui => &self.text_fmt_ui,
+                        UiFont::Center => &self.text_fmt_center,
+                        UiFont::Big => &self.text_fmt_big,
                     };
                     let wide: Vec<u16> = text.encode_utf16().collect();
                     let rect = D2D_RECT_F {
@@ -747,7 +781,29 @@ impl Renderer {
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
                 }
+                UiPrim::Clip { x, y, w, h } => {
+                    let r = D2D_RECT_F {
+                        left: *x,
+                        top: *y,
+                        right: x + w,
+                        bottom: y + h,
+                    };
+                    self.ctx
+                        .PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+                    depth += 1;
+                }
+                UiPrim::Unclip => {
+                    if depth > 0 {
+                        self.ctx.PopAxisAlignedClip();
+                        depth -= 1;
+                    }
+                }
             }
+        }
+        // Niedomkniete Clip nie moze zostawic kontekstu w zlym stanie.
+        while depth > 0 {
+            self.ctx.PopAxisAlignedClip();
+            depth -= 1;
         }
         Ok(())
     }

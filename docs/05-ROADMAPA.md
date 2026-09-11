@@ -48,7 +48,7 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [x] Space = katalog, notatka = katalog ULID, lista i tworzenie notatek
 - [x] `fsync` po 400 ms ciszy — **kryterium 1 s spełnione konstrukcyjnie**
 - [ ] Snapshoty i przycinanie HEAD (potrzebne dopiero przy dużych notatkach)
-- [ ] Tytuły notatek (format je ma — `Meta`; brak UI do wpisania)
+- [x] Tytuł i folder notatki w `Meta` (jedna reguła LWW dla obu; UI: pasek tytułowy i menu)
 
 ## Etap 4 — Powłoka i rezydentność  ◐ W TOKU
 
@@ -65,7 +65,10 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       pozioma dla góra/dół; dok i położenie okna w `config.txt`
 - [ ] Więcej narzędzi (zaznaczanie, kształty) — po Etapie 5, wymaga `StrokeTransform`
 - [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
-- [ ] Lista notatek (na razie tylko poprzednia/następna)
+- [x] Menu (☰ w pasku tytułowym i na pasku narzędzi, `M`): lista notatek w folderach
+      (folder = `Meta` notatki, LWW; cache `<space>/.cache/meta`), przenoszenie między
+      folderami, nowa notatka/folder; zakładki Ustawienia i Konto jako wydmuszki
+      (ustawienia przełączają to, co już jest; logowanie czeka na Etap 5)
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
 - [ ] Pixel shift i rampa przygaszania (Z7)
 

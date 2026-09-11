@@ -12,12 +12,18 @@
 //!
 //! Wczytanie notatki = odczyt wszystkich plikow wszystkich autorow i `apply`
 //! kazdej operacji. Kolejnosc odczytu nie ma znaczenia - CRDT jest przemienny.
+//!
+//! Obok tego `<space>/.cache/meta/<ULID>.txt` - pochodna z op-logu (tytul,
+//! folder) do budowy listy notatek bez czytania wszystkich kresek. Katalog
+//! `.cache` jest lokalny dla maszyny (Etap 5 wpisze go do `.gitignore`);
+//! brak pliku = jednorazowy skan op-logu. Foldery: `<space>/folders.txt`,
+//! jedna nazwa na linie - to zrodlo dla folderow bez notatek.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use spectre_proto::{Op, OpsReader, OpsWriter};
+use spectre_proto::{Op, OpKind, OpsReader, OpsWriter};
 
 use crate::author::AuthorName;
 use crate::ulid;
@@ -67,6 +73,130 @@ impl Space {
 
     pub fn note_dir(&self, id: &str) -> PathBuf {
         self.root.join("notes").join(id)
+    }
+
+    fn meta_cache_path(&self, id: &str) -> PathBuf {
+        self.root
+            .join(".cache")
+            .join("meta")
+            .join(format!("{id}.txt"))
+    }
+
+    /// Metadane notatki z cache; gdy go nie ma - skan op-logu i zapis cache.
+    pub fn note_meta(&self, id: &str) -> NoteMeta {
+        if let Ok(text) = fs::read_to_string(self.meta_cache_path(id)) {
+            return NoteMeta::parse(&text);
+        }
+        let meta = self.scan_meta(id).unwrap_or_default();
+        let _ = self.write_note_meta(id, &meta);
+        meta
+    }
+
+    /// Nadpisuje cache. Wolane przez aplikacje po kazdej zmianie `Meta`.
+    pub fn write_note_meta(&self, id: &str, meta: &NoteMeta) -> io::Result<()> {
+        let p = self.meta_cache_path(id);
+        if let Some(dir) = p.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(p, meta.serialize())
+    }
+
+    /// LWW po (lamport, author) - ta sama regula co w `Document`.
+    fn scan_meta(&self, id: &str) -> io::Result<NoteMeta> {
+        let ops_dir = self.note_dir(id).join("ops");
+        let mut title: Option<((u64, u64), String)> = None;
+        let mut folder: Option<((u64, u64), String)> = None;
+        for author_dir in read_sorted_dirs(&ops_dir)? {
+            for chunk in read_sorted_chunks(&author_dir)? {
+                let Some(parsed) = OpsReader::read_path(&chunk)? else {
+                    continue;
+                };
+                for op in parsed.ops {
+                    let OpKind::Meta { key, value } = op.kind else {
+                        continue;
+                    };
+                    let stamp = (op.lamport, op.author.0);
+                    let slot = match key.as_str() {
+                        "title" => &mut title,
+                        "folder" => &mut folder,
+                        _ => continue,
+                    };
+                    if slot.as_ref().is_none_or(|(old, _)| stamp > *old) {
+                        *slot = Some((stamp, value));
+                    }
+                }
+            }
+        }
+        Ok(NoteMeta {
+            title: title.map(|(_, v)| v).unwrap_or_default(),
+            folder: folder.map(|(_, v)| v).unwrap_or_default(),
+        })
+    }
+
+    fn folders_path(&self) -> PathBuf {
+        self.root.join("folders.txt")
+    }
+
+    /// Foldery zadeklarowane jawnie (takze puste). Foldery wynikajace z notatek
+    /// dokłada aplikacja.
+    pub fn list_folders(&self) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_to_string(self.folders_path())
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    pub fn add_folder(&self, name: &str) -> io::Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let mut v = self.list_folders();
+        if v.iter().any(|f| f == name) {
+            return Ok(());
+        }
+        v.push(name.to_string());
+        v.sort();
+        let mut out = String::new();
+        for f in v {
+            out.push_str(&f);
+            out.push('\n');
+        }
+        fs::write(self.folders_path(), out)
+    }
+}
+
+/// Pochodna z `Meta` op-logu; patrz naglowek modulu.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct NoteMeta {
+    pub title: String,
+    /// Pusty = korzen.
+    pub folder: String,
+}
+
+impl NoteMeta {
+    fn parse(text: &str) -> Self {
+        let mut m = Self::default();
+        for line in text.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                match k.trim() {
+                    "title" => m.title = v.trim().to_string(),
+                    "folder" => m.folder = v.trim().to_string(),
+                    _ => {}
+                }
+            }
+        }
+        m
+    }
+
+    fn serialize(&self) -> String {
+        format!("title={}\nfolder={}\n", self.title, self.folder)
     }
 }
 
@@ -252,6 +382,45 @@ mod tests {
         let dirs = read_sorted_dirs(&space.note_dir(&note).join("ops")).unwrap();
         assert_eq!(dirs.len(), 2, "kazdy autor ma wlasny katalog");
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn meta_z_oplogu_i_cache() {
+        let root = std::env::temp_dir().join(format!("spectre-meta-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let space = Space::open_or_create(&root).unwrap();
+        let note = space.create_note().unwrap();
+        let adi = AuthorName::new("adi", "laptop");
+        {
+            let (mut s, _) = NoteStore::open(&space, &note, &adi).unwrap();
+            let mut d = Document::new(adi.id());
+            s.append(&d.set_meta("title", "stary")).unwrap();
+            s.append(&d.set_meta("folder", "Fizyka")).unwrap();
+            s.append(&d.set_meta("title", "nowy")).unwrap();
+            s.sync().unwrap();
+        }
+        // Brak cache -> skan op-logu, LWW wybiera "nowy".
+        let m = space.note_meta(&note);
+        assert_eq!(m.title, "nowy");
+        assert_eq!(m.folder, "Fizyka");
+        assert!(root.join(".cache").join("meta").exists());
+        // Cache ma pierwszenstwo nad op-logiem (jest nadpisywany przez aplikacje).
+        space
+            .write_note_meta(
+                &note,
+                &NoteMeta {
+                    title: "z cache".into(),
+                    folder: String::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(space.note_meta(&note).title, "z cache");
+
+        space.add_folder("Chemia").unwrap();
+        space.add_folder("Chemia").unwrap();
+        space.add_folder("  ").unwrap();
+        assert_eq!(space.list_folders(), vec!["Chemia".to_string()]);
         let _ = fs::remove_dir_all(&root);
     }
 }

@@ -9,7 +9,7 @@
 //! miesci tytul notatki (edytowalny) i przyciski okna.
 
 use spectre_proto::Rgba;
-use spectre_render::UiPrim;
+use spectre_render::{UiFont, UiPrim};
 
 /// Grubosc paska narzedzi w osi poprzecznej.
 pub const BAR_THICK: f32 = 56.0;
@@ -21,19 +21,19 @@ pub const GRIP_LEN: f32 = 22.0;
 pub const TITLE_BAR_H: f32 = 34.0;
 pub const WIN_BTN_W: f32 = 46.0;
 
-const BG: Rgba = Rgba {
+pub(crate) const BG: Rgba = Rgba {
     r: 18,
     g: 18,
     b: 18,
     a: 235,
 };
-const BG_TITLE: Rgba = Rgba::rgb(12, 12, 12);
-const LINE: Rgba = Rgba::rgb(60, 60, 60);
-const FG: Rgba = Rgba::rgb(190, 190, 190);
-const FG_DIM: Rgba = Rgba::rgb(110, 110, 110);
-const ACCENT: Rgba = Rgba::rgb(115, 160, 140);
-const HOT: Rgba = Rgba::rgb(34, 34, 34);
-const ACTIVE: Rgba = Rgba::rgb(40, 52, 46);
+pub(crate) const BG_TITLE: Rgba = Rgba::rgb(12, 12, 12);
+pub(crate) const LINE: Rgba = Rgba::rgb(60, 60, 60);
+pub(crate) const FG: Rgba = Rgba::rgb(190, 190, 190);
+pub(crate) const FG_DIM: Rgba = Rgba::rgb(110, 110, 110);
+pub(crate) const ACCENT: Rgba = Rgba::rgb(115, 160, 140);
+pub(crate) const HOT: Rgba = Rgba::rgb(34, 34, 34);
+pub(crate) const ACTIVE: Rgba = Rgba::rgb(40, 52, 46);
 const CLOSE_HOT: Rgba = Rgba::rgb(120, 40, 40);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -90,6 +90,7 @@ impl Dock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Grip,
+    Menu,
     Pen,
     Eraser,
     Color(usize),
@@ -104,6 +105,7 @@ pub enum Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleAction {
+    Menu,
     EditTitle,
     Minimize,
     Maximize,
@@ -123,6 +125,7 @@ pub struct UiState<'a> {
     pub title: &'a str,
     pub zoom: f32,
     pub maximized: bool,
+    pub menu_open: bool,
 }
 
 struct Item {
@@ -160,7 +163,7 @@ impl Toolbar {
         }
     }
 
-    fn content_top(&self) -> f32 {
+    pub fn content_top(&self) -> f32 {
         if self.title_bar {
             TITLE_BAR_H
         } else {
@@ -173,7 +176,8 @@ impl Toolbar {
         // (akcja, odstep przed elementem, dlugosc w osi glownej)
         let mut order: Vec<(Action, f32, f32)> = vec![
             (Action::Grip, 0.0, GRIP_LEN),
-            (Action::Pen, 6.0, ITEM_LEN),
+            (Action::Menu, 4.0, ITEM_LEN),
+            (Action::Pen, 8.0, ITEM_LEN),
             (Action::Eraser, 0.0, ITEM_LEN),
         ];
         for i in 0..palette_len {
@@ -299,6 +303,14 @@ impl Toolbar {
             TitleAction::Minimize => 3.0,
             TitleAction::Maximize => 2.0,
             TitleAction::Close => 1.0,
+            TitleAction::Menu => {
+                return Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: WIN_BTN_W,
+                    h: TITLE_BAR_H,
+                }
+            }
             TitleAction::EditTitle => 0.0,
         };
         Rect {
@@ -323,6 +335,7 @@ impl Toolbar {
             TitleAction::Close,
             TitleAction::Maximize,
             TitleAction::Minimize,
+            TitleAction::Menu,
         ] {
             if self.win_button_rect(a).contains(x, y) {
                 return Some(a);
@@ -471,20 +484,39 @@ impl Toolbar {
             } else {
                 FG_DIM
             },
-            big: false,
-            center: true,
+            font: UiFont::Center,
         });
 
-        // Lewy rog: nazwa aplikacji i numer notatki - przygaszone.
+        // Lewy rog: menu, potem nazwa aplikacji i numer notatki - przygaszone.
+        let mr = self.win_button_rect(TitleAction::Menu);
+        if self.title_hot == Some(TitleAction::Menu) || s.menu_open {
+            out.push(UiPrim::Rect {
+                x: mr.x + 6.0,
+                y: mr.y + 5.0,
+                w: mr.w - 12.0,
+                h: mr.h - 10.0,
+                color: if s.menu_open { ACTIVE } else { HOT },
+                r: 6.0,
+            });
+        }
+        for k in -1..=1 {
+            out.push(UiPrim::Rect {
+                x: mr.x + mr.w * 0.5 - 8.0,
+                y: mr.y + mr.h * 0.5 + k as f32 * 5.0 - 0.75,
+                w: 16.0,
+                h: 1.5,
+                color: FG,
+                r: 0.75,
+            });
+        }
         out.push(UiPrim::Text {
-            x: 12.0,
+            x: mr.x + mr.w + 6.0,
             y: 0.0,
             w: 260.0,
             h: TITLE_BAR_H,
             text: format!("SpectreNotes   {}/{}", s.note_idx + 1, s.notes_len),
             color: FG_DIM,
-            big: false,
-            center: false,
+            font: UiFont::Ui,
         });
 
         // Przyciski okna.
@@ -515,8 +547,7 @@ impl Toolbar {
                 h: r.h,
                 text: glyph.to_string(),
                 color: FG,
-                big: false,
-                center: true,
+                font: UiFont::Center,
             });
         }
     }
@@ -571,6 +602,7 @@ impl Toolbar {
             let r = it.rect;
             let hot = self.hot == Some(it.action);
             let active = match it.action {
+                Action::Menu => s.menu_open,
                 Action::Pen => !s.eraser,
                 Action::Eraser => s.eraser,
                 Action::Color(i) => i == s.color_idx && !s.eraser,
@@ -614,6 +646,18 @@ impl Toolbar {
                         }
                     }
                 }
+                Action::Menu => {
+                    for k in -1..=1 {
+                        out.push(UiPrim::Rect {
+                            x: r.cx() - 9.0,
+                            y: r.cy() + k as f32 * 5.5 - 0.75,
+                            w: 18.0,
+                            h: 1.5,
+                            color: fg,
+                            r: 0.75,
+                        });
+                    }
+                }
                 Action::Pen => out.push(UiPrim::Circle {
                     x: r.cx(),
                     y: r.cy(),
@@ -655,8 +699,7 @@ impl Toolbar {
                     h: r.h,
                     text: format!("−\n{:.1}", s.width),
                     color: fg,
-                    big: false,
-                    center: true,
+                    font: UiFont::Center,
                 }),
                 Action::WidthUp => out.push(UiPrim::Text {
                     x: r.x,
@@ -665,8 +708,7 @@ impl Toolbar {
                     h: r.h,
                     text: "+".to_string(),
                     color: fg,
-                    big: false,
-                    center: true,
+                    font: UiFont::Center,
                 }),
                 _ => {
                     let glyph = match it.action {
@@ -684,8 +726,7 @@ impl Toolbar {
                         h: r.h,
                         text: glyph.to_string(),
                         color: fg,
-                        big: true,
-                        center: true,
+                        font: UiFont::Big,
                     });
                 }
             }
@@ -713,8 +754,7 @@ impl Toolbar {
             h: zr.h,
             text: format!("{:.0}%", s.zoom * 100.0),
             color: FG_DIM,
-            big: false,
-            center: true,
+            font: UiFont::Center,
         });
     }
 }

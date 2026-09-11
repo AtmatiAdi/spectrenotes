@@ -11,6 +11,7 @@
 mod app;
 mod bench;
 mod config;
+mod menu;
 mod ui;
 
 use std::path::PathBuf;

@@ -19,6 +19,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Config;
+use crate::menu::{Menu, MenuHit, MenuState, NoteEntry, Setting};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
@@ -83,7 +84,9 @@ pub struct App {
     hwnd: HWND,
     space: Space,
     author: AuthorName,
-    notes: Vec<String>,
+    notes: Vec<NoteEntry>,
+    /// Foldery zadeklarowane jawnie (`folders.txt`); reszta wynika z notatek.
+    folders: Vec<String>,
     note_idx: usize,
     store: NoteStore,
     doc: Document,
@@ -116,6 +119,7 @@ pub struct App {
     fullscreen: Fullscreen,
 
     toolbar: Toolbar,
+    menu: Menu,
     config: Config,
     ui_prims: Vec<UiPrim>,
     _tray: Tray,
@@ -170,12 +174,14 @@ impl App {
     fn new(hwnd: HWND, space_dir: &Path) -> std::io::Result<Self> {
         let space = Space::open_or_create(space_dir)?;
         let author = AuthorName::from_env();
-        let mut notes = space.list_notes()?;
+        let mut notes = load_entries(&space)?;
         if notes.is_empty() {
-            notes.push(space.create_note()?);
+            notes.push(entry_for(&space, space.create_note()?));
         }
+        let folders = space.list_folders();
         let note_idx = notes.len() - 1;
-        let (store, doc) = open_note(&space, &notes[note_idx], &author)?;
+        let (store, doc) = open_note(&space, &notes[note_idx].id, &author)?;
+        refresh_entry(&space, &mut notes[note_idx], &doc);
 
         let (w, h) = window::client_size(hwnd);
         let renderer = Renderer::new(hwnd, w, h)
@@ -190,12 +196,15 @@ impl App {
             .unwrap_or(Dock::Left);
         let mut toolbar = Toolbar::new(dock);
         toolbar.layout(w as f32, h as f32, PALETTE.len());
+        let mut menu = Menu::new();
+        menu.layout(w as f32, h as f32, toolbar.content_top());
 
         Ok(Self {
             hwnd,
             space,
             author,
             notes,
+            folders,
             note_idx,
             store,
             doc,
@@ -218,6 +227,7 @@ impl App {
             pan_tearing: true,
             fullscreen: Fullscreen::default(),
             toolbar,
+            menu,
             config,
             ui_prims: Vec::with_capacity(64),
             _tray: tray,
@@ -430,6 +440,7 @@ impl App {
             title: "",
             zoom: self.cam.zoom,
             maximized: window::is_maximized(self.hwnd),
+            menu_open: self.menu.open,
         }
     }
 
@@ -450,6 +461,7 @@ impl App {
                 self.mode = Mode::DragBar;
                 self.toolbar.dragging = Some((x, y));
             }
+            Action::Menu => self.menu.toggle(),
             Action::Pen => self.eraser_tool = false,
             Action::Eraser => self.eraser_tool = true,
             Action::Color(i) => {
@@ -471,6 +483,7 @@ impl App {
     /// Dotkniecie paska tytulowego: przyciski okna albo edycja tytulu.
     fn title_tap(&mut self, action: TitleAction) {
         match action {
+            TitleAction::Menu => self.menu.toggle(),
             TitleAction::EditTitle => {
                 self.toolbar.title_edit = Some(self.title());
                 unsafe {
@@ -489,6 +502,84 @@ impl App {
                 let _ = ShowWindow(self.hwnd, cmd);
             },
             TitleAction::Close => self.hide(),
+        }
+    }
+
+    /// Dotkniecie panelu menu.
+    fn menu_tap(&mut self, hit: MenuHit) {
+        match hit {
+            MenuHit::Panel => {}
+            MenuHit::Tab(t) => self.menu.set_tab(t),
+            MenuHit::Note(i) => self.switch_note(i),
+            MenuHit::MoveTo(f) => {
+                let folder = match f {
+                    None => String::new(),
+                    Some(i) => match self.menu.folder_name(i) {
+                        Some(n) => n.to_string(),
+                        None => return,
+                    },
+                };
+                self.move_note_to(&folder);
+            }
+            MenuHit::NewNote => self.new_note(),
+            MenuHit::NewFolder => {
+                self.menu.folder_edit = Some(String::new());
+                unsafe {
+                    let _ = SetFocus(Some(self.hwnd));
+                }
+            }
+            MenuHit::Setting(s) => self.toggle_setting(s),
+            MenuHit::Login => {
+                self.status = "logowanie do GitHub pojawi sie w Etapie 5".to_string();
+            }
+        }
+    }
+
+    fn toggle_setting(&mut self, s: Setting) {
+        match s {
+            Setting::Vsync => self.vsync = !self.vsync,
+            Setting::PanTearing => self.pan_tearing = !self.pan_tearing,
+            Setting::Hud => self.show_hud = !self.show_hud,
+            Setting::Fullscreen => self.toggle_fullscreen(),
+            Setting::Dock => {
+                let next = match self.toolbar.dock {
+                    Dock::Left => Dock::Top,
+                    Dock::Top => Dock::Right,
+                    Dock::Right => Dock::Bottom,
+                    Dock::Bottom => Dock::Left,
+                };
+                self.toolbar.dock = next;
+                let (w, h) = self.renderer.size();
+                self.toolbar.layout(w as f32, h as f32, PALETTE.len());
+                self.config.set("dock", next.name());
+                self.config.save();
+            }
+        }
+    }
+
+    fn toggle_fullscreen(&mut self) {
+        self.fullscreen.toggle(self.hwnd);
+        self.toolbar.title_bar = !self.fullscreen.is_active();
+        self.relayout();
+    }
+
+    fn relayout(&mut self) {
+        let (w, h) = self.renderer.size();
+        self.toolbar.layout(w as f32, h as f32, PALETTE.len());
+        self.menu
+            .layout(w as f32, h as f32, self.toolbar.content_top());
+    }
+
+    fn commit_folder_edit(&mut self) {
+        if let Some(name) = self.menu.folder_edit.take() {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return;
+            }
+            if let Err(e) = self.space.add_folder(&name) {
+                self.status = format!("folder: {e}");
+            }
+            self.folders = self.space.list_folders();
         }
     }
 
@@ -521,8 +612,14 @@ impl App {
             if buf != self.title() {
                 let op = self.doc.set_meta("title", &buf);
                 self.persist(&[op]);
+                self.sync_entry();
             }
         }
+    }
+
+    /// Po zmianie `Meta`: wpis na liscie i cache na dysku maja odzwierciedlac dokument.
+    fn sync_entry(&mut self) {
+        refresh_entry(&self.space, &mut self.notes[self.note_idx], &self.doc);
     }
 
     // ----- trwalosc ----------------------------------------------------------
@@ -572,7 +669,7 @@ impl App {
         self.end_action();
         self.commit_title();
         self.sync_now();
-        match open_note(&self.space, &self.notes[idx], &self.author) {
+        match open_note(&self.space, &self.notes[idx].id, &self.author) {
             Ok((store, doc)) => {
                 self.store = store;
                 self.doc = doc;
@@ -580,20 +677,36 @@ impl App {
                 self.cam = Camera::default();
                 self.dirty = Dirty::Full;
                 self.status.clear();
+                self.sync_entry();
             }
             Err(e) => self.status = format!("otwarcie notatki: {e}"),
         }
     }
 
+    /// Nowa notatka laduje w folderze biezacej - tak zachowuje sie lista,
+    /// w ktorej uzytkownik wlasnie jest.
     fn new_note(&mut self) {
+        let folder = self.notes[self.note_idx].folder.clone();
         match self.space.create_note() {
             Ok(id) => {
-                self.notes.push(id);
+                self.notes.push(entry_for(&self.space, id));
                 let idx = self.notes.len() - 1;
                 self.switch_note(idx);
+                if self.note_idx == idx && !folder.is_empty() {
+                    self.move_note_to(&folder);
+                }
             }
             Err(e) => self.status = format!("nowa notatka: {e}"),
         }
+    }
+
+    fn move_note_to(&mut self, folder: &str) {
+        if self.notes[self.note_idx].folder == folder {
+            return;
+        }
+        let op = self.doc.set_meta("folder", folder);
+        self.persist(&[op]);
+        self.sync_entry();
     }
 
     // ----- okno --------------------------------------------------------------
@@ -688,6 +801,24 @@ impl App {
         let mut st = self.ui_state();
         st.title = &title;
         self.toolbar.build(&st, &mut prims);
+        if self.menu.open {
+            let author = self.author.dir_name();
+            // Pola wprost (nie metoda na `self`): `build` bierze &mut menu, stan czyta reszte.
+            let ms = MenuState {
+                notes: &self.notes,
+                folders: &self.folders,
+                note_idx: self.note_idx,
+                author: &author,
+                space: self.space.root().to_str().unwrap_or("?"),
+                gpu: self.renderer.adapter_name(),
+                vsync: self.vsync,
+                pan_tearing: self.pan_tearing,
+                hud: self.show_hud,
+                fullscreen: self.fullscreen.is_active(),
+                dock: self.toolbar.dock.name(),
+            };
+            self.menu.build(&ms, &mut prims);
+        }
 
         let tail = std::mem::take(&mut self.tail_buf);
         let _ = self.renderer.present(
@@ -776,6 +907,41 @@ fn open_note(
     Ok((store, doc))
 }
 
+fn entry_for(space: &Space, id: String) -> NoteEntry {
+    let meta = space.note_meta(&id);
+    NoteEntry {
+        created_ms: spectre_sync::ulid::timestamp_ms(&id).unwrap_or(0),
+        id,
+        title: meta.title,
+        folder: meta.folder,
+    }
+}
+
+fn load_entries(space: &Space) -> std::io::Result<Vec<NoteEntry>> {
+    Ok(space
+        .list_notes()?
+        .into_iter()
+        .map(|id| entry_for(space, id))
+        .collect())
+}
+
+/// Otwarty dokument jest zrodlem prawdy: poprawia wpis na liscie i cache.
+fn refresh_entry(space: &Space, entry: &mut NoteEntry, doc: &Document) {
+    let title = doc.meta("title").unwrap_or("").to_string();
+    let folder = doc.meta("folder").unwrap_or("").to_string();
+    if entry.title != title || entry.folder != folder {
+        entry.title = title;
+        entry.folder = folder;
+        let _ = space.write_note_meta(
+            &entry.id,
+            &spectre_sync::NoteMeta {
+                title: entry.title.clone(),
+                folder: entry.folder.clone(),
+            },
+        );
+    }
+}
+
 unsafe fn app_of(hwnd: HWND) -> Option<&'static mut App> {
     let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
     if ptr.is_null() {
@@ -806,6 +972,15 @@ pub unsafe extern "system" fn wndproc(
                 let (x, y) = app.last_screen;
                 if let Some(t) = app.toolbar.title_hit(x, y) {
                     app.title_tap(t);
+                } else if let Some(h) = app.menu.hit(x, y) {
+                    if app.menu.folder_edit.is_some() && h != MenuHit::Panel {
+                        app.commit_folder_edit();
+                    }
+                    app.menu_tap(h);
+                } else if app.menu.open {
+                    // Dotkniecie poza panelem zamyka go i nie rysuje.
+                    app.commit_folder_edit();
+                    app.menu.toggle();
                 } else if app.toolbar.pointer_inside(x, y) {
                     app.toolbar_tap(x, y);
                 } else {
@@ -843,10 +1018,16 @@ pub unsafe extern "system" fn wndproc(
                             }
                         }
                         let eraser_cursor = b.eraser || app.eraser_tool;
-                        let ui_changed = app.toolbar.hover(pos.0, pos.1);
-                        if ui_changed && app.toolbar.visible {
-                            app.arm_ui_timer();
-                        }
+                        let ui_changed = if app.menu.contains(pos.0, pos.1) {
+                            app.menu.hover(pos.0, pos.1)
+                        } else {
+                            let m = app.menu.open && app.menu.hover(-1.0, -1.0);
+                            let t = app.toolbar.hover(pos.0, pos.1);
+                            if t && app.toolbar.visible {
+                                app.arm_ui_timer();
+                            }
+                            m || t
+                        };
                         let changed = ui_changed
                             || b != app.buttons
                             || !app.hover
@@ -919,7 +1100,13 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_POINTERWHEEL | WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as f32;
-            if ctrl_down() {
+            // lparam kolka = pozycja ekranowa, tak samo jak w WM_NCHITTEST.
+            let (mx, my) = window::nc_point_to_client(hwnd, lparam);
+            if app.menu.contains(mx, my) {
+                if app.menu.wheel(delta / 120.0) {
+                    app.render();
+                }
+            } else if ctrl_down() {
                 let (x, y) = app.last_screen;
                 app.zoom_at(if delta > 0.0 { 1.1 } else { 1.0 / 1.1 }, x, y);
             } else {
@@ -930,7 +1117,12 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_CHAR => {
-            if let Some(buf) = app.toolbar.title_edit.as_mut() {
+            let edit = app
+                .toolbar
+                .title_edit
+                .as_mut()
+                .or(app.menu.folder_edit.as_mut());
+            if let Some(buf) = edit {
                 let c = wparam.0 as u32;
                 if let Some(ch) = char::from_u32(c) {
                     if !ch.is_control() && buf.chars().count() < 80 {
@@ -957,7 +1149,22 @@ pub unsafe extern "system" fn wndproc(
                 app.render();
                 return LRESULT(0);
             }
+            if app.menu.folder_edit.is_some() {
+                if vk == VK_RETURN {
+                    app.commit_folder_edit();
+                } else if vk == VK_ESCAPE {
+                    app.menu.folder_edit = None;
+                } else if vk == VK_BACK {
+                    if let Some(b) = app.menu.folder_edit.as_mut() {
+                        b.pop();
+                    }
+                }
+                app.render();
+                return LRESULT(0);
+            }
             match vk.0 {
+                // M
+                0x4D => app.menu.toggle(),
                 0x31..=0x36 => {
                     app.color_idx = (vk.0 - 0x31) as usize;
                     app.eraser_tool = false;
@@ -994,12 +1201,12 @@ pub unsafe extern "system" fn wndproc(
                         let i = app.note_idx + 1;
                         app.switch_note(i);
                     } else if vk == VK_F11 {
-                        app.fullscreen.toggle(hwnd);
-                        app.toolbar.title_bar = !app.fullscreen.is_active();
+                        app.toggle_fullscreen();
                     } else if vk == VK_ESCAPE {
-                        if app.fullscreen.is_active() {
-                            app.fullscreen.toggle(hwnd);
-                            app.toolbar.title_bar = true;
+                        if app.menu.open {
+                            app.menu.toggle();
+                        } else if app.fullscreen.is_active() {
+                            app.toggle_fullscreen();
                         } else {
                             app.hide();
                             return LRESULT(0);
@@ -1073,7 +1280,7 @@ pub unsafe extern "system" fn wndproc(
             if let Ok(true) = app.renderer.resize(w, h) {
                 app.dirty = Dirty::Full;
             }
-            app.toolbar.layout(w as f32, h as f32, PALETTE.len());
+            app.relayout();
             app.render();
             LRESULT(0)
         }

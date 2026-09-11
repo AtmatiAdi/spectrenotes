@@ -13,4 +13,4 @@ pub mod store;
 pub mod ulid;
 
 pub use author::AuthorName;
-pub use store::{NoteStore, Space};
+pub use store::{NoteMeta, NoteStore, Space};

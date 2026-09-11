@@ -36,6 +36,19 @@ pub fn new() -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Czas utworzenia (ms od epoki) zakodowany w pierwszych 10 znakach.
+pub fn timestamp_ms(s: &str) -> Option<u64> {
+    if !is_valid(s) {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for b in s.bytes().take(10) {
+        let d = ALPHABET.iter().position(|&a| a == b.to_ascii_uppercase())? as u64;
+        v = (v << 5) | d;
+    }
+    Some(v)
+}
+
 pub fn is_valid(s: &str) -> bool {
     s.len() == 26
         && s.bytes()
@@ -50,5 +63,17 @@ mod tests {
         let b = super::new();
         assert!(super::is_valid(&a));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn czas_z_ulid() {
+        let a = super::new();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let t = super::timestamp_ms(&a).unwrap();
+        assert!(now - t < 5_000, "{t} vs {now}");
+        assert_eq!(super::timestamp_ms("zle"), None);
     }
 }
