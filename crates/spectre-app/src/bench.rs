@@ -152,7 +152,7 @@ pub fn run() -> windows::core::Result<()> {
                     hud: Some(hud),
                     cursor: None,
                     ui: &[],
-                    blobs: &[],
+                    dim: None,
                 },
                 PresentMode::Immediate,
             )

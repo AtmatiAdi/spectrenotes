@@ -7,19 +7,17 @@ use spectre_proto::Rgba;
 use windows::core::{Interface, Result, PCWSTR};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F,
-    D2D_SIZE_U,
+    D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush, ID2D1DeviceContext, ID2D1DeviceContext1,
-    ID2D1Factory1, ID2D1GeometryRealization, ID2D1RadialGradientBrush, ID2D1StrokeStyle1,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_BUFFER_PRECISION_8BPC_UNORM, D2D1_CAP_STYLE_ROUND,
-    D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED, D2D1_COLOR_SPACE_SRGB,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
-    D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND,
-    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES1,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    ID2D1Factory1, ID2D1GeometryRealization, ID2D1StrokeStyle1, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_INTERPOLATION_MODE_CUBIC, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
+    D2D1_STROKE_STYLE_PROPERTIES1, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
@@ -132,21 +130,35 @@ pub struct Overlay<'a> {
     /// Okrag gumki: (x, y, promien) w pikselach ekranu.
     pub cursor: Option<(f32, f32, f32)>,
     pub ui: &'a [UiPrim],
-    /// Plamy lokalnego przyciemnienia (Z7, po bezczynnosci), na samym wierzchu.
-    pub blobs: &'a [Blob],
+    /// Fale lokalnego przyciemnienia (Z7, po bezczynnosci), na samym wierzchu.
+    pub dim: Option<&'a DimMask>,
 }
 
-/// Miekka plama ciemnosci: elipsa o gradiencie radialnym, w pikselach ekranu.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Blob {
-    pub x: f32,
-    pub y: f32,
-    pub rx: f32,
-    pub ry: f32,
-    /// Obrot elipsy, rad.
-    pub rot: f32,
-    /// Krycie w srodku, 0..1.
-    pub alpha: f32,
+/// Maska przyciemnienia (Z7): krycie czerni 0..255 w siatce co `DIM_STEP` px
+/// ekranu, rozciagana na okno z interpolacja. Piksel maski `(i, j)` odpowiada
+/// pikselowi ekranu `(i * DIM_STEP, j * DIM_STEP)`; siatka wychodzi o pol kroku
+/// poza okno, zeby brzeg interpolacji nie byl widoczny.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DimMask {
+    pub w: u32,
+    pub h: u32,
+    pub alpha: Vec<u8>,
+}
+
+/// Krok siatki maski przyciemnienia w pikselach ekranu.
+pub const DIM_STEP: u32 = 12;
+
+impl DimMask {
+    /// Maska pokrywajaca okno `view_w` x `view_h` (pusta - krycie 0).
+    pub fn for_view(view_w: u32, view_h: u32) -> Self {
+        let w = view_w.div_ceil(DIM_STEP) + 1;
+        let h = view_h.div_ceil(DIM_STEP) + 1;
+        Self {
+            w,
+            h,
+            alpha: vec![0; (w * h) as usize],
+        }
+    }
 }
 
 pub struct Renderer {
@@ -170,8 +182,9 @@ pub struct Renderer {
     hud_fg: ID2D1Brush,
     hud_bg: ID2D1Brush,
     cursor_brush: ID2D1Brush,
-    /// Plama przyciemnienia (Z7): czarny w srodku -> przezroczysty na brzegu.
-    blob_brush: ID2D1RadialGradientBrush,
+    /// Bitmapa maski przyciemnienia (Z7) i jej rozmiar; bufor BGRA do przeslania.
+    dim_bmp: Option<(ID2D1Bitmap1, u32, u32)>,
+    dim_px: Vec<u8>,
     round: ID2D1StrokeStyle1,
     text_fmt: IDWriteTextFormat,
     text_fmt_big: IDWriteTextFormat,
@@ -268,7 +281,6 @@ impl Renderer {
             let hud_fg = solid(&ctx, 0.45, 0.62, 0.55, 0.9)?;
             let hud_bg = solid(&ctx, 0.0, 0.0, 0.0, 0.55)?;
             let cursor_brush = solid(&ctx, 0.6, 0.6, 0.6, 0.8)?;
-            let blob_brush = radial_black(&ctx)?;
 
             let round = factory2d.CreateStrokeStyle(
                 &D2D1_STROKE_STYLE_PROPERTIES1 {
@@ -342,7 +354,8 @@ impl Renderer {
                 hud_fg,
                 hud_bg,
                 cursor_brush,
-                blob_brush,
+                dim_bmp: None,
+                dim_px: Vec::new(),
                 round,
                 text_fmt,
                 text_fmt_big,
@@ -751,8 +764,8 @@ impl Renderer {
                 self.draw_hud(text);
             }
             // Fale przyciemnienia (Z7) - na wszystkim, lacznie z UI.
-            for b in overlay.blobs {
-                self.draw_blob(b);
+            if let Some(m) = overlay.dim {
+                self.draw_dim(m)?;
             }
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
@@ -769,33 +782,57 @@ impl Renderer {
         Ok(())
     }
 
-    /// Elipsa z gradientem radialnym, obrocona o `rot` wokol srodka.
-    unsafe fn draw_blob(&self, b: &Blob) {
-        if b.alpha <= 0.002 || b.rx <= 0.0 || b.ry <= 0.0 {
-            return;
+    /// Maska przyciemnienia: przeslanie do bitmapy (BGRA premultiplied, czern
+    /// z kryciem z maski) i rozciagniecie na okno z interpolacja kubiczna.
+    unsafe fn draw_dim(&mut self, m: &DimMask) -> Result<()> {
+        if m.w == 0 || m.h == 0 || m.alpha.len() != (m.w * m.h) as usize {
+            return Ok(());
         }
-        let (c, s) = (b.rot.cos(), b.rot.sin());
-        // Obrot wokol (x, y): T(x,y) * R * T(-x,-y).
-        let m = Matrix3x2 {
-            M11: c,
-            M12: s,
-            M21: -s,
-            M22: c,
-            M31: b.x - c * b.x + s * b.y,
-            M32: b.y - s * b.x - c * b.y,
+        let need_new = !matches!(&self.dim_bmp, Some((_, w, h)) if *w == m.w && *h == m.h);
+        if need_new {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                ..Default::default()
+            };
+            let size = D2D_SIZE_U {
+                width: m.w,
+                height: m.h,
+            };
+            let bmp = self.ctx.CreateBitmap(size, None, 0, &props)?;
+            self.dim_bmp = Some((bmp, m.w, m.h));
+        }
+        let Some((bmp, _, _)) = &self.dim_bmp else {
+            return Ok(());
         };
-        self.ctx.SetTransform(&m);
-        self.blob_brush.SetCenter(Vector2 { X: b.x, Y: b.y });
-        self.blob_brush.SetRadiusX(b.rx);
-        self.blob_brush.SetRadiusY(b.ry);
-        self.blob_brush.SetOpacity(b.alpha.clamp(0.0, 1.0));
-        let e = D2D1_ELLIPSE {
-            point: Vector2 { X: b.x, Y: b.y },
-            radiusX: b.rx,
-            radiusY: b.ry,
+        self.dim_px.clear();
+        self.dim_px.reserve(m.alpha.len() * 4);
+        for &a in &m.alpha {
+            self.dim_px.extend_from_slice(&[0, 0, 0, a]);
+        }
+        bmp.CopyFromMemory(None, self.dim_px.as_ptr() as *const _, m.w * 4)?;
+        // Srodek piksela maski (i, j) laduje w (i * DIM_STEP, j * DIM_STEP) ekranu.
+        let step = DIM_STEP as f32;
+        let dest = D2D_RECT_F {
+            left: -0.5 * step,
+            top: -0.5 * step,
+            right: (m.w as f32 - 0.5) * step,
+            bottom: (m.h as f32 - 0.5) * step,
         };
-        self.ctx.FillEllipse(&e, &self.blob_brush);
-        self.ctx.SetTransform(&Matrix3x2::identity());
+        self.ctx.DrawBitmap(
+            bmp,
+            Some(&dest),
+            1.0,
+            D2D1_INTERPOLATION_MODE_CUBIC,
+            None,
+            None,
+        );
+        Ok(())
     }
 
     unsafe fn draw_ui(&mut self, prims: &[UiPrim]) -> Result<()> {
@@ -981,62 +1018,4 @@ fn w(s: &str) -> PCWSTR {
     let mut v: Vec<u16> = s.encode_utf16().collect();
     v.push(0);
     PCWSTR(Box::leak(v.into_boxed_slice()).as_ptr())
-}
-
-/// Pedzel plamy (Z7): krycie 1 w srodku, lagodnie do 0 na brzegu. Krzywa
-/// z plaskim srodkiem, zeby plama gasila do zera wyrazny obszar, a nie tylko punkt.
-unsafe fn radial_black(ctx: &ID2D1DeviceContext) -> Result<ID2D1RadialGradientBrush> {
-    let stops = [
-        D2D1_GRADIENT_STOP {
-            position: 0.0,
-            color: D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            },
-        },
-        D2D1_GRADIENT_STOP {
-            position: 0.45,
-            color: D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.92,
-            },
-        },
-        D2D1_GRADIENT_STOP {
-            position: 0.75,
-            color: D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.4,
-            },
-        },
-        D2D1_GRADIENT_STOP {
-            position: 1.0,
-            color: D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            },
-        },
-    ];
-    let collection = ctx.CreateGradientStopCollection(
-        &stops,
-        D2D1_COLOR_SPACE_SRGB,
-        D2D1_COLOR_SPACE_SRGB,
-        D2D1_BUFFER_PRECISION_8BPC_UNORM,
-        D2D1_EXTEND_MODE_CLAMP,
-        D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED,
-    )?;
-    let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
-        center: Vector2 { X: 0.0, Y: 0.0 },
-        gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 },
-        radiusX: 1.0,
-        radiusY: 1.0,
-    };
-    ctx.CreateRadialGradientBrush(&props, None, &collection)
 }

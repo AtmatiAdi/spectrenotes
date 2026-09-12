@@ -23,11 +23,17 @@ zależność nie zachodzi.
 
 1. **Fale przyciemnienia zamiast pixel shiftu.** Pixel shift został zaimplementowany
    i odrzucony po teście na żywo: przeskok treści o 1 px jest wyczuwalny przy
-   pisaniu. Zamiast tego po 3 min bezczynności przez ekran płyną miękkie plamy
-   ciemności (gradient radialny, losowe kształty, ~12–28 px/s), które gaszą do zera
-   piksele tylko pod sobą. Z czasem przechodzą przez każdy piksel, obraz nie jest
-   ani przesunięty, ani jednolicie przygaszony. Koszt: jedna tania klatka co 60 ms,
-   tylko gdy okno jest widoczne i tylko w bezczynności.
+   pisaniu. Zamiast tego po czasie bezczynności (domyślnie 3 min, w ustawieniach
+   10 s – 10 min) przez ekran płyną skośne, sfalowane pasy ciemności — jak połysk
+   zaczarowanego przedmiotu w Minecrafcie, tylko gaszący: trzy warstwy pasów pod
+   różnymi kątami, o różnych okresach i prędkościach (14–80 px/s), główna gasi do
+   zera, pozostałe dokładają migotanie. Pasy gaszą piksele tylko pod sobą; z czasem
+   przechodzą przez każdy (test: 98 % siatki zgaszone w 5 min), obraz nie jest ani
+   przesunięty, ani jednolicie przygaszony. Realizacja: maska krycia liczona na CPU
+   w siatce co 12 px (~1 ms na 2880×1800, sama arytmetyka, bez libm) i rozciągana
+   na okno jedną bitmapą z interpolacją kubiczną. Koszt: jedna tania klatka co
+   60 ms, tylko gdy okno jest widoczne i tylko w bezczynności. Pierwsza wersja
+   (plamy z gradientem radialnym) odrzucona: wyglądała jak plamy, nie jak fale.
 2. **Atrament nie jest biały.** Domyślnie `#D8D8D8`. Piksel prowadzony na pełnej
    bieli starzeje się nieproporcjonalnie szybciej, a przy pracy nocnej i tak oślepia.
 3. **Brak statycznego chrome.** Toolbar chowa się po 3 s bezczynności. Cokolwiek

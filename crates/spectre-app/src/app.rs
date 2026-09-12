@@ -895,18 +895,24 @@ impl App {
         }
     }
 
-    /// Tik fal: pierwszy po `WAVES_IDLE_MS` (start), kolejne co `WAVES_TICK_MS`.
+    /// Tik fal: pierwszy po czasie bezczynnosci (start), kolejne co `WAVES_TICK_MS`.
+    /// Znacznik czasu kroku (`waves_tick`) przestawia wylacznie `render()` - tu go
+    /// tylko zerujemy przy starcie. (Ustawianie go tutaj dawalo dt ~ 0 w kazdej
+    /// klatce: fala nigdy nie wychodzila z fade-inu i byla niewidoczna.)
     fn waves_tick(&mut self) {
-        let now = Instant::now();
         if self.waves.is_none() {
             let (w, h) = self.renderer.size();
-            let seed = now.elapsed().subsec_nanos() ^ (self.doc.lamport() as u32);
-            self.waves = Some(Waves::new((w as f32, h as f32), seed.max(1)));
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(1);
+            let seed = nanos ^ (self.doc.lamport() as u32);
+            self.waves = Some(Waves::new((w, h), seed.max(1)));
+            self.waves_tick = Instant::now();
             unsafe {
                 SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_TICK_MS, None);
             }
         }
-        self.waves_tick = now;
         self.render();
     }
 
@@ -1038,13 +1044,13 @@ impl App {
         }
 
         // Fale (Z7): krok symulacji o czas od poprzedniej klatki, tylko gdy trwaja.
-        let blobs: &[spectre_render::Blob] = match self.waves.as_mut() {
+        let dim = match self.waves.as_mut() {
             Some(wv) => {
                 let dt = self.waves_tick.elapsed().as_secs_f32().min(0.5);
                 self.waves_tick = Instant::now();
-                wv.step(dt)
+                Some(wv.step(dt))
             }
-            None => &[],
+            None => None,
         };
         let tail = std::mem::take(&mut self.tail_buf);
         let color = PALETTE[self.color_idx];
@@ -1056,7 +1062,7 @@ impl App {
                 hud: hud.as_deref(),
                 cursor,
                 ui: &prims,
-                blobs,
+                dim,
             },
             if self.vsync {
                 PresentMode::VSync
@@ -1105,10 +1111,17 @@ impl App {
             tool,
             self.ink.base_width,
             self.cam.scroll_y,
-            match (self.waves.is_some(), self.waves_forced) {
-                (true, true) => "tak (W, wymuszone)",
-                (true, false) => "tak",
-                _ => "nie",
+            match (self.waves.as_ref(), self.waves_forced) {
+                (Some(wv), forced) => {
+                    let (n, fade) = wv.status();
+                    format!(
+                        "tak{} - {} warstwy, krycie {:.0}%",
+                        if forced { " (W, wymuszone)" } else { "" },
+                        n,
+                        fade * 100.0
+                    )
+                }
+                (None, _) => "nie".to_string(),
             },
             self.frame_ms,
             self.frame_max_ms,
@@ -1539,7 +1552,7 @@ pub unsafe extern "system" fn wndproc(
             }
             app.relayout();
             if let Some(wv) = app.waves.as_mut() {
-                wv.resize((w as f32, h as f32));
+                wv.resize((w, h));
             }
             app.render();
             LRESULT(0)
