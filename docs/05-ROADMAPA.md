@@ -88,7 +88,7 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       folderami, nowa notatka/folder; zakładki Ustawienia i Konto jako wydmuszki
       (ustawienia przełączają to, co już jest; logowanie czeka na Etap 5)
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
-- [x] Pixel shift i rampa przygaszania (Z7) — patrz Etap 2
+- [x] Ochrona AMOLED po bezczynności (Z7): fale przyciemnienia — patrz Etap 2
 
 ## Etap 5 — Git jako warstwa trwała
 
