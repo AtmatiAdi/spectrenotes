@@ -91,8 +91,8 @@ pub struct MenuState<'a> {
     pub dock: &'a str,
     pub toolbar_pin: bool,
     pub scroll_mult: f32,
-    /// Minuty bezczynnosci do fal; 0 = wylaczone.
-    pub waves_idle_min: u32,
+    /// Sekundy bezczynnosci do fal; 0 = wylaczone.
+    pub waves_idle_s: u32,
 }
 
 /// Wiersz ustawienia: (klucz, etykieta, wartosc do wyswietlenia).
@@ -554,10 +554,10 @@ impl Menu {
     fn build_settings(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let mut y = list.y - self.scroll + 6.0;
         let on_off = |b: bool| if b { "wl." } else { "wyl." };
-        let waves = if s.waves_idle_min == 0 {
-            "wyl.".to_string()
-        } else {
-            format!("{} min", s.waves_idle_min)
+        let waves = match s.waves_idle_s {
+            0 => "wyl.".to_string(),
+            s if s < 60 => format!("{s} s"),
+            s => format!("{} min", s / 60),
         };
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.

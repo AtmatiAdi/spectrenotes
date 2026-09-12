@@ -45,7 +45,7 @@ const TIMER_WAVES: usize = 3;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
-const WAVES_IDLE_MIN_DEFAULT: u32 = 3;
+const WAVES_IDLE_S_DEFAULT: u32 = 180;
 const WAVES_TICK_MS: u32 = 60;
 /// Ruch hoveru mniejszy niz tyle px nie liczy sie jako wejscie uzytkownika.
 const HOVER_ACTIVITY_PX: f32 = 12.0;
@@ -139,8 +139,10 @@ pub struct App {
     /// Ustawienia z `config.txt`.
     toolbar_pin: bool,
     scroll_mult: f32,
-    /// Minuty bezczynnosci do fal; 0 = wylaczone.
-    waves_idle_min: u32,
+    /// Sekundy bezczynnosci do fal; 0 = wylaczone.
+    waves_idle_s: u32,
+    /// Fale wlaczone recznie (`W`): nie gasna od wejscia, tylko od `W`.
+    waves_forced: bool,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -224,11 +226,11 @@ impl App {
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(1.0)
             .clamp(0.5, 8.0);
-        let waves_idle_min = config
-            .get("waves_idle_min")
+        let waves_idle_s = config
+            .get("waves_idle_s")
             .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(WAVES_IDLE_MIN_DEFAULT)
-            .min(120);
+            .unwrap_or(WAVES_IDLE_S_DEFAULT)
+            .min(3600);
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
         toolbar.visible = toolbar_pin;
@@ -272,7 +274,8 @@ impl App {
             activity_pos: (0.0, 0.0),
             toolbar_pin,
             scroll_mult,
-            waves_idle_min,
+            waves_idle_s,
+            waves_forced: false,
             toolbar,
             menu,
             config,
@@ -658,18 +661,19 @@ impl App {
                 self.config.save();
             }
             Setting::WavesIdle => {
-                // Cykl: 1 -> 2 -> 3 -> 5 -> 10 -> 15 -> wyl. -> 1.
-                self.waves_idle_min = match self.waves_idle_min {
-                    0 => 1,
-                    1 => 2,
-                    2 => 3,
-                    3 => 5,
-                    5 => 10,
-                    10 => 15,
+                // Cykl: 10 s -> 30 s -> 1 -> 2 -> 3 -> 5 -> 10 min -> wyl. -> 10 s.
+                self.waves_idle_s = match self.waves_idle_s {
+                    0 => 10,
+                    10 => 30,
+                    30 => 60,
+                    60 => 120,
+                    120 => 180,
+                    180 => 300,
+                    300 => 600,
                     _ => 0,
                 };
                 self.config
-                    .set("waves_idle_min", format!("{}", self.waves_idle_min));
+                    .set("waves_idle_s", format!("{}", self.waves_idle_s));
                 self.config.save();
                 self.waves = None;
                 self.arm_amoled_timers();
@@ -849,15 +853,10 @@ impl App {
     /// proces ma nie wybudzac sie w ogole (Z2).
     fn arm_amoled_timers(&self) {
         unsafe {
-            if self.waves_idle_min == 0 {
+            if self.waves_idle_s == 0 {
                 let _ = KillTimer(Some(self.hwnd), TIMER_WAVES);
             } else {
-                SetTimer(
-                    Some(self.hwnd),
-                    TIMER_WAVES,
-                    self.waves_idle_min * 60 * 1000,
-                    None,
-                );
+                SetTimer(Some(self.hwnd), TIMER_WAVES, self.waves_idle_s * 1000, None);
             }
         }
     }
@@ -882,6 +881,9 @@ impl App {
 
     /// Dowolne wejscie uzytkownika: fale gasna, odliczanie od nowa.
     fn activity(&mut self) {
+        if self.waves_forced {
+            return;
+        }
         let had_waves = self.waves.take().is_some();
         // Rysik daje 266 zdarzen/s - timer przestawiamy najwyzej raz na sekunde.
         if had_waves || self.waves_armed.elapsed().as_secs_f32() > 1.0 {
@@ -906,6 +908,21 @@ impl App {
         }
         self.waves_tick = now;
         self.render();
+    }
+
+    /// `W`: fale na stale (debug/podglad) albo ich wylaczenie. Wymuszone fale
+    /// ignoruja wejscie uzytkownika - inaczej rysik w dloni gasilby je od razu.
+    fn toggle_forced_waves(&mut self) {
+        if self.waves_forced {
+            self.waves_forced = false;
+            self.waves = None;
+            self.arm_amoled_timers();
+            self.render();
+        } else {
+            self.waves_forced = true;
+            self.waves = None;
+            self.waves_tick();
+        }
     }
 
     // ----- okno --------------------------------------------------------------
@@ -1015,7 +1032,7 @@ impl App {
                 dock: self.toolbar.dock.name(),
                 toolbar_pin: self.toolbar_pin,
                 scroll_mult: self.scroll_mult,
-                waves_idle_min: self.waves_idle_min,
+                waves_idle_s: self.waves_idle_s,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -1088,7 +1105,11 @@ impl App {
             tool,
             self.ink.base_width,
             self.cam.scroll_y,
-            if self.waves.is_some() { "tak" } else { "nie" },
+            match (self.waves.is_some(), self.waves_forced) {
+                (true, true) => "tak (W, wymuszone)",
+                (true, false) => "tak",
+                _ => "nie",
+            },
             self.frame_ms,
             self.frame_max_ms,
             self.renderer.adapter_name(),
@@ -1392,7 +1413,7 @@ pub unsafe extern "system" fn wndproc(
                 0x30 => app.fit_width(),
                 // W - fale przyciemnienia od razu (podglad bez czekania 3 min)
                 0x57 => {
-                    app.waves_tick();
+                    app.toggle_forced_waves();
                     return LRESULT(0);
                 }
                 0x31..=0x36 => {

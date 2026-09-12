@@ -45,7 +45,8 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [x] Ochrona AMOLED po bezczynności: **fale lokalnego przyciemnienia** (`amoled.rs`) —
       po 3 min miękkie, losowo ukształtowane plamy (gradient radialny, obrót, pulsowanie)
       płyną przez ekran i gaszą notatkę do zera tylko pod sobą; każde wejście gasi je
-      natychmiast, `W` włącza od razu (podgląd). Timer gaśnie przy ukryciu okna.
+      natychmiast (hover dopiero po ruchu ≥ 12 px), `W` włącza na stałe (podgląd), czas
+      bezczynności w ustawieniach 10 s – 10 min. Timer gaśnie przy ukryciu okna.
       Pixel shift i globalna rampa **odrzucone po teście**: przeskok treści o 1 px
       był wyczuwalny, a jednolite przyciemnienie niepotrzebne
 - [x] Szerokość kolumny (Z9): `COLUMN_W = 2880` jednostek (na docelowym panelu zoom

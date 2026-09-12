@@ -54,7 +54,7 @@ zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
 *Ustawienia* pogrupowane funkcjonalnie: *Wyświetlanie* (vsync, tearing, pełny ekran,
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (czas bezczynności do
-fal: 1–15 min albo wył.). Trwałe wartości lądują w `config.txt`. *Konto* pokazuje autora i czeka na Etap 5.
+fal: 10 s – 10 min albo wył.). Trwałe wartości lądują w `config.txt`. *Konto* pokazuje autora i czeka na Etap 5.
 Dotknięcie poza panelem zamyka go.
 
 | Sterowanie | Działanie |
@@ -73,7 +73,7 @@ Dotknięcie poza panelem zamyka go.
 | `PgUp` / `PgDn` | poprzednia / następna notatka |
 | `Ctrl+N` | nowa notatka |
 | `F11`, `H`, `V`, `T` | pełny ekran, HUD (domyślnie wyłączony), vsync, tryb przewijania |
-| `W` | podgląd fal przyciemnienia AMOLED (normalnie po czasie z ustawień, domyślnie 3 min) |
+| `W` | fale przyciemnienia AMOLED na stałe (podgląd/debug; ponowne `W` wyłącza). Normalnie startują same po czasie z ustawień |
 | `Esc` / `Ctrl+Q` | ukryj do tray / zakończ |
 
 Przyciski rysika działają w każdym momencie: wciśnięcie w trakcie kreski kończy
