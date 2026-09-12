@@ -21,12 +21,9 @@ pub const GRIP_LEN: f32 = 22.0;
 pub const TITLE_BAR_H: f32 = 34.0;
 pub const WIN_BTN_W: f32 = 46.0;
 
-pub(crate) const BG: Rgba = Rgba {
-    r: 18,
-    g: 18,
-    b: 18,
-    a: 235,
-};
+/// Tlo paska i panelu menu - nieprzezroczyste: tresc pod panelem przebijala
+/// przez liste i utrudniala czytanie.
+pub(crate) const BG: Rgba = Rgba::rgb(18, 18, 18);
 pub(crate) const BG_TITLE: Rgba = Rgba::rgb(12, 12, 12);
 pub(crate) const LINE: Rgba = Rgba::rgb(60, 60, 60);
 pub(crate) const FG: Rgba = Rgba::rgb(190, 190, 190);

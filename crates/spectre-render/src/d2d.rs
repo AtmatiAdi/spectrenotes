@@ -449,6 +449,15 @@ impl Renderer {
         Ok(true)
     }
 
+    /// Do wywolania przy zmianie dokumentu. `StrokeId` = (autor, licznik) jest
+    /// unikalny tylko w obrebie notatki, wiec wpisy z poprzedniej notatki pasowalyby
+    /// do id kresek nastepnej i pelna przebudowa rysowalaby cudza geometrie
+    /// (objaw: biale poziome pasy z notatki testowej na innych notatkach po F11).
+    pub fn clear_geometry(&mut self) {
+        self.geo_cache.clear();
+        self.geo_cache_verts = 0;
+    }
+
     /// Okno schowane: oddajemy pamiec sterownika (Z2). Bitmapy zostaja, ale
     /// sterownik moze zwolnic swoje bufory posrednie.
     pub fn trim(&self) {

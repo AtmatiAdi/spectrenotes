@@ -165,14 +165,18 @@ impl Fullscreen {
                 if GetMonitorInfoW(mon, &mut mi).as_bool() {
                     SetWindowLongW(hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as i32);
                     let r = mi.rcMonitor;
+                    // TOPMOST: system chowa pasek zadan tylko dla okna na pierwszym
+                    // planie. Przy kilku monitorach klikniecie w inny ekran odbiera
+                    // pierwszy plan i pasek wychodzilby nad notatke; nad oknem
+                    // "zawsze na wierzchu" nie wychodzi.
                     let _ = SetWindowPos(
                         hwnd,
-                        None,
+                        Some(HWND_TOPMOST),
                         r.left,
                         r.top,
                         r.right - r.left,
                         r.bottom - r.top,
-                        SWP_FRAMECHANGED | SWP_NOOWNERZORDER,
+                        SWP_FRAMECHANGED,
                     );
                     self.active = true;
                 }
@@ -181,12 +185,12 @@ impl Fullscreen {
                 let r = self.saved_rect;
                 let _ = SetWindowPos(
                     hwnd,
-                    None,
+                    Some(HWND_NOTOPMOST),
                     r.left,
                     r.top,
                     r.right - r.left,
                     r.bottom - r.top,
-                    SWP_FRAMECHANGED | SWP_NOOWNERZORDER,
+                    SWP_FRAMECHANGED,
                 );
                 self.active = false;
             }
@@ -340,4 +344,22 @@ pub fn apply_placement(hwnd: HWND, s: &str) -> bool {
         ..Default::default()
     };
     unsafe { SetWindowPlacement(hwnd, &wp).is_ok() }
+}
+
+/// Otwiera adres w domyslnej przegladarce (logowanie GitHub).
+pub fn open_in_browser(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let verb = wide("open");
+    let url_w = wide(url);
+    unsafe {
+        let _ = ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(url_w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
 }

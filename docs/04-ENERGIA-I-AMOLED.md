@@ -32,8 +32,12 @@ zależność nie zachodzi.
    przesunięty, ani jednolicie przygaszony. Realizacja: maska krycia liczona na CPU
    w siatce co 12 px (~1 ms na 2880×1800, sama arytmetyka, bez libm) i rozciągana
    na okno jedną bitmapą z interpolacją kubiczną. Koszt: jedna tania klatka co
-   60 ms, tylko gdy okno jest widoczne i tylko w bezczynności. Pierwsza wersja
-   (plamy z gradientem radialnym) odrzucona: wyglądała jak plamy, nie jak fale.
+   60 ms, tylko gdy okno jest widoczne i tylko w bezczynności. Na czas ochrony
+   notatka między pasami też przygasa (jasność z ustawień, domyślnie 30 %), UI znika
+   (pasek narzędzi i tytuł to statyczny chrome), a okno przechodzi na pełny ekran
+   z `HWND_TOPMOST`, żeby pasy przeszły przez cały panel; po pierwszym wejściu wraca
+   poprzedni rozmiar. Pierwsza wersja (plamy z gradientem radialnym) odrzucona:
+   wyglądała jak plamy, nie jak fale.
 2. **Atrament nie jest biały.** Domyślnie `#D8D8D8`. Piksel prowadzony na pełnej
    bieli starzeje się nieproporcjonalnie szybciej, a przy pracy nocnej i tak oślepia.
 3. **Brak statycznego chrome.** Toolbar chowa się po 3 s bezczynności. Cokolwiek

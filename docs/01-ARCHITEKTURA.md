@@ -8,7 +8,7 @@
 |---|---|
 | Z1 wydajność, Z5 zero-latency | brak GC → brak losowych pauz na ścieżce pióra; pełna kontrola nad alokacją |
 | Z2 ≤20 MB w tle | brak runtime'u; statyczna binarka ~8–12 MB |
-| Z3/Z4 sync i CRDT | proces `git` + Git Credential Manager (ADR 0006; `gix` odłożony), `quinn` (QUIC), `blake3`, `bincode` |
+| Z3/Z4 sync i CRDT | `git2` (libgit2 w binarce, ADR 0006; `gix` odłożony), GitHub REST przez WinHTTP, `quinn` (QUIC), `blake3`, `bincode` |
 | Z8 dystrybucja | jeden `.exe`, zero zależności u odbiorcy |
 | przenośność rdzenia | `wgpu` → D3D12 dziś, Vulkan/Metal gdy przyjdzie Linux/Android |
 
@@ -23,7 +23,7 @@ crates/
   spectre-core      # model dokumentu, op-log CRDT, undo, geometria, kamera
   spectre-ink       # próbkowanie, krzywe nacisku, interpolacja, teselacja wstęgi
   spectre-render    # Direct2D na DXGI flip-model (ADR 0005), warstwa mokra/sucha, AMOLED
-  spectre-sync      # git (proces `git`, ADR 0006) + live P2P (quinn/QUIC) + discovery (mDNS)
+  spectre-sync      # git (libgit2, ADR 0006) + budzet ruchu + live P2P (quinn/QUIC) + discovery (mDNS)
   spectre-proto     # format on-disk i wire (jedno źródło prawdy dla obu)
   spectre-shell-win # okno Win32, WM_POINTER, tray, global hotkey, DXGI/DPI
   spectre-app       # binarka: spina wszystko, konfiguracja, updater

@@ -115,7 +115,8 @@ start / pokazanie okna / ukrycie okna / "Synchronizuj teraz":
    → lista notatek i cache metadanych odświeżone z plików, które merge zmienił,
      bieżąca notatka przeładowana po zakończeniu kreski
 
-Realizacja: proces `git` + Git Credential Manager (ADR 0006), nie `gix`.
+Realizacja: `libgit2` w binarce, GitHub REST (Device Flow, repo automatyczne), budżet
+ruchu z predykcją i odczekaniem po odmowie — ADR 0006. Nie `gix`, nie proces `git`.
 ```
 
 ## Bezpieczeństwo

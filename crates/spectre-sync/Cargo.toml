@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 spectre-core = { path = "../spectre-core" }
 spectre-proto = { path = "../spectre-proto" }
+# libgit2 statycznie w binarce (ADR 0006): bez zaleznosci od gita na maszynie.
+# `https` na Windows = WinHTTP (systemowe TLS, proxy, bez OpenSSL).
+git2 = { version = "0.21", default-features = false, features = ["https", "vendored-libgit2"] }

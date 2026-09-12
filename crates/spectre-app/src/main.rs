@@ -12,6 +12,7 @@ mod amoled;
 mod app;
 mod bench;
 mod config;
+mod github;
 mod menu;
 mod sync;
 mod ui;

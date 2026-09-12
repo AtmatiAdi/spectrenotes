@@ -50,6 +50,8 @@ const GIT_IDLE_MS: u32 = 10_000;
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
 const WAVES_IDLE_S_DEFAULT: u32 = 180;
+/// Jasnosc notatki miedzy pasami podczas ochrony, procent.
+const WAVES_DIM_PCT_DEFAULT: u32 = 30;
 const WAVES_TICK_MS: u32 = 60;
 /// Ruch hoveru mniejszy niz tyle px nie liczy sie jako wejscie uzytkownika.
 const HOVER_ACTIVITY_PX: f32 = 12.0;
@@ -147,6 +149,10 @@ pub struct App {
     waves_idle_s: u32,
     /// Fale wlaczone recznie (`W`): nie gasna od wejscia, tylko od `W`.
     waves_forced: bool,
+    /// Jasnosc notatki miedzy pasami podczas fal, procent (100 = bez).
+    waves_dim_pct: u32,
+    /// Pelny ekran wlaczony przez fale (ochrona calego panelu) - do cofniecia.
+    waves_fullscreen: bool,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -238,6 +244,11 @@ impl App {
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(1.0)
             .clamp(0.5, 8.0);
+        let waves_dim_pct = config
+            .get("waves_dim_pct")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(WAVES_DIM_PCT_DEFAULT)
+            .min(100);
         let waves_idle_s = config
             .get("waves_idle_s")
             .and_then(|s| s.parse::<u32>().ok())
@@ -249,7 +260,16 @@ impl App {
         toolbar.layout(w as f32, h as f32, PALETTE.len());
         let mut menu = Menu::new();
         menu.layout(w as f32, h as f32, toolbar.content_top());
-        let sync = SyncWorker::start(hwnd, space.root(), &author);
+        let data_dir = Config::path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let client_id = config
+            .get("github_client_id")
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::github::CLIENT_ID)
+            .to_string();
+        let sync = SyncWorker::start(hwnd, space.root(), &author, &data_dir, &client_id);
         let mut cam = Camera::default();
         cam.fit_width(w as f32);
 
@@ -289,6 +309,8 @@ impl App {
             scroll_mult,
             waves_idle_s,
             waves_forced: false,
+            waves_dim_pct,
+            waves_fullscreen: false,
             toolbar,
             menu,
             config,
@@ -635,24 +657,12 @@ impl App {
                 self.sync.send(SyncJob::Login);
             }
             MenuHit::Logout => self.sync.send(SyncJob::Logout),
-            MenuHit::SyncNow => self.git_sync(),
-            MenuHit::SetRemote => {
-                self.menu.remote_edit = Some(self.sync.status.remote.clone().unwrap_or_default());
+            MenuHit::SyncNow => self.git_sync(true),
+            MenuHit::PasteToken => {
+                self.menu.token_edit = Some(String::new());
                 unsafe {
                     let _ = SetFocus(Some(self.hwnd));
                 }
-            }
-            MenuHit::CreateRepo => {
-                let name = format!(
-                    "spectrenotes-{}",
-                    self.space
-                        .root()
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase())
-                        .unwrap_or_else(|| "space".into())
-                );
-                self.sync.last = format!("gh: tworze {name}...");
-                self.sync.send(SyncJob::CreateRepo(name));
             }
         }
     }
@@ -715,8 +725,25 @@ impl App {
                 self.config
                     .set("waves_idle_s", format!("{}", self.waves_idle_s));
                 self.config.save();
-                self.waves = None;
+                self.stop_waves();
                 self.arm_amoled_timers();
+            }
+            Setting::WavesDim => {
+                self.waves_dim_pct = match self.waves_dim_pct {
+                    0 => 10,
+                    10 => 20,
+                    20 => 30,
+                    30 => 50,
+                    50 => 70,
+                    70 => 100,
+                    _ => 0,
+                };
+                self.config
+                    .set("waves_dim_pct", format!("{}", self.waves_dim_pct));
+                self.config.save();
+                if let Some(wv) = self.waves.as_mut() {
+                    wv.set_brightness(self.waves_dim_pct as f32 / 100.0);
+                }
             }
         }
     }
@@ -851,6 +878,7 @@ impl App {
         match open_note(&self.space, &self.notes[idx].id, &self.author) {
             Ok((store, doc)) => {
                 self.store = store;
+                self.renderer.clear_geometry();
                 self.doc = doc;
                 self.note_idx = idx;
                 self.cam = Camera::default();
@@ -875,6 +903,7 @@ impl App {
         match open_note(&self.space, &self.notes[self.note_idx].id, &self.author) {
             Ok((store, doc)) => {
                 self.store = store;
+                self.renderer.clear_geometry();
                 self.doc = doc;
                 self.dirty = Dirty::Full;
                 self.sync_entry();
@@ -885,15 +914,28 @@ impl App {
 
     // ----- git (Etap 5) ------------------------------------------------------
 
-    /// Commit + fetch/merge/push w tle. Bez gita w PATH - nic.
-    fn git_sync(&mut self) {
-        if !self.sync.enabled() {
-            return;
-        }
+    /// Commit + (gdy zalogowany) fetch/merge/push w tle. `force` = z przycisku:
+    /// omija minimalny odstep budzetu, ale nie odczekanie po odmowie serwera.
+    fn git_sync(&mut self, force: bool) {
         self.sync_now();
         self.sync.send(SyncJob::Sync {
             message: format!("{}: zapis", self.author.dir_name()),
+            force,
         });
+    }
+
+    /// Ponowna proba cyklu ze zdalnym o `until` (unix s) - budzet ruchu albo
+    /// odczekanie po odmowie. Timer jednorazowy, min 5 s, max 1 h (dluzsze
+    /// odczekania dobija kolejny tik).
+    fn schedule_git_retry(&mut self, until: u64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let wait_s = until.saturating_sub(now).clamp(5, 3600);
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_GIT, (wait_s * 1000) as u32, None);
+        }
     }
 
     /// Zdarzenia z watku sync (po `WM_SYNC`).
@@ -902,9 +944,9 @@ impl App {
         for ev in self.sync.poll() {
             match ev {
                 SyncEvent::Status(st) => {
-                    if !self.sync_booted && st.git.is_some() {
+                    if !self.sync_booted && st.repo_ok {
                         self.sync_booted = true;
-                        self.git_sync();
+                        self.git_sync(false);
                     }
                 }
                 SyncEvent::Synced(report) => {
@@ -920,19 +962,40 @@ impl App {
                     } else if self.sync.status.remote.is_some() {
                         format!("{now}: aktualne")
                     } else {
-                        format!("{now}: commit lokalny")
+                        format!("{now}: zapisane lokalnie")
                     };
                     if !report.merged.is_empty() {
                         self.apply_merged(&report.merged);
                         repaint = true;
                     }
                 }
-                SyncEvent::LoggedIn(user) => self.sync.last = format!("zalogowano: {user}"),
+                SyncEvent::DeviceCode { code, url } => {
+                    self.sync.last = format!("wpisz kod {code} na {url}");
+                    if !self.menu.open {
+                        self.menu.toggle();
+                    }
+                    self.menu.set_tab(crate::menu::Tab::Account);
+                    repaint = true;
+                }
+                SyncEvent::LoggedIn(user) => {
+                    self.sync.last = format!("zalogowano: {user}");
+                    // Od razu: wykrycie/zalozenie repo i pierwszy pelny cykl.
+                    self.git_sync(true);
+                }
                 SyncEvent::LoggedOut => self.sync.last = "wylogowano".to_string(),
-                SyncEvent::RemoteSet(url) => {
-                    self.sync.last = format!("zdalne: {url}");
-                    // Od razu pierwszy pelny cykl - dolaczenie do istniejacego repo.
-                    self.git_sync();
+                SyncEvent::Deferred { until } => {
+                    self.sync.last = format!(
+                        "zapisane lokalnie; do GitHuba o {}",
+                        menu::local_time_at(until)
+                    );
+                    self.schedule_git_retry(until);
+                }
+                SyncEvent::RateLimited { until } => {
+                    self.sync.last = format!(
+                        "GitHub zglosil limit ruchu - sync wstrzymany do {}",
+                        menu::local_time_at(until)
+                    );
+                    self.schedule_git_retry(until);
                 }
                 SyncEvent::Error(e) => {
                     self.sync.last = format!("blad: {}", one_line(&e, 90));
@@ -980,7 +1043,7 @@ impl App {
             .title_edit
             .as_mut()
             .or(self.menu.folder_edit.as_mut())
-            .or(self.menu.remote_edit.as_mut())
+            .or(self.menu.token_edit.as_mut())
     }
 
     /// Klawisz w polu tekstowym. `true` = zjedzony.
@@ -994,12 +1057,12 @@ impl App {
             } else if self.menu.folder_edit.is_some() {
                 self.commit_folder_edit();
             } else {
-                self.commit_remote_edit();
+                self.commit_token_edit();
             }
         } else if vk == VK_ESCAPE {
             self.toolbar.title_edit = None;
             self.menu.folder_edit = None;
-            self.menu.remote_edit = None;
+            self.menu.token_edit = None;
         } else if vk == VK_BACK {
             if let Some(b) = self.active_edit() {
                 b.pop();
@@ -1021,14 +1084,14 @@ impl App {
         true
     }
 
-    fn commit_remote_edit(&mut self) {
-        if let Some(url) = self.menu.remote_edit.take() {
-            let url = url.trim().to_string();
-            if url.is_empty() {
+    fn commit_token_edit(&mut self) {
+        if let Some(token) = self.menu.token_edit.take() {
+            let token = token.trim().to_string();
+            if token.is_empty() {
                 return;
             }
-            self.sync.last = "ustawiam zdalne...".to_string();
-            self.sync.send(SyncJob::SetRemote(url));
+            self.sync.last = "sprawdzam token...".to_string();
+            self.sync.send(SyncJob::SetToken(token));
         }
     }
 
@@ -1076,7 +1139,46 @@ impl App {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_WAVES);
         }
-        self.waves = None;
+        self.stop_waves();
+    }
+
+    /// Koniec ochrony: fale znikaja, wraca UI i - jesli to fale wlaczyly pelny
+    /// ekran - poprzedni rozmiar okna. Zwraca, czy fale trwaly.
+    fn stop_waves(&mut self) -> bool {
+        let had = self.waves.take().is_some();
+        if self.waves_fullscreen {
+            self.waves_fullscreen = false;
+            if self.fullscreen.is_active() && !self.hidden {
+                self.toggle_fullscreen();
+            }
+        }
+        had
+    }
+
+    /// Start ochrony: chowamy cale UI (pasek, tytul, menu - statyczny chrome
+    /// wypala tak samo jak notatka) i przechodzimy na pelny ekran, zeby pasy
+    /// przeszly przez caly panel, nie tylko przez okno.
+    fn start_waves(&mut self) {
+        let (w, h) = self.renderer.size();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(1);
+        let seed = nanos ^ (self.doc.lamport() as u32);
+        let mut wv = Waves::new((w, h), seed.max(1));
+        wv.set_brightness(self.waves_dim_pct as f32 / 100.0);
+        self.waves = Some(wv);
+        self.waves_tick = Instant::now();
+        if self.menu.open {
+            self.menu.toggle();
+        }
+        if !self.fullscreen.is_active() {
+            self.toggle_fullscreen();
+            self.waves_fullscreen = true;
+        }
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_TICK_MS, None);
+        }
     }
 
     /// Sam hover to wejscie dopiero po wyraznym ruchu: rysik lezacy w zasiegu
@@ -1095,7 +1197,7 @@ impl App {
         if self.waves_forced {
             return;
         }
-        let had_waves = self.waves.take().is_some();
+        let had_waves = self.stop_waves();
         // Rysik daje 266 zdarzen/s - timer przestawiamy najwyzej raz na sekunde.
         if had_waves || self.waves_armed.elapsed().as_secs_f32() > 1.0 {
             self.waves_armed = Instant::now();
@@ -1112,17 +1214,7 @@ impl App {
     /// klatce: fala nigdy nie wychodzila z fade-inu i byla niewidoczna.)
     fn waves_tick(&mut self) {
         if self.waves.is_none() {
-            let (w, h) = self.renderer.size();
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(1);
-            let seed = nanos ^ (self.doc.lamport() as u32);
-            self.waves = Some(Waves::new((w, h), seed.max(1)));
-            self.waves_tick = Instant::now();
-            unsafe {
-                SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_TICK_MS, None);
-            }
+            self.start_waves();
         }
         self.render();
     }
@@ -1132,12 +1224,12 @@ impl App {
     fn toggle_forced_waves(&mut self) {
         if self.waves_forced {
             self.waves_forced = false;
-            self.waves = None;
+            self.stop_waves();
             self.arm_amoled_timers();
             self.render();
         } else {
             self.waves_forced = true;
-            self.waves = None;
+            self.stop_waves();
             self.waves_tick();
         }
     }
@@ -1149,7 +1241,7 @@ impl App {
         self.end_action();
         self.commit_title();
         self.sync_now();
-        self.git_sync();
+        self.git_sync(false);
         self.save_placement();
         self.hidden = true;
         self.kill_amoled_timers();
@@ -1169,7 +1261,7 @@ impl App {
         }
         self.arm_amoled_timers();
         // Inne maszyny mogly cos dopisac, gdy okno bylo schowane.
-        self.git_sync();
+        self.git_sync(false);
         self.render();
     }
 
@@ -1234,8 +1326,11 @@ impl App {
         prims.clear();
         let mut st = self.ui_state();
         st.title = &title;
-        self.toolbar.build(&st, &mut prims);
-        if self.menu.open {
+        // Podczas ochrony AMOLED zadnego chrome: ekran to sama notatka pod pasami.
+        if self.waves.is_none() {
+            self.toolbar.build(&st, &mut prims);
+        }
+        if self.menu.open && self.waves.is_none() {
             let author = self.author.dir_name();
             // Pola wprost (nie metoda na `self`): `build` bierze &mut menu, stan czyta reszte.
             let ms = MenuState {
@@ -1253,9 +1348,11 @@ impl App {
                 toolbar_pin: self.toolbar_pin,
                 scroll_mult: self.scroll_mult,
                 waves_idle_s: self.waves_idle_s,
+                waves_dim_pct: self.waves_dim_pct,
                 sync: &self.sync.status,
                 sync_last: &self.sync.last,
                 sync_busy: self.sync.pending > 0,
+                device_code: self.sync.device_code.as_deref(),
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -1360,17 +1457,23 @@ impl App {
 
     fn git_hud(&self) -> String {
         let st = &self.sync.status;
-        let Some(v) = &st.git else {
-            return "brak gita w PATH".to_string();
-        };
+        if !st.repo_ok {
+            return "repozytorium niedostepne".to_string();
+        }
+        let b = &st.budget;
         let mut s = format!(
-            "{v}  {}  zdalne: {}  login: {}  +{} -{}",
+            "{}  {}  login: {}  +{} -{}  ruch: {}/h {}/d",
             st.head.as_deref().unwrap_or("-"),
-            st.remote.as_deref().unwrap_or("brak"),
+            st.remote.as_deref().unwrap_or("bez zdalnego"),
             st.login.as_deref().unwrap_or("-"),
             st.ahead,
-            st.behind
+            st.behind,
+            b.ops_hour,
+            b.ops_day
         );
+        if let Some(u) = b.backoff_until {
+            s.push_str(&format!("  WSTRZYMANY do {}", menu::local_time_at(u)));
+        }
         if self.sync.pending > 0 {
             s.push_str("  [w toku]");
         }
@@ -1787,7 +1890,7 @@ pub unsafe extern "system" fn wndproc(
                 TIMER_WAVES => app.waves_tick(),
                 TIMER_GIT => {
                     let _ = KillTimer(Some(hwnd), TIMER_GIT);
-                    app.git_sync();
+                    app.git_sync(false);
                 }
                 TIMER_UI => {
                     let _ = KillTimer(Some(hwnd), TIMER_UI);

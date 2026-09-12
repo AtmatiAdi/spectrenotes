@@ -47,8 +47,9 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       zaczarowanego przedmiotu w Minecrafcie) płyną przez ekran i gaszą notatkę do zera
       tylko pod sobą; maska liczona na CPU co 12 px, rysowana jedną bitmapą. Każde
       wejście gasi je natychmiast (hover dopiero po ruchu ≥ 12 px), `W` włącza na stałe
-      (podgląd), czas bezczynności w ustawieniach 10 s – 10 min. Timer gaśnie przy
-      ukryciu okna. Zweryfikowane zrzutami ekranu (skrypt: start po 10 s, gaszenie
+      (podgląd), czas bezczynności w ustawieniach 10 s – 10 min, jasność między pasami
+      w ustawieniach. Na czas ochrony: UI schowane, pełny ekran (TOPMOST), po wejściu
+      powrót. Timer gaśnie przy ukryciu okna. Zweryfikowane zrzutami ekranu (skrypt: start po 10 s, gaszenie
       klawiszem, powrót po 10 s; pokrycie 93 % próbek w 2 min). Pixel shift, globalna
       rampa i plamy z gradientem radialnym **odrzucone po teście**
 - [x] Szerokość kolumny (Z9): `COLUMN_W = 2880` jednostek (na docelowym panelu zoom
@@ -60,6 +61,11 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       (`visible_in` czyta kilka pasów zamiast skanować wszystko — skan kosztował ~5 ms
       na klatkę i dominował nad rysowaniem). Bench: rebuild 1,6 ms, scroll +2 px
       0,014 ms, repaint 0,009 ms przy 100 000 kresek (~190 widocznych)
+- [x] Cache realizacji geometrii czyszczony przy zmianie notatki — `StrokeId` (autor,
+      licznik) jest unikalny tylko w obrębie notatki; bez tego F11 rysował białe pasy
+      z notatki testowej w innych notatkach (odtworzone i naprawione, zrzuty)
+- [x] Pełny ekran = `HWND_TOPMOST`: przy kilku monitorach klik w inny ekran nie wyciąga
+      paska zadań nad notatkę (do potwierdzenia na sprzęcie)
 - [ ] Weryfikacja wyjścia okna przy przenoszeniu na monitor z dGPU
 
 ## Etap 3 — Trwałość lokalna  ◐ W TOKU
@@ -93,21 +99,28 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
 - [x] Ochrona AMOLED po bezczynności (Z7): fale przyciemnienia — patrz Etap 2
 
-## Etap 5 — Git jako warstwa trwała  ◐ W TOKU
+## Etap 5 — Git jako warstwa trwała  ◐ PRAWIE ZAMKNIĘTY
 
-- [x] Backend `spectre-sync::git` przez proces `git` (ADR 0006 — nie `gix`: brak push
-      i uwierzytelniania): init, commit, fetch, merge (`--allow-unrelated-histories`,
-      abort przy błędzie), push, `folders.txt merge=union`, `.cache/` ignorowane.
-      Test: dwa „urządzenia" przez lokalne repo bare — pliki obu autorów po obu
-      stronach, foldery zsumowane, historia notatki z `git log`
+- [x] Backend `spectre-sync::git` na **`libgit2` w binarce** (ADR 0006; nie `gix`: brak
+      push i uwierzytelniania; nie proces `git`: zależność od instalacji): init, commit,
+      fetch, merge niezależnych historii z `FileFavor::Union` dla `folders.txt`, push,
+      historia notatki, klasyfikacja błędów (limit ruchu / token / inne). Test: dwa
+      „urządzenia" przez lokalne repo bare — pliki obu autorów po obu stronach
 - [x] Wątek sync w aplikacji (`spectre-app::sync`): commit 10 s po ostatniej zmianie,
       pełny cykl przy ukryciu i pokazaniu okna oraz na start; render nigdy nie czeka
-- [x] Menu → Konto: stan gita, adres zdalnego (`Ctrl+V`), prywatne repo przez `gh`,
-      logowanie do GitHuba przez Git Credential Manager (przeglądarka), wylogowanie,
-      „Synchronizuj teraz"; HUD pokazuje `+ahead -behind`
+- [x] **Repozytorium automatyczne**: `spectrenotes-<space>` wykrywane albo zakładane
+      przez GitHub REST API po zalogowaniu; użytkownik nie widzi adresów
+- [x] Logowanie GitHub Device Flow (kod + przeglądarka, token w DPAPI) albo wklejony PAT;
+      wylogowanie. Wymaga `client_id` aplikacji OAuth (`github.rs::CLIENT_ID`)
+- [x] **Budżet ruchu** (`spectre-sync::budget`): księga połączeń, odstęp min. 30 s,
+      progi 120/h, 1200/dobę, 500 MB/dobę, predykcja dobowa; odmowa serwera → odczekanie
+      10 min ×2 do 2 h z ostrzeżeniem w Konto i HUD, commity lokalne w tym czasie
 - [x] Po merge: lista notatek i cache metadanych odświeżone, bieżąca notatka
       przeładowana (po zakończeniu kreski, jeśli trwa)
-- [ ] Test dwóch maszyn na żywo przez GitHub (wymaga drugiego komputera użytkownika)
+- [x] **Zweryfikowane end-to-end na GitHubie**: dwie instancje (różny `COMPUTERNAME`,
+      ten sam space) — założenie repo, push, pobranie, merge niezależnych historii,
+      fast-forward z powrotem
+- [ ] Rejestracja aplikacji OAuth na GitHubie i wpisanie `CLIENT_ID` (właściciel projektu)
 - [ ] Przeglądarka wersji notatki (`log_note` jest; brak UI i odtwarzania stanu z commita)
 - [ ] Snapshoty i przycinanie HEAD — razem z Etapem 3
 

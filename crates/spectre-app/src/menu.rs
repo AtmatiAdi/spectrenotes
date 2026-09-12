@@ -50,6 +50,8 @@ pub enum Setting {
     ToolbarPin,
     ScrollMult,
     WavesIdle,
+    /// Jasnosc reszty notatki podczas fal (procent); 100 = bez przyciemnienia.
+    WavesDim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,10 +66,8 @@ pub enum MenuHit {
     Login,
     Logout,
     SyncNow,
-    /// Zaczyna edycje adresu zdalnego repozytorium.
-    SetRemote,
-    /// Prywatne repo na GitHubie przez `gh`.
-    CreateRepo,
+    /// Zaczyna wklejanie tokenu GitHub (PAT).
+    PasteToken,
     /// Tlo panelu - zjada dotkniecie, nic nie robi.
     Panel,
 }
@@ -100,10 +100,13 @@ pub struct MenuState<'a> {
     pub scroll_mult: f32,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     pub waves_idle_s: u32,
+    pub waves_dim_pct: u32,
     /// Stan gita (Etap 5) i ostatni komunikat synchronizacji.
     pub sync: &'a SyncStatus,
     pub sync_last: &'a str,
     pub sync_busy: bool,
+    /// Trwajace logowanie Device Flow: kod do wpisania.
+    pub device_code: Option<&'a str>,
 }
 
 /// Wiersz ustawienia: (klucz, etykieta, wartosc do wyswietlenia).
@@ -114,8 +117,8 @@ pub struct Menu {
     pub tab: Tab,
     /// `Some` = trwa wpisywanie nazwy nowego folderu.
     pub folder_edit: Option<String>,
-    /// Edytowany adres zdalnego repozytorium (Konto).
-    pub remote_edit: Option<String>,
+    /// Wklejany token GitHub (Konto, gdy nie ma Device Flow).
+    pub token_edit: Option<String>,
     scroll: f32,
     hot: Option<MenuHit>,
     /// Elementy z ostatniego `build` - juz po przewinieciu, w pikselach ekranu.
@@ -133,7 +136,7 @@ impl Menu {
             open: false,
             tab: Tab::Notes,
             folder_edit: None,
-            remote_edit: None,
+            token_edit: None,
             scroll: 0.0,
             hot: None,
             rows: Vec::new(),
@@ -177,7 +180,7 @@ impl Menu {
         self.hot = None;
         if !self.open {
             self.folder_edit = None;
-            self.remote_edit = None;
+            self.token_edit = None;
         }
     }
 
@@ -186,7 +189,7 @@ impl Menu {
             self.tab = tab;
             self.scroll = 0.0;
             self.folder_edit = None;
-            self.remote_edit = None;
+            self.token_edit = None;
         }
     }
 
@@ -620,7 +623,18 @@ impl Menu {
             ),
             (
                 "Ochrona AMOLED",
-                vec![(Setting::WavesIdle, "Fale po bezczynnosci (W)", waves)],
+                vec![
+                    (Setting::WavesIdle, "Fale po bezczynnosci (W)", waves),
+                    (
+                        Setting::WavesDim,
+                        "Jasnosc notatki podczas fal",
+                        if s.waves_dim_pct >= 100 {
+                            "pelna".to_string()
+                        } else {
+                            format!("{}%", s.waves_dim_pct)
+                        },
+                    ),
+                ],
             ),
         ];
         for (gi, (title, items)) in groups.into_iter().enumerate() {
@@ -703,124 +717,163 @@ impl Menu {
         y += 12.0;
 
         let st = s.sync;
-        y += self.section(list, y, "Repozytorium (git)", out);
-        match &st.git {
-            None => {
-                y += self.line(list, y, "git nie znaleziony w PATH", FG, out);
-                y += self.line(
-                    list,
-                    y,
-                    "zainstaluj Git for Windows, sync czeka",
-                    FG_DIM,
-                    out,
-                );
-                y += 12.0;
-                return y + 10.0 - (list.y - self.scroll);
-            }
-            Some(v) => {
-                let head = st.head.as_deref().unwrap_or("brak commitow");
-                y += self.line(list, y, &format!("git {v}   {head}"), FG_DIM, out);
-            }
-        }
-        // Zdalne: adres albo edycja.
-        if let Some(buf) = self.remote_edit.clone() {
-            let r = Rect {
-                x: list.x + PAD,
-                y: y + 2.0,
-                w: list.w - PAD * 2.0,
-                h: ROW_H - 4.0,
-            };
-            out.push(UiPrim::Outline {
-                x: r.x,
-                y: r.y,
-                w: r.w,
-                h: r.h,
-                color: ACCENT,
-                width: 1.0,
-                r: 6.0,
-            });
-            out.push(UiPrim::Text {
-                x: r.x + 8.0,
-                y: r.y,
-                w: r.w - 16.0,
-                h: r.h,
-                text: if buf.is_empty() {
-                    "adres https://github.com/..., Ctrl+V, Enter".to_string()
-                } else {
-                    format!("{}|", tail_fit(&buf, 40))
-                },
-                color: if buf.is_empty() { FG_DIM } else { FG },
-                font: UiFont::Ui,
-            });
-            self.rows.push((MenuHit::Panel, r));
-            y += ROW_H;
-        } else {
-            let text = match &st.remote {
-                Some(url) => format!("zdalne: {}", tail_fit(url, 34)),
-                None => "zdalne: brak - notatki tylko na tym komputerze".to_string(),
-            };
-            y += self.line(list, y, &text, FG, out);
-            y += 6.0;
-            y += self.button(
-                list,
-                y,
-                MenuHit::SetRemote,
-                "Ustaw adres repozytorium",
-                FG,
-                out,
-            );
-            if st.gh && st.remote.is_none() {
-                y += self.button(
-                    list,
-                    y,
-                    MenuHit::CreateRepo,
-                    "Utworz prywatne repo na GitHubie (gh)",
-                    FG,
-                    out,
-                );
-            }
-        }
-        y += 12.0;
-
         y += self.section(list, y, "GitHub", out);
         match &st.login {
             Some(user) => {
                 y += self.line(list, y, &format!("zalogowany: {user}"), FG, out);
+                let repo = match &st.remote {
+                    Some(_) => format!("repozytorium: {user}/{}", st.repo_name),
+                    None => format!("repozytorium {} - lacze...", st.repo_name),
+                };
+                y += self.line(list, y, &repo, FG_DIM, out);
                 y += 6.0;
                 y += self.button(list, y, MenuHit::Logout, "Wyloguj", FG_DIM, out);
             }
             None => {
-                y += self.line(list, y, "niezalogowany", FG_DIM, out);
-                y += 6.0;
-                y += self.button(
-                    list,
-                    y,
-                    MenuHit::Login,
-                    "Zaloguj przez GitHub (przegladarka)",
-                    FG,
-                    out,
-                );
+                if let Some(code) = s.device_code {
+                    y += self.line(list, y, "wpisz ten kod w przegladarce:", FG, out);
+                    out.push(UiPrim::Text {
+                        x: list.x + PAD,
+                        y,
+                        w: list.w - PAD * 2.0,
+                        h: 44.0,
+                        text: code.to_string(),
+                        color: ACCENT,
+                        font: UiFont::Big,
+                    });
+                    y += 44.0;
+                    y += self.line(list, y, "github.com/login/device", FG_DIM, out);
+                    y += 6.0;
+                } else {
+                    y += self.line(
+                        list,
+                        y,
+                        "niezalogowany - notatki tylko lokalnie",
+                        FG_DIM,
+                        out,
+                    );
+                    y += self.line(
+                        list,
+                        y,
+                        &format!("po zalogowaniu: prywatne repo {}", st.repo_name),
+                        FG_DIM,
+                        out,
+                    );
+                    y += 6.0;
+                    if st.device_flow {
+                        y += self.button(
+                            list,
+                            y,
+                            MenuHit::Login,
+                            "Zaloguj przez GitHub (przegladarka)",
+                            FG,
+                            out,
+                        );
+                    }
+                }
+                // Token wklejony recznie: jedyna droga bez client_id, zapasowa z nim.
+                if let Some(buf) = self.token_edit.clone() {
+                    let r = Rect {
+                        x: list.x + PAD,
+                        y: y + 2.0,
+                        w: list.w - PAD * 2.0,
+                        h: ROW_H - 4.0,
+                    };
+                    out.push(UiPrim::Outline {
+                        x: r.x,
+                        y: r.y,
+                        w: r.w,
+                        h: r.h,
+                        color: ACCENT,
+                        width: 1.0,
+                        r: 6.0,
+                    });
+                    out.push(UiPrim::Text {
+                        x: r.x + 8.0,
+                        y: r.y,
+                        w: r.w - 16.0,
+                        h: r.h,
+                        text: if buf.is_empty() {
+                            "token (PAT, zakres repo): Ctrl+V, Enter".to_string()
+                        } else {
+                            format!("{}|", "*".repeat(buf.chars().count().min(40)))
+                        },
+                        color: if buf.is_empty() { FG_DIM } else { FG },
+                        font: UiFont::Ui,
+                    });
+                    self.rows.push((MenuHit::Panel, r));
+                    y += ROW_H;
+                } else {
+                    y += self.button(
+                        list,
+                        y,
+                        MenuHit::PasteToken,
+                        "Wklej token GitHub (PAT)",
+                        if st.device_flow { FG_DIM } else { FG },
+                        out,
+                    );
+                }
             }
         }
         y += 12.0;
 
         y += self.section(list, y, "Synchronizacja", out);
-        let state = if s.sync_busy {
+        let b = &st.budget;
+        let state = if let Some(until) = b.backoff_until {
+            format!(
+                "WSTRZYMANA do {} - GitHub zglosil limit ruchu",
+                local_time_at(until)
+            )
+        } else if s.sync_busy {
             "w toku...".to_string()
         } else if st.remote.is_none() {
-            format!("{} commitow lokalnie", st.ahead)
+            format!("{} zapisow lokalnie (bez GitHuba)", st.ahead)
         } else {
             match (st.ahead, st.behind) {
-                (0, 0) => "wszystko na serwerze".to_string(),
+                (0, 0) => "wszystko na GitHubie".to_string(),
                 (a, 0) => format!("{a} do wyslania"),
-                (0, b) => format!("{b} do pobrania"),
-                (a, b) => format!("{a} do wyslania, {b} do pobrania"),
+                (0, bh) => format!("{bh} do pobrania"),
+                (a, bh) => format!("{a} do wyslania, {bh} do pobrania"),
             }
         };
-        y += self.line(list, y, &state, FG, out);
+        y += self.line(
+            list,
+            y,
+            &state,
+            if b.backoff_until.is_some() {
+                ACCENT
+            } else {
+                FG
+            },
+            out,
+        );
+        if b.backoff_until.is_some() {
+            y += self.line(
+                list,
+                y,
+                &format!(
+                    "za duzo prob ({}x) - czekamy, zeby blokada ustapila",
+                    b.refusals
+                ),
+                FG_DIM,
+                out,
+            );
+        }
         if !s.sync_last.is_empty() {
             y += self.line(list, y, s.sync_last, FG_DIM, out);
         }
+        y += self.line(
+            list,
+            y,
+            &format!(
+                "ruch: {} polaczen/h, {} /dobe, {}",
+                b.ops_hour,
+                b.ops_day,
+                human_bytes(b.bytes_day)
+            ),
+            FG_DIM,
+            out,
+        );
         y += self.line(
             list,
             y,
@@ -926,19 +979,37 @@ pub fn local_date(ms: u64) -> String {
     format!("{:04}-{:02}-{:02}", local.wYear, local.wMonth, local.wDay)
 }
 
-/// Koniec napisu, gdy jest dluzszy niz `max` znakow - adresy roznia sie koncem.
-fn tail_fit(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max {
-        s.to_string()
-    } else {
-        let skip = n - max + 3;
-        format!("...{}", s.chars().skip(skip).collect::<String>())
-    }
-}
-
 /// Lokalna godzina `HH:MM` teraz - do komunikatow "wyslano 12:04".
 pub fn local_time_now() -> String {
     let local = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     format!("{:02}:{:02}", local.wHour, local.wMinute)
+}
+
+/// Lokalna godzina `HH:MM` dla chwili unix (s).
+pub fn local_time_at(unix_s: u64) -> String {
+    let ft_ticks = unix_s * 10_000_000 + 116_444_736_000_000_000;
+    let ft = FILETIME {
+        dwLowDateTime: ft_ticks as u32,
+        dwHighDateTime: (ft_ticks >> 32) as u32,
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut local = SYSTEMTIME::default();
+    unsafe {
+        if FileTimeToSystemTime(&ft, &mut utc).is_err()
+            || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err()
+        {
+            return String::new();
+        }
+    }
+    format!("{:02}:{:02}", local.wHour, local.wMinute)
+}
+
+fn human_bytes(b: u64) -> String {
+    if b >= 1024 * 1024 {
+        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
+    } else if b >= 1024 {
+        format!("{:.0} kB", b as f64 / 1024.0)
+    } else {
+        format!("{b} B")
+    }
 }

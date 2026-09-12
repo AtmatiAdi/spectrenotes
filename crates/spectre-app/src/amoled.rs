@@ -109,6 +109,9 @@ pub struct Waves {
     view: (u32, u32),
     mask: DimMask,
     row_buf: Vec<f32>,
+    /// Jasnosc notatki miedzy pasami, 0..1 (z ustawien) - reszta ekranu tez
+    /// przygasa, tylko lagodniej niz pod pasem.
+    brightness: f32,
 }
 
 impl Waves {
@@ -120,6 +123,7 @@ impl Waves {
             view,
             mask: DimMask::for_view(view.0, view.1),
             row_buf: Vec::new(),
+            brightness: 1.0,
         };
         w.layers = w.make_layers();
         w
@@ -216,6 +220,10 @@ impl Waves {
         layers
     }
 
+    pub fn set_brightness(&mut self, b: f32) {
+        self.brightness = b.clamp(0.0, 1.0);
+    }
+
     pub fn resize(&mut self, view: (u32, u32)) {
         if view != self.view {
             self.view = view;
@@ -248,8 +256,10 @@ impl Waves {
                 l.row(y, step, &mut self.row_buf);
             }
             let row = &mut self.mask.alpha[j * mw..(j + 1) * mw];
+            // Miedzy pasami swieci `brightness`, pod pasem odpowiednio mniej.
+            let b = self.brightness;
             for (out, &through) in row.iter_mut().zip(self.row_buf.iter()) {
-                *out = ((1.0 - through) * fade * 255.0 + 0.5) as u8;
+                *out = ((1.0 - through * b) * fade * 255.0 + 0.5) as u8;
             }
         }
         &self.mask
