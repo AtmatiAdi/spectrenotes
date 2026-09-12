@@ -8,6 +8,7 @@
 //! po 400 ms ciszy. Bez UI poza HUD-em - sterowanie klawiatura i przyciskami
 //! rysika (patrz `hud_text`).
 
+mod amoled;
 mod app;
 mod bench;
 mod config;

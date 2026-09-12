@@ -46,6 +46,8 @@ pub enum Setting {
     Hud,
     Fullscreen,
     Dock,
+    ToolbarPin,
+    ScrollMult,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,8 @@ pub struct MenuState<'a> {
     pub hud: bool,
     pub fullscreen: bool,
     pub dock: &'a str,
+    pub toolbar_pin: bool,
+    pub scroll_mult: f32,
 }
 
 pub struct Menu {
@@ -544,7 +548,7 @@ impl Menu {
     fn build_settings(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let mut y = list.y - self.scroll + 6.0;
         let on_off = |b: bool| if b { "wl." } else { "wyl." };
-        let items: [(Setting, &str, String); 5] = [
+        let items: [(Setting, &str, String); 7] = [
             (Setting::Vsync, "VSync (V)", on_off(s.vsync).to_string()),
             (
                 Setting::PanTearing,
@@ -562,6 +566,16 @@ impl Menu {
                 on_off(s.fullscreen).to_string(),
             ),
             (Setting::Dock, "Dok paska narzedzi", s.dock.to_string()),
+            (
+                Setting::ToolbarPin,
+                "Pasek zawsze widoczny",
+                on_off(s.toolbar_pin).to_string(),
+            ),
+            (
+                Setting::ScrollMult,
+                "Mnoznik przewijania",
+                format!("x{:.1}", s.scroll_mult),
+            ),
         ];
         y += self.section(list, y, "Wyswietlanie", out);
         for (key, label, value) in items {

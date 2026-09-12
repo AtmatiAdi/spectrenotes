@@ -13,5 +13,5 @@ mod d2d;
 mod geometry;
 mod tess;
 
-pub use d2d::{Overlay, PresentMode, Renderer, UiFont, UiPrim};
+pub use d2d::{Blob, Overlay, PresentMode, Renderer, UiFont, UiPrim};
 pub use tess::stroke_segments;

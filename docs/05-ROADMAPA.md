@@ -42,11 +42,12 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       z tej samej geometrii; undo/redo to repaint regionu, nie pełny rebuild
 - [~] Cache kafli — niepotrzebny: po realizacjach geometrii i indeksie pasów
       przewijanie przyrostowe mieści się w budżecie z dużym zapasem
-- [x] Pixel shift: ±4 px po torze Lissajous (61 s / 89 s), krok co 4 s tylko w bezczynności
-      rysika, całe piksele; treść paska tytułowego dryfuje razem z canvasem
-- [x] Rampa przygaszania: po 3 min bez wejścia płynnie (2 s) do 40 %, powrót przy
-      pierwszym ruchu; czarna warstwa w `present`, nie jasność panelu. Timery gasną
-      przy ukryciu okna (Z2: zero wybudzeń w tle)
+- [x] Ochrona AMOLED po bezczynności: **fale lokalnego przyciemnienia** (`amoled.rs`) —
+      po 3 min miękkie, losowo ukształtowane plamy (gradient radialny, obrót, pulsowanie)
+      płyną przez ekran i gaszą notatkę do zera tylko pod sobą; każde wejście gasi je
+      natychmiast, `W` włącza od razu (podgląd). Timer gaśnie przy ukryciu okna.
+      Pixel shift i globalna rampa **odrzucone po teście**: przeskok treści o 1 px
+      był wyczuwalny, a jednolite przyciemnienie niepotrzebne
 - [x] Szerokość kolumny (Z9): `COLUMN_W = 2880` jednostek (na docelowym panelu zoom
       „dopasuj szerokość" = 1,0). Domyślnie dopasowanie do okna, trzymane przy zmianie
       rozmiaru do pierwszego ręcznego zoomu; `0` wraca. Kolumna węższa niż okno jest

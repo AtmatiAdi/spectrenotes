@@ -7,15 +7,19 @@ use spectre_proto::Rgba;
 use windows::core::{Interface, Result, PCWSTR};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+    D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush, ID2D1DeviceContext, ID2D1DeviceContext1,
-    ID2D1Factory1, ID2D1GeometryRealization, ID2D1StrokeStyle1, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
-    D2D1_STROKE_STYLE_PROPERTIES1, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    ID2D1Factory1, ID2D1GeometryRealization, ID2D1RadialGradientBrush, ID2D1StrokeStyle1,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_BUFFER_PRECISION_8BPC_UNORM, D2D1_CAP_STYLE_ROUND,
+    D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED, D2D1_COLOR_SPACE_SRGB,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
+    D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND,
+    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES1,
+    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
@@ -128,9 +132,21 @@ pub struct Overlay<'a> {
     /// Okrag gumki: (x, y, promien) w pikselach ekranu.
     pub cursor: Option<(f32, f32, f32)>,
     pub ui: &'a [UiPrim],
-    /// Przygaszenie 0..1 (0 = brak). Realizowane czarna warstwa, nie zmiana
-    /// jasnosci panelu - bez migotania i bez API producenta.
-    pub darken: f32,
+    /// Plamy lokalnego przyciemnienia (Z7, po bezczynnosci), na samym wierzchu.
+    pub blobs: &'a [Blob],
+}
+
+/// Miekka plama ciemnosci: elipsa o gradiencie radialnym, w pikselach ekranu.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blob {
+    pub x: f32,
+    pub y: f32,
+    pub rx: f32,
+    pub ry: f32,
+    /// Obrot elipsy, rad.
+    pub rot: f32,
+    /// Krycie w srodku, 0..1.
+    pub alpha: f32,
 }
 
 pub struct Renderer {
@@ -154,6 +170,8 @@ pub struct Renderer {
     hud_fg: ID2D1Brush,
     hud_bg: ID2D1Brush,
     cursor_brush: ID2D1Brush,
+    /// Plama przyciemnienia (Z7): czarny w srodku -> przezroczysty na brzegu.
+    blob_brush: ID2D1RadialGradientBrush,
     round: ID2D1StrokeStyle1,
     text_fmt: IDWriteTextFormat,
     text_fmt_big: IDWriteTextFormat,
@@ -250,6 +268,7 @@ impl Renderer {
             let hud_fg = solid(&ctx, 0.45, 0.62, 0.55, 0.9)?;
             let hud_bg = solid(&ctx, 0.0, 0.0, 0.0, 0.55)?;
             let cursor_brush = solid(&ctx, 0.6, 0.6, 0.6, 0.8)?;
+            let blob_brush = radial_black(&ctx)?;
 
             let round = factory2d.CreateStrokeStyle(
                 &D2D1_STROKE_STYLE_PROPERTIES1 {
@@ -323,6 +342,7 @@ impl Renderer {
                 hud_fg,
                 hud_bg,
                 cursor_brush,
+                blob_brush,
                 round,
                 text_fmt,
                 text_fmt_big,
@@ -730,24 +750,9 @@ impl Renderer {
             if let Some(text) = overlay.hud {
                 self.draw_hud(text);
             }
-            // Rampa przygaszania (Z7): czarna warstwa o zadanym kryciu na wszystkim.
-            if overlay.darken > 0.001 {
-                let (w, h) = self.size;
-                let brush = self.brush(Rgba {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                    a: (overlay.darken.clamp(0.0, 1.0) * 255.0) as u8,
-                })?;
-                self.ctx.FillRectangle(
-                    &D2D_RECT_F {
-                        left: 0.0,
-                        top: 0.0,
-                        right: w as f32,
-                        bottom: h as f32,
-                    },
-                    &brush,
-                );
+            // Fale przyciemnienia (Z7) - na wszystkim, lacznie z UI.
+            for b in overlay.blobs {
+                self.draw_blob(b);
             }
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
@@ -762,6 +767,35 @@ impl Renderer {
             self.swapchain.Present(interval, flags).ok()?;
         }
         Ok(())
+    }
+
+    /// Elipsa z gradientem radialnym, obrocona o `rot` wokol srodka.
+    unsafe fn draw_blob(&self, b: &Blob) {
+        if b.alpha <= 0.002 || b.rx <= 0.0 || b.ry <= 0.0 {
+            return;
+        }
+        let (c, s) = (b.rot.cos(), b.rot.sin());
+        // Obrot wokol (x, y): T(x,y) * R * T(-x,-y).
+        let m = Matrix3x2 {
+            M11: c,
+            M12: s,
+            M21: -s,
+            M22: c,
+            M31: b.x - c * b.x + s * b.y,
+            M32: b.y - s * b.x - c * b.y,
+        };
+        self.ctx.SetTransform(&m);
+        self.blob_brush.SetCenter(Vector2 { X: b.x, Y: b.y });
+        self.blob_brush.SetRadiusX(b.rx);
+        self.blob_brush.SetRadiusY(b.ry);
+        self.blob_brush.SetOpacity(b.alpha.clamp(0.0, 1.0));
+        let e = D2D1_ELLIPSE {
+            point: Vector2 { X: b.x, Y: b.y },
+            radiusX: b.rx,
+            radiusY: b.ry,
+        };
+        self.ctx.FillEllipse(&e, &self.blob_brush);
+        self.ctx.SetTransform(&Matrix3x2::identity());
     }
 
     unsafe fn draw_ui(&mut self, prims: &[UiPrim]) -> Result<()> {
@@ -947,4 +981,62 @@ fn w(s: &str) -> PCWSTR {
     let mut v: Vec<u16> = s.encode_utf16().collect();
     v.push(0);
     PCWSTR(Box::leak(v.into_boxed_slice()).as_ptr())
+}
+
+/// Pedzel plamy (Z7): krycie 1 w srodku, lagodnie do 0 na brzegu. Krzywa
+/// z plaskim srodkiem, zeby plama gasila do zera wyrazny obszar, a nie tylko punkt.
+unsafe fn radial_black(ctx: &ID2D1DeviceContext) -> Result<ID2D1RadialGradientBrush> {
+    let stops = [
+        D2D1_GRADIENT_STOP {
+            position: 0.0,
+            color: D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            },
+        },
+        D2D1_GRADIENT_STOP {
+            position: 0.45,
+            color: D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.92,
+            },
+        },
+        D2D1_GRADIENT_STOP {
+            position: 0.75,
+            color: D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.4,
+            },
+        },
+        D2D1_GRADIENT_STOP {
+            position: 1.0,
+            color: D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            },
+        },
+    ];
+    let collection = ctx.CreateGradientStopCollection(
+        &stops,
+        D2D1_COLOR_SPACE_SRGB,
+        D2D1_COLOR_SPACE_SRGB,
+        D2D1_BUFFER_PRECISION_8BPC_UNORM,
+        D2D1_EXTEND_MODE_CLAMP,
+        D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED,
+    )?;
+    let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
+        center: Vector2 { X: 0.0, Y: 0.0 },
+        gradientOriginOffset: Vector2 { X: 0.0, Y: 0.0 },
+        radiusX: 1.0,
+        radiusY: 1.0,
+    };
+    ctx.CreateRadialGradientBrush(&props, None, &collection)
 }

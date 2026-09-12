@@ -75,8 +75,8 @@ hybrydowe GPU (musimy *świadomie* zostać na iGPU — patrz `docs/04-ENERGIA-I-
 ### Z7. AMOLED — praca całymi dniami
 - Tło **#000000** (fizycznie zgaszone piksele = zero poboru na tym obszarze).
 - Atrament nie jest czysto biały (peak luminance = wypalanie) — domyślnie ok. `#D8D8D8`.
-- **Pixel shift**: powolne przesuwanie całego canvasu o kilka pikseli.
-  Na nieskończonym canvasie to jest darmowe — to zwykły offset kamery.
+- **Fale przyciemnienia** po bezczynności zamiast pixel shiftu (ten odrzucony po
+  teście: przeskok o piksel jest wyczuwalny) — patrz `04-ENERGIA-I-AMOLED.md`.
 - Brak statycznego chrome: UI samo się chowa; cokolwiek zostaje na ekranie — jeździ i przygasa.
 - Tryb fullscreen jest **trybem podstawowym**, nie dodatkiem.
 

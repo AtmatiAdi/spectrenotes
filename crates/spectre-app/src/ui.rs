@@ -126,8 +126,6 @@ pub struct UiState<'a> {
     pub zoom: f32,
     pub maximized: bool,
     pub menu_open: bool,
-    /// Pixel shift kamery - tresc paska tytulowego dryfuje razem z canvasem (Z7).
-    pub shift: (f32, f32),
 }
 
 struct Item {
@@ -138,6 +136,8 @@ struct Item {
 pub struct Toolbar {
     pub dock: Dock,
     pub visible: bool,
+    /// Ustawienie: pasek nie chowa sie po bezczynnosci (swiadome odstepstwo od Z7).
+    pub pinned: bool,
     items: Vec<Item>,
     hot: Option<Action>,
     /// `Some` = trwa edycja tytulu z klawiatury.
@@ -155,6 +155,7 @@ impl Toolbar {
         Self {
             dock,
             visible: false,
+            pinned: false,
             items: Vec::new(),
             hot: None,
             title_edit: None,
@@ -375,6 +376,9 @@ impl Toolbar {
 
     /// Wolane, gdy uplynal czas bezczynnosci. Zwraca `true`, gdy pasek sie schowal.
     pub fn idle(&mut self, pointer: (f32, f32)) -> bool {
+        if self.pinned {
+            return false;
+        }
         if self.visible
             && self.dragging.is_none()
             && !self.bar_rect().contains(pointer.0, pointer.1)
@@ -439,8 +443,7 @@ impl Toolbar {
             r: 0.0,
         });
         // Bez linii oddzielajacej: jedyny statyczny element paska to jego tlo
-        // (#0C0C0C, prawie zgaszone); tresc dryfuje z pixel shiftem (Z7).
-        let drift_from = out.len();
+        // (#0C0C0C, prawie zgaszone).
 
         // Tytul notatki.
         let tr = self.title_rect();
@@ -547,8 +550,6 @@ impl Toolbar {
                 font: UiFont::Center,
             });
         }
-        // Dryf tresci: w poziomie pelny shift, w pionie polowa (pasek ma 34 px).
-        offset_prims(&mut out[drift_from..], s.shift.0, (s.shift.1 * 0.5).round());
     }
 
     fn build_drag_ghost(&self, x: f32, y: f32, out: &mut Vec<UiPrim>) {
@@ -755,25 +756,5 @@ impl Toolbar {
             color: FG_DIM,
             font: UiFont::Center,
         });
-    }
-}
-
-/// Przesuwa prymitywy o (dx, dy) - do dryfu chrome'u razem z pixel shiftem.
-fn offset_prims(prims: &mut [UiPrim], dx: f32, dy: f32) {
-    if dx == 0.0 && dy == 0.0 {
-        return;
-    }
-    for p in prims {
-        match p {
-            UiPrim::Rect { x, y, .. }
-            | UiPrim::Outline { x, y, .. }
-            | UiPrim::Circle { x, y, .. }
-            | UiPrim::Text { x, y, .. }
-            | UiPrim::Clip { x, y, .. } => {
-                *x += dx;
-                *y += dy;
-            }
-            UiPrim::Unclip => {}
-        }
     }
 }

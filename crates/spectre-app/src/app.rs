@@ -18,6 +18,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::amoled::Waves;
 use crate::config::Config;
 use crate::menu::{Menu, MenuHit, MenuState, NoteEntry, Setting};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
@@ -40,19 +41,12 @@ const SYNC_IDLE_MS: u32 = 400;
 const UI_HIDE_MS: u32 = 2500;
 const TIMER_SYNC: usize = 1;
 const TIMER_UI: usize = 2;
-const TIMER_SHIFT: usize = 3;
-const TIMER_DIM: usize = 4;
-/// Pixel shift (Z7): krok co tyle ms. Amplituda +-4 px, tor Lissajous o okresach
-/// 61 i 89 s - nie okrag, zeby slad nie byl powtarzalny. Jedna klatka na krok
-/// to koszt pomijalny wobec ochrony panelu przed wypaleniem.
-const SHIFT_STEP_MS: u32 = 4000;
-const SHIFT_AMP: f32 = 4.0;
-/// Rampa przygaszania (Z7): po tylu ms bez wejscia jasnosc schodzi do `DIM_FLOOR`
-/// krokami co `DIM_STEP_MS`. Powrot do pelnej przy pierwszym ruchu rysika/klawisza.
-const DIM_IDLE_MS: u32 = 3 * 60 * 1000;
-const DIM_STEP_MS: u32 = 50;
-const DIM_FLOOR: f32 = 0.4;
-const DIM_RAMP_S: f32 = 2.0;
+const TIMER_WAVES: usize = 3;
+/// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
+/// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
+/// ukryte) timer nie chodzi.
+const WAVES_IDLE_MS: u32 = 3 * 60 * 1000;
+const WAVES_TICK_MS: u32 = 60;
 const ZOOM_MIN: f32 = 0.25;
 const ZOOM_MAX: f32 = 4.0;
 
@@ -133,11 +127,14 @@ pub struct App {
     /// (Z5). `T` przelacza na tryb bez tearingu do porownan.
     pan_tearing: bool,
     fullscreen: Fullscreen,
-    /// Start procesu - zegar toru pixel shiftu.
-    started: Instant,
-    /// Jasnosc 1.0 = pelna; ponizej trwa albo skonczyla sie rampa przygaszania.
-    dim: f32,
-    dim_armed: Instant,
+    /// Fale przyciemnienia po bezczynnosci; `None` = ekran w pelnej jasnosci.
+    waves: Option<Waves>,
+    waves_tick: Instant,
+    /// Ostatnie przestawienie timera bezczynnosci (nie robimy tego 266 razy/s).
+    waves_armed: Instant,
+    /// Ustawienia z `config.txt`.
+    toolbar_pin: bool,
+    scroll_mult: f32,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -215,7 +212,15 @@ impl App {
             .get("dock")
             .and_then(Dock::parse)
             .unwrap_or(Dock::Left);
+        let toolbar_pin = config.get("toolbar_pin") == Some("1");
+        let scroll_mult = config
+            .get("scroll_mult")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.5, 8.0);
         let mut toolbar = Toolbar::new(dock);
+        toolbar.pinned = toolbar_pin;
+        toolbar.visible = toolbar_pin;
         toolbar.layout(w as f32, h as f32, PALETTE.len());
         let mut menu = Menu::new();
         menu.layout(w as f32, h as f32, toolbar.content_top());
@@ -250,9 +255,11 @@ impl App {
             vsync: false,
             pan_tearing: true,
             fullscreen: Fullscreen::default(),
-            started: Instant::now(),
-            dim: 1.0,
-            dim_armed: Instant::now(),
+            waves: None,
+            waves_tick: Instant::now(),
+            waves_armed: Instant::now(),
+            toolbar_pin,
+            scroll_mult,
             toolbar,
             menu,
             config,
@@ -416,9 +423,10 @@ impl App {
     fn update_pan(&mut self, batch: &PenBatch) {
         if let Some(s) = batch.samples.last() {
             let ((sx0, sy0), (cx0, cy0)) = self.pan_start;
-            let target_y = cy0 - (s.y - sy0) / self.cam.zoom;
+            let k = self.scroll_mult / self.cam.zoom;
+            let target_y = cy0 - (s.y - sy0) * k;
             self.scroll_to(target_y);
-            let target_x = cx0 - (s.x - sx0) / self.cam.zoom;
+            let target_x = cx0 - (s.x - sx0) * k;
             self.scroll_x_to(target_x);
         }
     }
@@ -499,7 +507,6 @@ impl App {
             zoom: self.cam.zoom,
             maximized: window::is_maximized(self.hwnd),
             menu_open: self.menu.open,
-            shift: self.cam.shift,
         }
     }
 
@@ -611,6 +618,30 @@ impl App {
                 let (w, h) = self.renderer.size();
                 self.toolbar.layout(w as f32, h as f32, PALETTE.len());
                 self.config.set("dock", next.name());
+                self.config.save();
+            }
+            Setting::ToolbarPin => {
+                self.toolbar_pin = !self.toolbar_pin;
+                self.toolbar.pinned = self.toolbar_pin;
+                if self.toolbar_pin {
+                    self.toolbar.visible = true;
+                }
+                self.config
+                    .set("toolbar_pin", if self.toolbar_pin { "1" } else { "0" });
+                self.config.save();
+            }
+            Setting::ScrollMult => {
+                // Cykl: x1 -> x1.5 -> x2 -> x3 -> x4 -> x6 -> x1.
+                self.scroll_mult = match self.scroll_mult {
+                    m if m < 1.25 => 1.5,
+                    m if m < 1.75 => 2.0,
+                    m if m < 2.5 => 3.0,
+                    m if m < 3.5 => 4.0,
+                    m if m < 5.0 => 6.0,
+                    _ => 1.0,
+                };
+                self.config
+                    .set("scroll_mult", format!("{}", self.scroll_mult));
                 self.config.save();
             }
         }
@@ -784,65 +815,48 @@ impl App {
 
     // ----- AMOLED (Z7) -------------------------------------------------------
 
-    /// Timery ochrony panelu dzialaja tylko, gdy okno jest widoczne - w tle
+    /// Odliczanie bezczynnosci dziala tylko, gdy okno jest widoczne - w tle
     /// proces ma nie wybudzac sie w ogole (Z2).
     fn arm_amoled_timers(&self) {
         unsafe {
-            SetTimer(Some(self.hwnd), TIMER_SHIFT, SHIFT_STEP_MS, None);
-            SetTimer(Some(self.hwnd), TIMER_DIM, DIM_IDLE_MS, None);
+            SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_IDLE_MS, None);
         }
     }
 
-    fn kill_amoled_timers(&self) {
+    fn kill_amoled_timers(&mut self) {
         unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_SHIFT);
-            let _ = KillTimer(Some(self.hwnd), TIMER_DIM);
+            let _ = KillTimer(Some(self.hwnd), TIMER_WAVES);
         }
+        self.waves = None;
     }
 
-    /// Krok pixel shiftu: cel z toru Lissajous, zaokraglony do calych pikseli
-    /// (warstwa sucha przesuwa sie o cale piksele). Nie w trakcie akcji rysikiem -
-    /// skok tresci pod czubkiem bylby wyczuwalny.
-    fn step_shift(&mut self) {
-        if self.mode != Mode::Idle {
-            return;
-        }
-        let t = self.started.elapsed().as_secs_f32();
-        let sx = (SHIFT_AMP * (std::f32::consts::TAU * t / 61.0).sin()).round();
-        let sy = (SHIFT_AMP * (std::f32::consts::TAU * t / 89.0 + 1.0).sin()).round();
-        if (sx, sy) != self.cam.shift {
-            self.cam.shift = (sx, sy);
-            self.dirty = Dirty::Full;
-            self.render();
-        }
-    }
-
-    /// Dowolne wejscie uzytkownika: pelna jasnosc i odliczanie bezczynnosci od nowa.
+    /// Dowolne wejscie uzytkownika: fale gasna, odliczanie od nowa.
     fn activity(&mut self) {
+        let had_waves = self.waves.take().is_some();
         // Rysik daje 266 zdarzen/s - timer przestawiamy najwyzej raz na sekunde.
-        if self.dim_armed.elapsed().as_secs_f32() > 1.0 || self.dim < 1.0 {
-            self.dim_armed = Instant::now();
+        if had_waves || self.waves_armed.elapsed().as_secs_f32() > 1.0 {
+            self.waves_armed = Instant::now();
             unsafe {
-                SetTimer(Some(self.hwnd), TIMER_DIM, DIM_IDLE_MS, None);
+                SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_IDLE_MS, None);
             }
         }
-        if self.dim < 1.0 {
-            self.dim = 1.0;
+        if had_waves {
             self.render();
         }
     }
 
-    /// Tik rampy: pierwszy po `DIM_IDLE_MS`, kolejne co `DIM_STEP_MS` az do podlogi.
-    fn dim_tick(&mut self) {
-        let step = (1.0 - DIM_FLOOR) * DIM_STEP_MS as f32 / (DIM_RAMP_S * 1000.0);
-        self.dim = (self.dim - step).max(DIM_FLOOR);
-        unsafe {
-            if self.dim > DIM_FLOOR {
-                SetTimer(Some(self.hwnd), TIMER_DIM, DIM_STEP_MS, None);
-            } else {
-                let _ = KillTimer(Some(self.hwnd), TIMER_DIM);
+    /// Tik fal: pierwszy po `WAVES_IDLE_MS` (start), kolejne co `WAVES_TICK_MS`.
+    fn waves_tick(&mut self) {
+        let now = Instant::now();
+        if self.waves.is_none() {
+            let (w, h) = self.renderer.size();
+            let seed = now.elapsed().subsec_nanos() ^ (self.doc.lamport() as u32);
+            self.waves = Some(Waves::new((w as f32, h as f32), seed.max(1)));
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_TICK_MS, None);
             }
         }
+        self.waves_tick = now;
         self.render();
     }
 
@@ -856,7 +870,6 @@ impl App {
         self.save_placement();
         self.hidden = true;
         self.kill_amoled_timers();
-        self.dim = 1.0;
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
@@ -952,20 +965,32 @@ impl App {
                 hud: self.show_hud,
                 fullscreen: self.fullscreen.is_active(),
                 dock: self.toolbar.dock.name(),
+                toolbar_pin: self.toolbar_pin,
+                scroll_mult: self.scroll_mult,
             };
             self.menu.build(&ms, &mut prims);
         }
 
+        // Fale (Z7): krok symulacji o czas od poprzedniej klatki, tylko gdy trwaja.
+        let blobs: &[spectre_render::Blob] = match self.waves.as_mut() {
+            Some(wv) => {
+                let dt = self.waves_tick.elapsed().as_secs_f32().min(0.5);
+                self.waves_tick = Instant::now();
+                wv.step(dt)
+            }
+            None => &[],
+        };
         let tail = std::mem::take(&mut self.tail_buf);
+        let color = PALETTE[self.color_idx];
         let _ = self.renderer.present(
             &tail,
-            self.color(),
+            color,
             &self.cam,
             Overlay {
                 hud: hud.as_deref(),
                 cursor,
                 ui: &prims,
-                darken: 1.0 - self.dim,
+                blobs,
             },
             if self.vsync {
                 PresentMode::VSync
@@ -998,7 +1023,7 @@ impl App {
         };
         format!(
             "SpectreNotes   notatka {}/{}   kresek: {}   {}   zoom {:.0}%\n\
-             narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   shift: ({:+.0},{:+.0}) jasnosc: {:.0}%   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
+             narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   fale: {}   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
              [1-6] kolor  [E] gumka  [[ ]] grubosc  [Ctrl+Z/Y] cofnij/ponow  [Home] gora  [Ctrl+kolko] zoom\n\
              [przycisk boczny]/[kolko] przewijanie   [PgUp/PgDn] notatki  [Ctrl+N] nowa   [Win+Shift+N] pokaz/ukryj\n\
              [F11] pelny ekran  [H] hud  [V] vsync  [T] przewijanie: {}  [Esc] ukryj  [Ctrl+Q] zakoncz{}",
@@ -1014,9 +1039,7 @@ impl App {
             tool,
             self.ink.base_width,
             self.cam.scroll_y,
-            self.cam.shift.0,
-            self.cam.shift.1,
-            self.dim * 100.0,
+            if self.waves.is_some() { "tak" } else { "nie" },
             self.frame_ms,
             self.frame_max_ms,
             self.renderer.adapter_name(),
@@ -1118,17 +1141,21 @@ pub unsafe extern "system" fn wndproc(
                         app.commit_folder_edit();
                     }
                     app.menu_tap(h);
-                } else if app.menu.open {
-                    // Dotkniecie poza panelem zamyka go i nie rysuje.
-                    app.commit_folder_edit();
-                    app.menu.toggle();
-                } else if app.toolbar.pointer_inside(x, y) {
-                    app.toolbar_tap(x, y);
                 } else {
-                    if app.toolbar.title_edit.is_some() {
-                        app.commit_title();
+                    if app.menu.open {
+                        // Dotkniecie poza panelem zamyka go i od razu dziala
+                        // jak zwykle - bez drugiego tapniecia.
+                        app.commit_folder_edit();
+                        app.menu.toggle();
                     }
-                    app.apply_buttons(&batch);
+                    if app.toolbar.pointer_inside(x, y) {
+                        app.toolbar_tap(x, y);
+                    } else {
+                        if app.toolbar.title_edit.is_some() {
+                            app.commit_title();
+                        }
+                        app.apply_buttons(&batch);
+                    }
                 }
                 app.render();
             }
@@ -1254,7 +1281,8 @@ pub unsafe extern "system" fn wndproc(
                 let (x, y) = app.last_screen;
                 app.zoom_at(if delta > 0.0 { 1.1 } else { 1.0 / 1.1 }, x, y);
             } else {
-                let target = app.cam.scroll_y - delta / 120.0 * WHEEL_STEP_PX / app.cam.zoom;
+                let target = app.cam.scroll_y
+                    - delta / 120.0 * WHEEL_STEP_PX * app.scroll_mult / app.cam.zoom;
                 app.scroll_to(target);
             }
             app.render();
@@ -1312,6 +1340,11 @@ pub unsafe extern "system" fn wndproc(
                 0x4D => app.menu.toggle(),
                 // 0 - dopasuj szerokosc kolumny do okna
                 0x30 => app.fit_width(),
+                // W - fale przyciemnienia od razu (podglad bez czekania 3 min)
+                0x57 => {
+                    app.waves_tick();
+                    return LRESULT(0);
+                }
                 0x31..=0x36 => {
                     app.color_idx = (vk.0 - 0x31) as usize;
                     app.eraser_tool = false;
@@ -1409,8 +1442,7 @@ pub unsafe extern "system" fn wndproc(
                         app.render();
                     }
                 }
-                TIMER_SHIFT => app.step_shift(),
-                TIMER_DIM => app.dim_tick(),
+                TIMER_WAVES => app.waves_tick(),
                 TIMER_UI => {
                     let _ = KillTimer(Some(hwnd), TIMER_UI);
                     if app.toolbar.idle(app.last_screen) {
@@ -1435,6 +1467,9 @@ pub unsafe extern "system" fn wndproc(
                 }
             }
             app.relayout();
+            if let Some(wv) = app.waves.as_mut() {
+                wv.resize((w as f32, h as f32));
+            }
             app.render();
             LRESULT(0)
         }

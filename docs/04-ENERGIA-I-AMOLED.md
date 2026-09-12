@@ -21,16 +21,19 @@ zależność nie zachodzi.
 
 ## Ochrona przed wypaleniem
 
-1. **Pixel shift.** Cały canvas dryfuje o ±4 px w cyklu około 60 s, po torze
-   Lissajous, a nie po okręgu — okrąg sam w sobie zostawiłby powtarzalny ślad.
-   Na nieskończonym canvasie jest to **darmowe**: to zwykły offset kamery,
-   zero dodatkowej pracy renderera.
+1. **Fale przyciemnienia zamiast pixel shiftu.** Pixel shift został zaimplementowany
+   i odrzucony po teście na żywo: przeskok treści o 1 px jest wyczuwalny przy
+   pisaniu. Zamiast tego po 3 min bezczynności przez ekran płyną miękkie plamy
+   ciemności (gradient radialny, losowe kształty, ~12–28 px/s), które gaszą do zera
+   piksele tylko pod sobą. Z czasem przechodzą przez każdy piksel, obraz nie jest
+   ani przesunięty, ani jednolicie przygaszony. Koszt: jedna tania klatka co 60 ms,
+   tylko gdy okno jest widoczne i tylko w bezczynności.
 2. **Atrament nie jest biały.** Domyślnie `#D8D8D8`. Piksel prowadzony na pełnej
    bieli starzeje się nieproporcjonalnie szybciej, a przy pracy nocnej i tak oślepia.
 3. **Brak statycznego chrome.** Toolbar chowa się po 3 s bezczynności. Cokolwiek
    musi zostać widoczne (wskaźnik sync, zegar) dryfuje razem z canvasem i przygasa.
-4. **Rampa przygaszania.** Po N minutach bez interakcji luminancja schodzi płynnie
-   do około 40%. Powrót przy dotknięciu piórem lub ruchu myszy.
+4. **Bez globalnej rampy.** Jednolite przyciemnienie odrzucone: fale (pkt 1) chronią
+   panel lokalnie, a reszta notatki pozostaje czytelna.
 5. **Brak białych błysków.** Żadnych przejść przez jasne tło, żadnego splash screena.
 6. **Budżet elementu statycznego.** Zasada projektowa: element, który potrafi stać
    w jednym miejscu dłużej niż 10 minut, musi albo dryfować, albo przygasać.
@@ -62,9 +65,9 @@ Po przeniesieniu okna na monitor zewnętrzny podpięty do dGPU przełączamy si�
 
 - **Zero pętli klatkowej.** Klatka powstaje na zdarzenie. Idle to 0% CPU i brak
   wybudzeń GPU.
-- **Prawie brak timerów.** Pixel shift to jeden tik co 4 s (jedna tania klatka),
-  rampa przygaszania budzi się raz po 3 min i potem przez 2 s co 50 ms. Oba timery
-  gasną, gdy okno jest ukryte — w tle proces nie budzi się w ogóle. Decyzja: pełna
+- **Prawie brak timerów.** Jedyny cykliczny to fale przyciemnienia: budzą się raz po
+  3 min bezczynności, potem co 60 ms, i gasną przy pierwszym wejściu albo ukryciu
+  okna — w tle proces nie budzi się w ogóle. Decyzja: pełna
   bezczynność to dokładnie ten moment, w którym ochrona przed wypaleniem ma sens,
   więc "zero timerów" ustąpiło "zero wybudzeń w tle".
 - **MMCSS tylko w trakcie stroke'a.** Podnosimy priorytet wątku na czas rysowania

@@ -47,8 +47,9 @@ tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bież
 na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę,
 `Enter`). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
 zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
-*Ustawienia* i *Konto* to na razie wydmuszki: ustawienia przełączają vsync,
-tearing, HUD, pełny ekran i dok paska, konto pokazuje autora i czeka na Etap 5.
+*Ustawienia*: vsync, tearing, HUD, pełny ekran, dok paska, **pasek zawsze widoczny**
+(wyłącza auto-chowanie), **mnożnik przewijania** (kółko i przycisk boczny; x1…x6) —
+dwa ostatnie zapisują się w `config.txt`. *Konto* pokazuje autora i czeka na Etap 5.
 Dotknięcie poza panelem zamyka go.
 
 | Sterowanie | Działanie |
@@ -67,6 +68,7 @@ Dotknięcie poza panelem zamyka go.
 | `PgUp` / `PgDn` | poprzednia / następna notatka |
 | `Ctrl+N` | nowa notatka |
 | `F11`, `H`, `V`, `T` | pełny ekran, HUD (domyślnie wyłączony), vsync, tryb przewijania |
+| `W` | podgląd fal przyciemnienia AMOLED (normalnie po 3 min bezczynności) |
 | `Esc` / `Ctrl+Q` | ukryj do tray / zakończ |
 
 Przyciski rysika działają w każdym momencie: wciśnięcie w trakcie kreski kończy
