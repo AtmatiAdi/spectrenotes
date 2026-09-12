@@ -45,8 +45,10 @@ const TIMER_WAVES: usize = 3;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
-const WAVES_IDLE_MS: u32 = 3 * 60 * 1000;
+const WAVES_IDLE_MIN_DEFAULT: u32 = 3;
 const WAVES_TICK_MS: u32 = 60;
+/// Ruch hoveru mniejszy niz tyle px nie liczy sie jako wejscie uzytkownika.
+const HOVER_ACTIVITY_PX: f32 = 12.0;
 const ZOOM_MIN: f32 = 0.25;
 const ZOOM_MAX: f32 = 4.0;
 
@@ -132,9 +134,13 @@ pub struct App {
     waves_tick: Instant,
     /// Ostatnie przestawienie timera bezczynnosci (nie robimy tego 266 razy/s).
     waves_armed: Instant,
+    /// Pozycja rysika przy ostatnim uznanym wejsciu (prog ruchu dla hoveru).
+    activity_pos: (f32, f32),
     /// Ustawienia z `config.txt`.
     toolbar_pin: bool,
     scroll_mult: f32,
+    /// Minuty bezczynnosci do fal; 0 = wylaczone.
+    waves_idle_min: u32,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -218,6 +224,11 @@ impl App {
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(1.0)
             .clamp(0.5, 8.0);
+        let waves_idle_min = config
+            .get("waves_idle_min")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(WAVES_IDLE_MIN_DEFAULT)
+            .min(120);
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
         toolbar.visible = toolbar_pin;
@@ -258,8 +269,10 @@ impl App {
             waves: None,
             waves_tick: Instant::now(),
             waves_armed: Instant::now(),
+            activity_pos: (0.0, 0.0),
             toolbar_pin,
             scroll_mult,
+            waves_idle_min,
             toolbar,
             menu,
             config,
@@ -644,6 +657,23 @@ impl App {
                     .set("scroll_mult", format!("{}", self.scroll_mult));
                 self.config.save();
             }
+            Setting::WavesIdle => {
+                // Cykl: 1 -> 2 -> 3 -> 5 -> 10 -> 15 -> wyl. -> 1.
+                self.waves_idle_min = match self.waves_idle_min {
+                    0 => 1,
+                    1 => 2,
+                    2 => 3,
+                    3 => 5,
+                    5 => 10,
+                    10 => 15,
+                    _ => 0,
+                };
+                self.config
+                    .set("waves_idle_min", format!("{}", self.waves_idle_min));
+                self.config.save();
+                self.waves = None;
+                self.arm_amoled_timers();
+            }
         }
     }
 
@@ -819,7 +849,16 @@ impl App {
     /// proces ma nie wybudzac sie w ogole (Z2).
     fn arm_amoled_timers(&self) {
         unsafe {
-            SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_IDLE_MS, None);
+            if self.waves_idle_min == 0 {
+                let _ = KillTimer(Some(self.hwnd), TIMER_WAVES);
+            } else {
+                SetTimer(
+                    Some(self.hwnd),
+                    TIMER_WAVES,
+                    self.waves_idle_min * 60 * 1000,
+                    None,
+                );
+            }
         }
     }
 
@@ -830,15 +869,24 @@ impl App {
         self.waves = None;
     }
 
+    /// Sam hover to wejscie dopiero po wyraznym ruchu: rysik lezacy w zasiegu
+    /// digitizera i mysz na biurku "drza" o ulamki piksela i gasilyby fale
+    /// w nieskonczonosc.
+    fn activity_move(&mut self, pos: (f32, f32)) {
+        let (dx, dy) = (pos.0 - self.activity_pos.0, pos.1 - self.activity_pos.1);
+        if dx * dx + dy * dy >= HOVER_ACTIVITY_PX * HOVER_ACTIVITY_PX {
+            self.activity_pos = pos;
+            self.activity();
+        }
+    }
+
     /// Dowolne wejscie uzytkownika: fale gasna, odliczanie od nowa.
     fn activity(&mut self) {
         let had_waves = self.waves.take().is_some();
         // Rysik daje 266 zdarzen/s - timer przestawiamy najwyzej raz na sekunde.
         if had_waves || self.waves_armed.elapsed().as_secs_f32() > 1.0 {
             self.waves_armed = Instant::now();
-            unsafe {
-                SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_IDLE_MS, None);
-            }
+            self.arm_amoled_timers();
         }
         if had_waves {
             self.render();
@@ -967,6 +1015,7 @@ impl App {
                 dock: self.toolbar.dock.name(),
                 toolbar_pin: self.toolbar_pin,
                 scroll_mult: self.scroll_mult,
+                waves_idle_min: self.waves_idle_min,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -1162,7 +1211,6 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_POINTERUPDATE => {
-            app.activity();
             // Koalescencja: jesli w kolejce czeka juz nastepny komunikat piora,
             // przetwarzamy probki, ale nie renderujemy - narysuje ostatni z serii.
             let more_pending = {
@@ -1204,12 +1252,14 @@ pub unsafe extern "system" fn wndproc(
                         app.buttons = b;
                         app.hover = true;
                         app.last_screen = pos;
+                        app.activity_move(pos);
                         if changed && !more_pending {
                             app.render();
                         }
                     }
                 }
                 _ => {
+                    app.activity();
                     if let Some(batch) = app.read(pointer_id, true) {
                         if !app.apply_buttons(&batch) {
                             match app.mode {
@@ -1245,8 +1295,8 @@ pub unsafe extern "system" fn wndproc(
         // Rysik nad niewidzialna ramka do zmiany rozmiaru: obszar nieklientowy,
         // wiec zwykly WM_POINTERUPDATE nie przychodzi. Hover ma tam nadal odslaniac pasek.
         WM_NCPOINTERUPDATE => {
-            app.activity();
             let (x, y) = window::nc_point_to_client(hwnd, lparam);
+            app.activity_move((x, y));
             let ui_changed = app.toolbar.hover(x, y);
             app.last_screen = (x, y);
             app.hover = true;

@@ -48,6 +48,7 @@ pub enum Setting {
     Dock,
     ToolbarPin,
     ScrollMult,
+    WavesIdle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +91,12 @@ pub struct MenuState<'a> {
     pub dock: &'a str,
     pub toolbar_pin: bool,
     pub scroll_mult: f32,
+    /// Minuty bezczynnosci do fal; 0 = wylaczone.
+    pub waves_idle_min: u32,
 }
+
+/// Wiersz ustawienia: (klucz, etykieta, wartosc do wyswietlenia).
+type SettingRow = (Setting, &'static str, String);
 
 pub struct Menu {
     pub open: bool,
@@ -548,63 +554,92 @@ impl Menu {
     fn build_settings(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let mut y = list.y - self.scroll + 6.0;
         let on_off = |b: bool| if b { "wl." } else { "wyl." };
-        let items: [(Setting, &str, String); 7] = [
-            (Setting::Vsync, "VSync (V)", on_off(s.vsync).to_string()),
+        let waves = if s.waves_idle_min == 0 {
+            "wyl.".to_string()
+        } else {
+            format!("{} min", s.waves_idle_min)
+        };
+        // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
+        // zamiast ladowac na koncu jednej dlugiej listy.
+        let groups: [(&str, Vec<SettingRow>); 4] = [
             (
-                Setting::PanTearing,
-                "Tearing przy przewijaniu (T)",
-                on_off(s.pan_tearing).to_string(),
+                "Wyswietlanie",
+                vec![
+                    (Setting::Vsync, "VSync (V)", on_off(s.vsync).to_string()),
+                    (
+                        Setting::PanTearing,
+                        "Tearing przy przewijaniu (T)",
+                        on_off(s.pan_tearing).to_string(),
+                    ),
+                    (
+                        Setting::Fullscreen,
+                        "Pelny ekran (F11)",
+                        on_off(s.fullscreen).to_string(),
+                    ),
+                    (
+                        Setting::Hud,
+                        "HUD diagnostyczny (H)",
+                        on_off(s.hud).to_string(),
+                    ),
+                ],
             ),
             (
-                Setting::Hud,
-                "HUD diagnostyczny (H)",
-                on_off(s.hud).to_string(),
+                "Pasek narzedzi",
+                vec![
+                    (Setting::Dock, "Krawedz dokowania", s.dock.to_string()),
+                    (
+                        Setting::ToolbarPin,
+                        "Zawsze widoczny",
+                        on_off(s.toolbar_pin).to_string(),
+                    ),
+                ],
             ),
             (
-                Setting::Fullscreen,
-                "Pelny ekran (F11)",
-                on_off(s.fullscreen).to_string(),
-            ),
-            (Setting::Dock, "Dok paska narzedzi", s.dock.to_string()),
-            (
-                Setting::ToolbarPin,
-                "Pasek zawsze widoczny",
-                on_off(s.toolbar_pin).to_string(),
+                "Nawigacja",
+                vec![(
+                    Setting::ScrollMult,
+                    "Mnoznik przewijania",
+                    format!("x{:.1}", s.scroll_mult),
+                )],
             ),
             (
-                Setting::ScrollMult,
-                "Mnoznik przewijania",
-                format!("x{:.1}", s.scroll_mult),
+                "Ochrona AMOLED",
+                vec![(Setting::WavesIdle, "Fale po bezczynnosci (W)", waves)],
             ),
         ];
-        y += self.section(list, y, "Wyswietlanie", out);
-        for (key, label, value) in items {
-            let r = Rect {
-                x: list.x,
-                y,
-                w: list.w,
-                h: ROW_H,
-            };
-            self.row(MenuHit::Setting(key), r, out, false);
-            out.push(UiPrim::Text {
-                x: r.x + PAD + 8.0,
-                y: r.y,
-                w: r.w - PAD * 2.0 - 90.0,
-                h: r.h,
-                text: label.to_string(),
-                color: FG,
-                font: UiFont::Ui,
-            });
-            out.push(UiPrim::Text {
-                x: r.x + r.w - PAD - 90.0,
-                y: r.y,
-                w: 82.0,
-                h: r.h,
-                text: value,
-                color: ACCENT,
-                font: UiFont::Ui,
-            });
-            y += ROW_H;
+        for (gi, (title, items)) in groups.into_iter().enumerate() {
+            if gi > 0 {
+                y += 10.0;
+            }
+            y += self.section(list, y, title, out);
+            for (key, label, value) in items {
+                let r = Rect {
+                    x: list.x,
+                    y,
+                    w: list.w,
+                    h: ROW_H,
+                };
+                self.row(MenuHit::Setting(key), r, out, false);
+                out.push(UiPrim::Text {
+                    x: r.x + PAD + 8.0,
+                    y: r.y,
+                    w: r.w - PAD * 2.0 - 90.0,
+                    h: r.h,
+                    text: label.to_string(),
+                    color: FG,
+                    font: UiFont::Ui,
+                });
+                out.push(UiPrim::Text {
+                    x: r.x + r.w - PAD - 90.0,
+                    y: r.y,
+                    w: 82.0,
+                    h: r.h,
+                    text: value,
+                    color: ACCENT,
+                    font: UiFont::Ui,
+                });
+                y += ROW_H;
+            }
         }
 
         y += 10.0;
@@ -613,7 +648,6 @@ impl Menu {
             ("Space", s.space),
             ("GPU", s.gpu),
             ("Autostart", "planowane (Etap 4)"),
-            ("Pixel shift", "planowane (Z7)"),
         ] {
             out.push(UiPrim::Text {
                 x: list.x + PAD + 8.0,
