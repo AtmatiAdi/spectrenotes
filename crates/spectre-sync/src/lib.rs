@@ -9,8 +9,10 @@
 //! renderu. `NoteStore::append` tylko buforuje; `sync` woła aplikacja na idle.
 
 pub mod author;
+pub mod git;
 pub mod store;
 pub mod ulid;
 
 pub use author::AuthorName;
+pub use git::{Git, LogEntry, SyncReport};
 pub use store::{NoteMeta, NoteStore, Space};

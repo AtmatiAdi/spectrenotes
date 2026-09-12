@@ -20,7 +20,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::amoled::Waves;
 use crate::config::Config;
-use crate::menu::{Menu, MenuHit, MenuState, NoteEntry, Setting};
+use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, Setting};
+use crate::sync::{Event as SyncEvent, Job as SyncJob, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
@@ -42,6 +43,9 @@ const UI_HIDE_MS: u32 = 2500;
 const TIMER_SYNC: usize = 1;
 const TIMER_UI: usize = 2;
 const TIMER_WAVES: usize = 3;
+/// Commit (i push, gdy jest zdalne) po tylu ms bez rysowania (Etap 5).
+const TIMER_GIT: usize = 4;
+const GIT_IDLE_MS: u32 = 10_000;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -147,6 +151,13 @@ pub struct App {
     toolbar: Toolbar,
     menu: Menu,
     config: Config,
+    /// Git w tle (Etap 5): commit na idle, fetch/merge/push, logowanie.
+    sync: SyncWorker,
+    /// Pierwszy `Status` z gitem uruchamia sync startowy (fetch tego, co zrobily
+    /// inne maszyny).
+    sync_booted: bool,
+    /// Merge zmienil biezaca notatke w trakcie akcji - przeladuj po jej koncu.
+    reload_pending: bool,
     ui_prims: Vec<UiPrim>,
     _tray: Tray,
     hidden: bool,
@@ -192,6 +203,7 @@ pub fn install(hwnd: HWND, space_dir: &Path) -> Result<()> {
     }
     if let Some(app) = unsafe { app_of(hwnd) } {
         app.arm_amoled_timers();
+        app.sync.send(SyncJob::Status);
     }
     Ok(())
 }
@@ -237,6 +249,7 @@ impl App {
         toolbar.layout(w as f32, h as f32, PALETTE.len());
         let mut menu = Menu::new();
         menu.layout(w as f32, h as f32, toolbar.content_top());
+        let sync = SyncWorker::start(hwnd, space.root(), &author);
         let mut cam = Camera::default();
         cam.fit_width(w as f32);
 
@@ -279,6 +292,9 @@ impl App {
             toolbar,
             menu,
             config,
+            sync,
+            sync_booted: false,
+            reload_pending: false,
             ui_prims: Vec::with_capacity(64),
             _tray: tray,
             hidden: false,
@@ -353,6 +369,9 @@ impl App {
             Mode::Pan | Mode::Idle => {}
         }
         self.mode = Mode::Idle;
+        if self.reload_pending {
+            self.reload_current();
+        }
     }
 
     fn feed(&mut self, batch: &PenBatch) {
@@ -612,7 +631,28 @@ impl App {
             }
             MenuHit::Setting(s) => self.toggle_setting(s),
             MenuHit::Login => {
-                self.status = "logowanie do GitHub pojawi sie w Etapie 5".to_string();
+                self.sync.last = "logowanie: dokoncz w przegladarce".to_string();
+                self.sync.send(SyncJob::Login);
+            }
+            MenuHit::Logout => self.sync.send(SyncJob::Logout),
+            MenuHit::SyncNow => self.git_sync(),
+            MenuHit::SetRemote => {
+                self.menu.remote_edit = Some(self.sync.status.remote.clone().unwrap_or_default());
+                unsafe {
+                    let _ = SetFocus(Some(self.hwnd));
+                }
+            }
+            MenuHit::CreateRepo => {
+                let name = format!(
+                    "spectrenotes-{}",
+                    self.space
+                        .root()
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_lowercase())
+                        .unwrap_or_else(|| "space".into())
+                );
+                self.sync.last = format!("gh: tworze {name}...");
+                self.sync.send(SyncJob::CreateRepo(name));
             }
         }
     }
@@ -759,6 +799,7 @@ impl App {
         let _ = self.store.flush();
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_SYNC, SYNC_IDLE_MS, None);
+            SetTimer(Some(self.hwnd), TIMER_GIT, GIT_IDLE_MS, None);
         }
     }
 
@@ -818,6 +859,176 @@ impl App {
                 self.sync_entry();
             }
             Err(e) => self.status = format!("otwarcie notatki: {e}"),
+        }
+    }
+
+    /// Biezaca notatka po merge'u: ktos inny do niej dopisal. Op-log tego autora
+    /// merge nie dotyka, wiec ponowne otwarcie jest bezpieczne; tracimy tylko
+    /// stos undo. W trakcie kreski czekamy na jej koniec.
+    fn reload_current(&mut self) {
+        if self.mode != Mode::Idle {
+            self.reload_pending = true;
+            return;
+        }
+        self.reload_pending = false;
+        self.sync_now();
+        match open_note(&self.space, &self.notes[self.note_idx].id, &self.author) {
+            Ok((store, doc)) => {
+                self.store = store;
+                self.doc = doc;
+                self.dirty = Dirty::Full;
+                self.sync_entry();
+            }
+            Err(e) => self.status = format!("przeladowanie notatki: {e}"),
+        }
+    }
+
+    // ----- git (Etap 5) ------------------------------------------------------
+
+    /// Commit + fetch/merge/push w tle. Bez gita w PATH - nic.
+    fn git_sync(&mut self) {
+        if !self.sync.enabled() {
+            return;
+        }
+        self.sync_now();
+        self.sync.send(SyncJob::Sync {
+            message: format!("{}: zapis", self.author.dir_name()),
+        });
+    }
+
+    /// Zdarzenia z watku sync (po `WM_SYNC`).
+    fn on_sync_events(&mut self) {
+        let mut repaint = false;
+        for ev in self.sync.poll() {
+            match ev {
+                SyncEvent::Status(st) => {
+                    if !self.sync_booted && st.git.is_some() {
+                        self.sync_booted = true;
+                        self.git_sync();
+                    }
+                }
+                SyncEvent::Synced(report) => {
+                    let now = menu::local_time_now();
+                    self.sync.last = if !report.merged.is_empty() {
+                        format!(
+                            "{now}: pobrano {} plikow{}",
+                            report.merged.len(),
+                            if report.pushed { ", wyslano" } else { "" }
+                        )
+                    } else if report.pushed {
+                        format!("{now}: wyslano")
+                    } else if self.sync.status.remote.is_some() {
+                        format!("{now}: aktualne")
+                    } else {
+                        format!("{now}: commit lokalny")
+                    };
+                    if !report.merged.is_empty() {
+                        self.apply_merged(&report.merged);
+                        repaint = true;
+                    }
+                }
+                SyncEvent::LoggedIn(user) => self.sync.last = format!("zalogowano: {user}"),
+                SyncEvent::LoggedOut => self.sync.last = "wylogowano".to_string(),
+                SyncEvent::RemoteSet(url) => {
+                    self.sync.last = format!("zdalne: {url}");
+                    // Od razu pierwszy pelny cykl - dolaczenie do istniejacego repo.
+                    self.git_sync();
+                }
+                SyncEvent::Error(e) => {
+                    self.sync.last = format!("blad: {}", one_line(&e, 90));
+                }
+                SyncEvent::Skipped => {}
+            }
+        }
+        if self.menu.open || self.show_hud || repaint {
+            self.render();
+        }
+    }
+
+    /// Merge przyniosl pliki innych autorow: odswiez liste notatek (nowe notatki,
+    /// tytuly, foldery) i biezaca notatke, jesli jej dotyczy.
+    fn apply_merged(&mut self, files: &[String]) {
+        let mut ids = std::collections::BTreeSet::new();
+        for f in files {
+            if let Some(id) = f.strip_prefix("notes/").and_then(|r| r.split('/').next()) {
+                ids.insert(id.to_string());
+            }
+        }
+        let folders_changed = files.iter().any(|f| f == "folders.txt");
+        if ids.is_empty() && !folders_changed {
+            return;
+        }
+        for id in &ids {
+            self.space.invalidate_meta(id);
+        }
+        let current = self.notes[self.note_idx].id.clone();
+        if let Ok(notes) = load_entries(&self.space) {
+            if !notes.is_empty() {
+                self.notes = notes;
+            }
+        }
+        self.note_idx = self.notes.iter().position(|e| e.id == current).unwrap_or(0);
+        self.folders = self.space.list_folders();
+        if ids.contains(&current) {
+            self.reload_current();
+        }
+    }
+
+    /// Aktywne pole tekstowe: tytul, nazwa folderu albo adres zdalnego.
+    fn active_edit(&mut self) -> Option<&mut String> {
+        self.toolbar
+            .title_edit
+            .as_mut()
+            .or(self.menu.folder_edit.as_mut())
+            .or(self.menu.remote_edit.as_mut())
+    }
+
+    /// Klawisz w polu tekstowym. `true` = zjedzony.
+    fn edit_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool) -> bool {
+        if self.active_edit().is_none() {
+            return false;
+        }
+        if vk == VK_RETURN {
+            if self.toolbar.title_edit.is_some() {
+                self.commit_title();
+            } else if self.menu.folder_edit.is_some() {
+                self.commit_folder_edit();
+            } else {
+                self.commit_remote_edit();
+            }
+        } else if vk == VK_ESCAPE {
+            self.toolbar.title_edit = None;
+            self.menu.folder_edit = None;
+            self.menu.remote_edit = None;
+        } else if vk == VK_BACK {
+            if let Some(b) = self.active_edit() {
+                b.pop();
+            }
+        } else if ctrl && vk.0 == 0x56 {
+            // Ctrl+V - adresow repozytoriow nikt nie wpisuje rysikiem.
+            if let Some(text) = clipboard_text() {
+                if let Some(b) = self.active_edit() {
+                    for ch in text.chars().filter(|c| !c.is_control()) {
+                        if b.chars().count() >= 200 {
+                            break;
+                        }
+                        b.push(ch);
+                    }
+                }
+            }
+        }
+        self.render();
+        true
+    }
+
+    fn commit_remote_edit(&mut self) {
+        if let Some(url) = self.menu.remote_edit.take() {
+            let url = url.trim().to_string();
+            if url.is_empty() {
+                return;
+            }
+            self.sync.last = "ustawiam zdalne...".to_string();
+            self.sync.send(SyncJob::SetRemote(url));
         }
     }
 
@@ -938,6 +1149,7 @@ impl App {
         self.end_action();
         self.commit_title();
         self.sync_now();
+        self.git_sync();
         self.save_placement();
         self.hidden = true;
         self.kill_amoled_timers();
@@ -956,6 +1168,8 @@ impl App {
             let _ = SetForegroundWindow(self.hwnd);
         }
         self.arm_amoled_timers();
+        // Inne maszyny mogly cos dopisac, gdy okno bylo schowane.
+        self.git_sync();
         self.render();
     }
 
@@ -1039,6 +1253,9 @@ impl App {
                 toolbar_pin: self.toolbar_pin,
                 scroll_mult: self.scroll_mult,
                 waves_idle_s: self.waves_idle_s,
+                sync: &self.sync.status,
+                sync_last: &self.sync.last,
+                sync_busy: self.sync.pending > 0,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -1098,7 +1315,8 @@ impl App {
              narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   fale: {}   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
              [1-6] kolor  [E] gumka  [[ ]] grubosc  [Ctrl+Z/Y] cofnij/ponow  [Home] gora  [Ctrl+kolko] zoom\n\
              [przycisk boczny]/[kolko] przewijanie   [PgUp/PgDn] notatki  [Ctrl+N] nowa   [Win+Shift+N] pokaz/ukryj\n\
-             [F11] pelny ekran  [H] hud  [V] vsync  [T] przewijanie: {}  [Esc] ukryj  [Ctrl+Q] zakoncz{}",
+             [F11] pelny ekran  [H] hud  [V] vsync  [T] przewijanie: {}  [Esc] ukryj  [Ctrl+Q] zakoncz\n\
+             git: {}{}",
             self.note_idx + 1,
             self.notes.len(),
             self.doc.live_count(),
@@ -1131,12 +1349,36 @@ impl App {
             } else {
                 "bez tearingu (czysty obraz)"
             },
+            self.git_hud(),
             if self.status.is_empty() {
                 String::new()
             } else {
                 format!("\n! {}", self.status)
             },
         )
+    }
+
+    fn git_hud(&self) -> String {
+        let st = &self.sync.status;
+        let Some(v) = &st.git else {
+            return "brak gita w PATH".to_string();
+        };
+        let mut s = format!(
+            "{v}  {}  zdalne: {}  login: {}  +{} -{}",
+            st.head.as_deref().unwrap_or("-"),
+            st.remote.as_deref().unwrap_or("brak"),
+            st.login.as_deref().unwrap_or("-"),
+            st.ahead,
+            st.behind
+        );
+        if self.sync.pending > 0 {
+            s.push_str("  [w toku]");
+        }
+        if !self.sync.last.is_empty() {
+            s.push_str("  ");
+            s.push_str(&self.sync.last);
+        }
+        s
     }
 }
 
@@ -1194,6 +1436,46 @@ unsafe fn app_of(hwnd: HWND) -> Option<&'static mut App> {
         None
     } else {
         Some(&mut *ptr)
+    }
+}
+
+/// Tekst ze schowka (CF_UNICODETEXT), `None` gdy pusty albo zajety.
+fn clipboard_text() -> Option<String> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    unsafe {
+        OpenClipboard(None).ok()?;
+        let text = GetClipboardData(CF_UNICODETEXT).ok().and_then(|h| {
+            let hglobal = windows::Win32::Foundation::HGLOBAL(h.0);
+            let p = GlobalLock(hglobal) as *const u16;
+            if p.is_null() {
+                return None;
+            }
+            let mut len = 0;
+            while *p.add(len) != 0 && len < 1 << 16 {
+                len += 1;
+            }
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, len));
+            let _ = GlobalUnlock(hglobal);
+            Some(s)
+        });
+        let _ = CloseClipboard();
+        text.filter(|s| !s.trim().is_empty())
+    }
+}
+
+/// Pierwsza linia komunikatu, przycieta - bledy gita bywaja wielolinijkowe.
+fn one_line(s: &str, max: usize) -> String {
+    let line = s
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if line.chars().count() > max {
+        format!("{}...", line.chars().take(max).collect::<String>())
+    } else {
+        line.to_string()
     }
 }
 
@@ -1373,15 +1655,10 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_CHAR => {
-            let edit = app
-                .toolbar
-                .title_edit
-                .as_mut()
-                .or(app.menu.folder_edit.as_mut());
-            if let Some(buf) = edit {
+            if let Some(buf) = app.active_edit() {
                 let c = wparam.0 as u32;
                 if let Some(ch) = char::from_u32(c) {
-                    if !ch.is_control() && buf.chars().count() < 80 {
+                    if !ch.is_control() && buf.chars().count() < 200 {
                         buf.push(ch);
                         app.render();
                     }
@@ -1393,30 +1670,7 @@ pub unsafe extern "system" fn wndproc(
             app.activity();
             let vk = VIRTUAL_KEY(wparam.0 as u16);
             let ctrl = ctrl_down();
-            if app.toolbar.title_edit.is_some() {
-                if vk == VK_RETURN {
-                    app.commit_title();
-                } else if vk == VK_ESCAPE {
-                    app.toolbar.title_edit = None;
-                } else if vk == VK_BACK {
-                    if let Some(b) = app.toolbar.title_edit.as_mut() {
-                        b.pop();
-                    }
-                }
-                app.render();
-                return LRESULT(0);
-            }
-            if app.menu.folder_edit.is_some() {
-                if vk == VK_RETURN {
-                    app.commit_folder_edit();
-                } else if vk == VK_ESCAPE {
-                    app.menu.folder_edit = None;
-                } else if vk == VK_BACK {
-                    if let Some(b) = app.menu.folder_edit.as_mut() {
-                        b.pop();
-                    }
-                }
-                app.render();
+            if app.edit_key(vk, ctrl) {
                 return LRESULT(0);
             }
             match vk.0 {
@@ -1517,6 +1771,10 @@ pub unsafe extern "system" fn wndproc(
             app.hide();
             LRESULT(0)
         }
+        WM_SYNC => {
+            app.on_sync_events();
+            LRESULT(0)
+        }
         WM_TIMER => {
             match wparam.0 {
                 TIMER_SYNC => {
@@ -1527,6 +1785,10 @@ pub unsafe extern "system" fn wndproc(
                     }
                 }
                 TIMER_WAVES => app.waves_tick(),
+                TIMER_GIT => {
+                    let _ = KillTimer(Some(hwnd), TIMER_GIT);
+                    app.git_sync();
+                }
                 TIMER_UI => {
                     let _ = KillTimer(Some(hwnd), TIMER_UI);
                     if app.toolbar.idle(app.last_screen) {

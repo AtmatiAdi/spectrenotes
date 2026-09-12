@@ -4,7 +4,7 @@ Notatnik rysunkowy dla Windows na ekrany AMOLED i pióra MPP 2.0.
 Własny zamiennik Samsung Notes — bez zależności od cudzej chmury i cudzej decyzji
 o tym, które komputery są wystarczająco właściwe, żeby uruchomić aplikację.
 
-**Stan: Etapy 0–1 zamknięte, 2–4 w większości.** 266 Hz próbkowania, pozytywny werdykt
+**Stan: Etapy 0–1 zamknięte, 2–5 w większości (git: commit i sync w tle, logowanie przez GCM).** 266 Hz próbkowania, pozytywny werdykt
 odczucia (tag `v0.1-latency-baseline`), trwałe notatki, pasek narzędzi, rezydentność
 w tray'u: 2 MB w tle, 20 ms do klatki po hotkeyu (`docs/05-ROADMAPA.md`).
 
@@ -54,8 +54,19 @@ zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
 *Ustawienia* pogrupowane funkcjonalnie: *Wyświetlanie* (vsync, tearing, pełny ekran,
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (czas bezczynności do
-fal: 10 s – 10 min albo wył.). Trwałe wartości lądują w `config.txt`. *Konto* pokazuje autora i czeka na Etap 5.
-Dotknięcie poza panelem zamyka go.
+fal: 10 s – 10 min albo wył.). Trwałe wartości lądują w `config.txt`. *Konto*: autor,
+stan repozytorium git space'u, adres zdalnego (`Ctrl+V` w polu, `Enter`), założenie
+prywatnego repo przez `gh`, logowanie do GitHuba (Git Credential Manager otwiera
+przeglądarkę), „Synchronizuj teraz". Dotknięcie poza panelem zamyka go.
+
+**Synchronizacja (Etap 5).** Space jest repozytorium git (ADR 0003/0006). Aplikacja
+sama robi `commit` 10 s po ostatniej zmianie, a pełny cykl `fetch → merge → push` przy
+starcie, ukryciu i pokazaniu okna — w tle, rysowanie nigdy na to nie czeka. Bez
+zdalnego repo są tylko lokalne commity (historia); po ustawieniu adresu notatki
+z innych maszyn pojawiają się same, a bieżąca notatka odświeża się po zakończeniu
+kreski. Konflikt merge jest strukturalnie niemożliwy (każdy autor pisze do własnych
+plików). Wymaga Gita w PATH — bez niego wszystko działa lokalnie, a zakładka Konto
+mówi, czego brakuje.
 
 | Sterowanie | Działanie |
 |---|---|
@@ -135,7 +146,7 @@ crates/
   spectre-proto      format .ops: varint, CRC32, kodowanie probek, odzysk po awarii  [dziala]
   spectre-core       op-log CRDT, zegar Lamporta, undo/redo, hit-test, kamera      [dziala]
   spectre-ink        probki -> krzywa nacisku -> interpolacja -> geometria         [dziala]
-  spectre-sync       lokalny store (space/notatka/autor); git i QUIC: Etapy 5-6    [lokalnie]
+  spectre-sync       store (space/notatka/autor) + git przez proces (ADR 0006); QUIC: Etap 6 [dziala]
   spectre-render     Direct2D na DXGI flip-model, przewijanie przyrostowe          [dziala]
   spectre-shell-win  okno Win32, WM_POINTER, DPI, feedback piora, pelny ekran      [dziala]
   spectre-app        binarka `spectrenotes`                                       [dziala]

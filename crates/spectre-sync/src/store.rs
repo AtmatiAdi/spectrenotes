@@ -92,6 +92,12 @@ impl Space {
         meta
     }
 
+    /// Usuwa cache metadanych - po merge'u, gdy inni autorzy mogli zmienic
+    /// tytul lub folder; nastepne `note_meta` zrobi skan op-logu.
+    pub fn invalidate_meta(&self, id: &str) {
+        let _ = fs::remove_file(self.meta_cache_path(id));
+    }
+
     /// Nadpisuje cache. Wolane przez aplikacje po kazdej zmianie `Meta`.
     pub fn write_note_meta(&self, id: &str, meta: &NoteMeta) -> io::Result<()> {
         let p = self.meta_cache_path(id);

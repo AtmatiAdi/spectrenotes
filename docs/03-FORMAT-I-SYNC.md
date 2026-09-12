@@ -107,12 +107,15 @@ operacja lokalna
    ├─► bufor .ops        → fsync na idle
    └─► QUIC → peers      → batch co 8 ms
 
-co 10 s bez rysowania / przy chowaniu okna / przy zamknięciu:
-   git add -A, commit, push        (wątek sync, nigdy nie blokuje renderu)
+10 s po ostatniej zmianie:
+   git add -A, commit              (wątek sync, nigdy nie blokuje renderu)
 
-start / powrót online:
-   git fetch, git merge            (zawsze bezkonfliktowy)
-   → odtworzenie operacji, których nie mamy
+start / pokazanie okna / ukrycie okna / "Synchronizuj teraz":
+   commit, git fetch, git merge, git push   (merge zawsze bezkonfliktowy)
+   → lista notatek i cache metadanych odświeżone z plików, które merge zmienił,
+     bieżąca notatka przeładowana po zakończeniu kreski
+
+Realizacja: proces `git` + Git Credential Manager (ADR 0006), nie `gix`.
 ```
 
 ## Bezpieczeństwo

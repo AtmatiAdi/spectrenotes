@@ -12,6 +12,7 @@ use spectre_render::{UiFont, UiPrim};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
+use crate::sync::Status as SyncStatus;
 use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
@@ -61,6 +62,12 @@ pub enum MenuHit {
     NewFolder,
     Setting(Setting),
     Login,
+    Logout,
+    SyncNow,
+    /// Zaczyna edycje adresu zdalnego repozytorium.
+    SetRemote,
+    /// Prywatne repo na GitHubie przez `gh`.
+    CreateRepo,
     /// Tlo panelu - zjada dotkniecie, nic nie robi.
     Panel,
 }
@@ -93,6 +100,10 @@ pub struct MenuState<'a> {
     pub scroll_mult: f32,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     pub waves_idle_s: u32,
+    /// Stan gita (Etap 5) i ostatni komunikat synchronizacji.
+    pub sync: &'a SyncStatus,
+    pub sync_last: &'a str,
+    pub sync_busy: bool,
 }
 
 /// Wiersz ustawienia: (klucz, etykieta, wartosc do wyswietlenia).
@@ -103,6 +114,8 @@ pub struct Menu {
     pub tab: Tab,
     /// `Some` = trwa wpisywanie nazwy nowego folderu.
     pub folder_edit: Option<String>,
+    /// Edytowany adres zdalnego repozytorium (Konto).
+    pub remote_edit: Option<String>,
     scroll: f32,
     hot: Option<MenuHit>,
     /// Elementy z ostatniego `build` - juz po przewinieciu, w pikselach ekranu.
@@ -120,6 +133,7 @@ impl Menu {
             open: false,
             tab: Tab::Notes,
             folder_edit: None,
+            remote_edit: None,
             scroll: 0.0,
             hot: None,
             rows: Vec::new(),
@@ -163,6 +177,7 @@ impl Menu {
         self.hot = None;
         if !self.open {
             self.folder_edit = None;
+            self.remote_edit = None;
         }
     }
 
@@ -171,6 +186,7 @@ impl Menu {
             self.tab = tab;
             self.scroll = 0.0;
             self.folder_edit = None;
+            self.remote_edit = None;
         }
     }
 
@@ -676,61 +692,190 @@ impl Menu {
     fn build_account(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let mut y = list.y - self.scroll + 6.0;
         y += self.section(list, y, "Ten komputer", out);
-        out.push(UiPrim::Text {
-            x: list.x + PAD + 8.0,
+        y += self.line(list, y, s.author, FG, out);
+        y += self.line(
+            list,
             y,
-            w: list.w - PAD * 2.0,
-            h: ROW_H,
-            text: s.author.to_string(),
-            color: FG,
-            font: UiFont::Ui,
-        });
-        y += ROW_H;
-        out.push(UiPrim::Text {
-            x: list.x + PAD + 8.0,
-            y,
-            w: list.w - PAD * 2.0,
-            h: 20.0,
-            text: "uzytkownik@komputer - tak podpisywane sa kreski".to_string(),
-            color: FG_DIM,
-            font: UiFont::Ui,
-        });
-        y += 34.0;
+            "uzytkownik@komputer - tak podpisywane sa kreski",
+            FG_DIM,
+            out,
+        );
+        y += 12.0;
 
-        y += self.section(list, y, "Synchronizacja", out);
-        for line in [
-            "Tylko lokalnie. Logowanie do GitHub i sync",
-            "space'u jako repozytorium - Etap 5.",
-            "Wspolne rysowanie po Tailscale - Etap 6.",
-        ] {
-            out.push(UiPrim::Text {
-                x: list.x + PAD + 8.0,
-                y,
+        let st = s.sync;
+        y += self.section(list, y, "Repozytorium (git)", out);
+        match &st.git {
+            None => {
+                y += self.line(list, y, "git nie znaleziony w PATH", FG, out);
+                y += self.line(
+                    list,
+                    y,
+                    "zainstaluj Git for Windows, sync czeka",
+                    FG_DIM,
+                    out,
+                );
+                y += 12.0;
+                return y + 10.0 - (list.y - self.scroll);
+            }
+            Some(v) => {
+                let head = st.head.as_deref().unwrap_or("brak commitow");
+                y += self.line(list, y, &format!("git {v}   {head}"), FG_DIM, out);
+            }
+        }
+        // Zdalne: adres albo edycja.
+        if let Some(buf) = self.remote_edit.clone() {
+            let r = Rect {
+                x: list.x + PAD,
+                y: y + 2.0,
                 w: list.w - PAD * 2.0,
-                h: 22.0,
-                text: line.to_string(),
-                color: FG_DIM,
+                h: ROW_H - 4.0,
+            };
+            out.push(UiPrim::Outline {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                color: ACCENT,
+                width: 1.0,
+                r: 6.0,
+            });
+            out.push(UiPrim::Text {
+                x: r.x + 8.0,
+                y: r.y,
+                w: r.w - 16.0,
+                h: r.h,
+                text: if buf.is_empty() {
+                    "adres https://github.com/..., Ctrl+V, Enter".to_string()
+                } else {
+                    format!("{}|", tail_fit(&buf, 40))
+                },
+                color: if buf.is_empty() { FG_DIM } else { FG },
                 font: UiFont::Ui,
             });
-            y += 22.0;
+            self.rows.push((MenuHit::Panel, r));
+            y += ROW_H;
+        } else {
+            let text = match &st.remote {
+                Some(url) => format!("zdalne: {}", tail_fit(url, 34)),
+                None => "zdalne: brak - notatki tylko na tym komputerze".to_string(),
+            };
+            y += self.line(list, y, &text, FG, out);
+            y += 6.0;
+            y += self.button(
+                list,
+                y,
+                MenuHit::SetRemote,
+                "Ustaw adres repozytorium",
+                FG,
+                out,
+            );
+            if st.gh && st.remote.is_none() {
+                y += self.button(
+                    list,
+                    y,
+                    MenuHit::CreateRepo,
+                    "Utworz prywatne repo na GitHubie (gh)",
+                    FG,
+                    out,
+                );
+            }
         }
-        y += 14.0;
+        y += 12.0;
+
+        y += self.section(list, y, "GitHub", out);
+        match &st.login {
+            Some(user) => {
+                y += self.line(list, y, &format!("zalogowany: {user}"), FG, out);
+                y += 6.0;
+                y += self.button(list, y, MenuHit::Logout, "Wyloguj", FG_DIM, out);
+            }
+            None => {
+                y += self.line(list, y, "niezalogowany", FG_DIM, out);
+                y += 6.0;
+                y += self.button(
+                    list,
+                    y,
+                    MenuHit::Login,
+                    "Zaloguj przez GitHub (przegladarka)",
+                    FG,
+                    out,
+                );
+            }
+        }
+        y += 12.0;
+
+        y += self.section(list, y, "Synchronizacja", out);
+        let state = if s.sync_busy {
+            "w toku...".to_string()
+        } else if st.remote.is_none() {
+            format!("{} commitow lokalnie", st.ahead)
+        } else {
+            match (st.ahead, st.behind) {
+                (0, 0) => "wszystko na serwerze".to_string(),
+                (a, 0) => format!("{a} do wyslania"),
+                (0, b) => format!("{b} do pobrania"),
+                (a, b) => format!("{a} do wyslania, {b} do pobrania"),
+            }
+        };
+        y += self.line(list, y, &state, FG, out);
+        if !s.sync_last.is_empty() {
+            y += self.line(list, y, s.sync_last, FG_DIM, out);
+        }
+        y += self.line(
+            list,
+            y,
+            "automatycznie: 10 s po rysowaniu, przy ukryciu i pokazaniu okna",
+            FG_DIM,
+            out,
+        );
+        y += 6.0;
+        y += self.button(list, y, MenuHit::SyncNow, "Synchronizuj teraz", FG, out);
+        y + 10.0 - (list.y - self.scroll)
+    }
+
+    /// Wiersz tekstu w zakladce; zwraca wysokosc.
+    fn line(
+        &self,
+        list: Rect,
+        y: f32,
+        text: &str,
+        color: spectre_proto::Rgba,
+        out: &mut Vec<UiPrim>,
+    ) -> f32 {
+        out.push(UiPrim::Text {
+            x: list.x + PAD + 8.0,
+            y,
+            w: list.w - PAD * 2.0 - 8.0,
+            h: 22.0,
+            text: text.to_string(),
+            color,
+            font: UiFont::Ui,
+        });
+        22.0
+    }
+
+    /// Przycisk z obrysem; zwraca wysokosc lacznie z odstepem.
+    fn button(
+        &mut self,
+        list: Rect,
+        y: f32,
+        hit: MenuHit,
+        label: &str,
+        color: spectre_proto::Rgba,
+        out: &mut Vec<UiPrim>,
+    ) -> f32 {
         let r = Rect {
             x: list.x + PAD,
             y,
             w: list.w - PAD * 2.0,
-            h: 38.0,
+            h: 36.0,
         };
         out.push(UiPrim::Outline {
             x: r.x,
             y: r.y,
             w: r.w,
             h: r.h,
-            color: if self.hot == Some(MenuHit::Login) {
-                FG_DIM
-            } else {
-                LINE
-            },
+            color: if self.hot == Some(hit) { FG_DIM } else { LINE },
             width: 1.0,
             r: 8.0,
         });
@@ -739,13 +884,12 @@ impl Menu {
             y: r.y,
             w: r.w,
             h: r.h,
-            text: "Zaloguj przez GitHub (wkrotce)".to_string(),
-            color: FG_DIM,
+            text: label.to_string(),
+            color,
             font: UiFont::Center,
         });
-        self.rows.push((MenuHit::Login, r));
-        y += r.h;
-        y + 10.0 - (list.y - self.scroll)
+        self.rows.push((hit, r));
+        r.h + 6.0
     }
 
     fn section(&self, list: Rect, y: f32, title: &str, out: &mut Vec<UiPrim>) -> f32 {
@@ -780,4 +924,21 @@ pub fn local_date(ms: u64) -> String {
         }
     }
     format!("{:04}-{:02}-{:02}", local.wYear, local.wMonth, local.wDay)
+}
+
+/// Koniec napisu, gdy jest dluzszy niz `max` znakow - adresy roznia sie koncem.
+fn tail_fit(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        s.to_string()
+    } else {
+        let skip = n - max + 3;
+        format!("...{}", s.chars().skip(skip).collect::<String>())
+    }
+}
+
+/// Lokalna godzina `HH:MM` teraz - do komunikatow "wyslano 12:04".
+pub fn local_time_now() -> String {
+    let local = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    format!("{:02}:{:02}", local.wHour, local.wMinute)
 }

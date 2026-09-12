@@ -93,12 +93,23 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
 - [x] Ochrona AMOLED po bezczynności (Z7): fale przyciemnienia — patrz Etap 2
 
-## Etap 5 — Git jako warstwa trwała
+## Etap 5 — Git jako warstwa trwała  ◐ W TOKU
 
-- `gix`: init, commit, fetch, merge, push
-- Space = prywatne repo GitHub, uwierzytelnianie
-- Automatyczny commit na idle, kolejka offline
-- Odtworzenie stanu z historii, przeglądarka wersji notatki
+- [x] Backend `spectre-sync::git` przez proces `git` (ADR 0006 — nie `gix`: brak push
+      i uwierzytelniania): init, commit, fetch, merge (`--allow-unrelated-histories`,
+      abort przy błędzie), push, `folders.txt merge=union`, `.cache/` ignorowane.
+      Test: dwa „urządzenia" przez lokalne repo bare — pliki obu autorów po obu
+      stronach, foldery zsumowane, historia notatki z `git log`
+- [x] Wątek sync w aplikacji (`spectre-app::sync`): commit 10 s po ostatniej zmianie,
+      pełny cykl przy ukryciu i pokazaniu okna oraz na start; render nigdy nie czeka
+- [x] Menu → Konto: stan gita, adres zdalnego (`Ctrl+V`), prywatne repo przez `gh`,
+      logowanie do GitHuba przez Git Credential Manager (przeglądarka), wylogowanie,
+      „Synchronizuj teraz"; HUD pokazuje `+ahead -behind`
+- [x] Po merge: lista notatek i cache metadanych odświeżone, bieżąca notatka
+      przeładowana (po zakończeniu kreski, jeśli trwa)
+- [ ] Test dwóch maszyn na żywo przez GitHub (wymaga drugiego komputera użytkownika)
+- [ ] Przeglądarka wersji notatki (`log_note` jest; brak UI i odtwarzania stanu z commita)
+- [ ] Snapshoty i przycinanie HEAD — razem z Etapem 3
 
 ## Etap 6 — Realtime P2P
 
