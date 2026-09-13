@@ -54,6 +54,12 @@ pub enum Setting {
     Dock,
     ToolbarPin,
     ScrollMult,
+    /// Ochrona AMOLED wl./wyl. (nadrzedne wobec czasu bezczynnosci).
+    WavesOn,
+    /// Fale tylko na wbudowanym panelu laptopa.
+    WavesLaptopOnly,
+    /// Wpis w kluczu Run (start do traya).
+    Autostart,
     WavesIdle,
     /// Jasnosc reszty notatki podczas fal (procent); 100 = bez przyciemnienia.
     WavesDim,
@@ -105,6 +111,9 @@ pub struct MenuState<'a> {
     pub dock: &'a str,
     pub toolbar_pin: bool,
     pub scroll_mult: f32,
+    pub waves_on: bool,
+    pub waves_laptop_only: bool,
+    pub autostart: bool,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     pub waves_idle_s: u32,
     pub waves_dim_pct: u32,
@@ -599,7 +608,7 @@ impl Menu {
         };
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.
-        let groups: [(&str, Vec<SettingRow>); 5] = [
+        let groups: [(&str, Vec<SettingRow>); 6] = [
             (
                 "Wyswietlanie",
                 vec![
@@ -643,6 +652,16 @@ impl Menu {
             (
                 "Ochrona AMOLED",
                 vec![
+                    (
+                        Setting::WavesOn,
+                        "Fale przyciemnienia",
+                        on_off(s.waves_on).to_string(),
+                    ),
+                    (
+                        Setting::WavesLaptopOnly,
+                        "Tylko na ekranie laptopa",
+                        on_off(s.waves_laptop_only).to_string(),
+                    ),
                     (Setting::WavesIdle, "Fale po bezczynnosci (W)", waves),
                     (
                         Setting::WavesDim,
@@ -659,8 +678,16 @@ impl Menu {
                 "Siec lokalna",
                 vec![(
                     Setting::Live,
-                    "Rysowanie na zywo z innymi w LAN",
+                    "Rysowanie na zywo (LAN)",
                     on_off(s.live_enabled).to_string(),
+                )],
+            ),
+            (
+                "System",
+                vec![(
+                    Setting::Autostart,
+                    "Autostart (do traya)",
+                    on_off(s.autostart).to_string(),
                 )],
             ),
         ];
@@ -701,11 +728,7 @@ impl Menu {
 
         y += 10.0;
         y += self.section(list, y, "Ta maszyna", out);
-        for (label, value) in [
-            ("Space", s.space),
-            ("GPU", s.gpu),
-            ("Autostart", "planowane (Etap 4)"),
-        ] {
+        for (label, value) in [("Space", s.space), ("GPU", s.gpu)] {
             out.push(UiPrim::Text {
                 x: list.x + PAD + 8.0,
                 y,

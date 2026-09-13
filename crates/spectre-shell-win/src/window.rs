@@ -322,15 +322,18 @@ pub fn placement_string(hwnd: HWND) -> Option<String> {
     ))
 }
 
-/// Odtworzenie polozenia zapisanego przez `placement_string`.
-pub fn apply_placement(hwnd: HWND, s: &str) -> bool {
+/// Odtworzenie polozenia zapisanego przez `placement_string`. `show = false`
+/// ustawia polozenie, ale okna nie pokazuje (start do traya).
+pub fn apply_placement(hwnd: HWND, s: &str, show: bool) -> bool {
     let v: Vec<i32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
     if v.len() != 5 || v[2] < 200 || v[3] < 150 {
         return false;
     }
     let wp = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
-        showCmd: if v[4] != 0 {
+        showCmd: if !show {
+            SW_HIDE.0 as u32
+        } else if v[4] != 0 {
             SW_SHOWMAXIMIZED.0 as u32
         } else {
             SW_SHOWNORMAL.0 as u32

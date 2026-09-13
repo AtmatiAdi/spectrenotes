@@ -97,11 +97,14 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       wiek synchronizacji, przycisk sync): lista notatek w folderach (folder = `Meta`
       notatki, LWW; cache `<space>/.cache/meta`), przenoszenie między folderami,
       nowa notatka/folder; Ustawienia i Konto działają (Etap 5)
-- [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
+- [x] Autostart z systemem: wpis w kluczu `Run` użytkownika z `--tray` (start schowany do traya,
+      okno na `Win+Shift+N`); rejestr jest źródłem prawdy, przełącznik w Ustawienia → System
 - [x] Ochrona AMOLED po bezczynności (Z7): fale przyciemnienia — patrz Etap 2
-- [ ] Ustawienia ochrony AMOLED: **przełącznik włącz/wyłącz** całej ochrony oraz
-      opcja **ograniczenia do głównego ekranu laptopa** (na pozostałych monitorach
-      ochrona się wtedy nie uruchamia)
+- [x] Ustawienia ochrony AMOLED: **przełącznik włącz/wyłącz** całej ochrony oraz
+      **tylko na ekranie laptopa** — panel wbudowany rozpoznawany po typie złącza
+      (`QueryDisplayConfig`, `OUTPUT_TECHNOLOGY_INTERNAL`), nie po „monitor główny";
+      na zewnętrznym odliczanie trwa, ochrona startuje po przeniesieniu okna.
+      Zweryfikowane: na `DISPLAY1` (panel) fale startują, na `DISPLAY6` nie
 
 ## Etap 5 — Git jako warstwa trwała  ◐ PRAWIE ZAMKNIĘTY
 
@@ -129,6 +132,7 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       fast-forward z powrotem
 - [ ] Rejestracja aplikacji OAuth na GitHubie i wpisanie `CLIENT_ID` (właściciel projektu)
 - [ ] Przeglądarka wersji notatki (`log_note` jest; brak UI i odtwarzania stanu z commita)
+      — **po Etapie 6½**: jej kształt zależy od decyzji o GUI
 - [ ] Snapshoty i przycinanie HEAD — razem z Etapem 3
 
 ## Etap 6 — Realtime P2P  ◐ DZIAŁA W LAN
@@ -152,6 +156,28 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [ ] Zabezpieczenie space'u w sieci (hasło/parowanie) — dziś granicą zaufania jest LAN
 - [ ] Przycinanie `via-*`, gdy plik autora w gicie już to pokrywa (razem ze snapshotami)
 - [ ] Heartbeat / wykrywanie zerwanego połączenia szybciej niż timeout TCP
+
+## Etap 6½ — Określenie wymagań i zmiany GUI  ☐ DO SPISANIA Z UŻYTKOWNIKIEM
+
+Rdzeń (pióro, format, git, live) stoi; **brakuje wymagań dla sporej części
+funkcji użytkowych** — do tej pory GUI rosło przyrostowo, funkcja po funkcji.
+Zanim dojdzie przeglądarka wersji i kolejne narzędzia, jedna sesja na spisanie,
+co aplikacja ma robić i jak ma wyglądać. Wynik: aktualizacja `00-ZALOZENIA.md`
+(nowe Z-ki albo doprecyzowanie istniejących) i lista zmian GUI tutaj.
+
+Do rozstrzygnięcia (lista otwarta — dopisywać):
+- [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,
+      gdzie ląduje przeglądarka wersji, jak wygląda przenoszenie notatek i foldery
+- [ ] Narzędzia rysowania (Z11 vs „Więcej narzędzi" z Etapu 4): zaznaczanie, kształty,
+      zakreślacz, lasso — które w v1, jak wybierane rysikiem
+- [ ] Praca z wieloma osobami (Etap 6): jak pokazywać, kto jest w notatce, kolory
+      autorów, „podążaj za drugą osobą", co z kursorem na innej notatce
+- [ ] Ustawienia: które trwałe (`config.txt`), które na skróty klawiszowe, czy HUD
+      zostaje jako narzędzie diagnostyczne
+- [ ] Notatki: szablony tła (linie, kratka), rozmiar/kolumna, eksport, kosz/archiwum
+- [ ] Sprzęt: zachowanie na zewnętrznym monitorze (ochrona AMOLED już tylko na panelu),
+      dok/undock, tryb tabletu (klawiatura schowana)
+- [ ] Onboarding: pierwszy start, logowanie, pierwszy space, druga maszyna
 
 ## Etap 7 — Dystrybucja
 

@@ -157,6 +157,13 @@ pub struct App {
     /// Ustawienia z `config.txt`.
     toolbar_pin: bool,
     scroll_mult: f32,
+    /// Ochrona AMOLED w ogole (fale po bezczynnosci).
+    waves_on: bool,
+    /// Fale tylko, gdy okno lezy na wbudowanym panelu laptopa (OLED); na
+    /// zewnetrznym monitorze nie startuja.
+    waves_laptop_only: bool,
+    /// Wpis autostartu w rejestrze (stan odczytany na starcie i po zmianie).
+    autostart: bool,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     waves_idle_s: u32,
     /// Fale wlaczone recznie (`W`): nie gasna od wejscia, tylko od `W`.
@@ -200,7 +207,9 @@ pub struct App {
     frame_max_ms: f32,
 }
 
-pub fn install(hwnd: HWND, space_dir: &Path) -> Result<()> {
+/// `start_hidden`: start do traya (autostart `--tray`) - polozenie odtworzone,
+/// okno niepokazane, timery bezczynnosci nie chodza (Z2).
+pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
     let app = Box::new(App::new(hwnd, space_dir).map_err(|e| {
         eprintln!("blad: {e}");
         windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
@@ -217,9 +226,9 @@ pub fn install(hwnd: HWND, space_dir: &Path) -> Result<()> {
     window::apply_frame_change(hwnd);
     let restored = placement
         .as_deref()
-        .map(|p| window::apply_placement(hwnd, p))
+        .map(|p| window::apply_placement(hwnd, p, !start_hidden))
         .unwrap_or(false);
-    if !restored {
+    if !restored && !start_hidden {
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
@@ -228,7 +237,12 @@ pub fn install(hwnd: HWND, space_dir: &Path) -> Result<()> {
         eprintln!("hotkey Win+Shift+N zajety: {e}");
     }
     if let Some(app) = unsafe { app_of(hwnd) } {
-        app.arm_amoled_timers();
+        if start_hidden {
+            app.hidden = true;
+            app.live.send(LiveJob::Visible(false));
+        } else {
+            app.arm_amoled_timers();
+        }
         app.sync.send(SyncJob::Status);
     }
     Ok(())
@@ -274,6 +288,8 @@ impl App {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(WAVES_IDLE_S_DEFAULT)
             .min(3600);
+        let waves_on = config.get("waves_on") != Some("0");
+        let waves_laptop_only = config.get("waves_laptop_only") == Some("1");
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
         toolbar.visible = toolbar_pin;
@@ -329,6 +345,9 @@ impl App {
             activity_pos: (0.0, 0.0),
             toolbar_pin,
             scroll_mult,
+            waves_on,
+            waves_laptop_only,
+            autostart: spectre_shell_win::autostart::is_enabled(),
             waves_idle_s,
             waves_forced: false,
             waves_dim_pct,
@@ -782,6 +801,34 @@ impl App {
                 self.config
                     .set("scroll_mult", format!("{}", self.scroll_mult));
                 self.config.save();
+            }
+            Setting::WavesOn => {
+                self.waves_on = !self.waves_on;
+                self.config
+                    .set("waves_on", if self.waves_on { "1" } else { "0" });
+                self.config.save();
+                self.waves_forced = false;
+                self.stop_waves();
+                self.arm_amoled_timers();
+            }
+            Setting::WavesLaptopOnly => {
+                self.waves_laptop_only = !self.waves_laptop_only;
+                self.config.set(
+                    "waves_laptop_only",
+                    if self.waves_laptop_only { "1" } else { "0" },
+                );
+                self.config.save();
+                if self.waves_laptop_only && !self.waves_forced {
+                    self.stop_waves();
+                    self.arm_amoled_timers();
+                }
+            }
+            Setting::Autostart => {
+                let on = !self.autostart;
+                match spectre_shell_win::autostart::set_enabled(on) {
+                    Ok(()) => self.autostart = on,
+                    Err(e) => self.status = format!("autostart: {e}"),
+                }
             }
             Setting::WavesIdle => {
                 // Cykl: 10 s -> 30 s -> 1 -> 2 -> 3 -> 5 -> 10 min -> wyl. -> 10 s.
@@ -1356,7 +1403,7 @@ impl App {
     /// proces ma nie wybudzac sie w ogole (Z2).
     fn arm_amoled_timers(&self) {
         unsafe {
-            if self.waves_idle_s == 0 {
+            if !self.waves_on || self.waves_idle_s == 0 {
                 let _ = KillTimer(Some(self.hwnd), TIMER_WAVES);
             } else {
                 SetTimer(Some(self.hwnd), TIMER_WAVES, self.waves_idle_s * 1000, None);
@@ -1443,6 +1490,16 @@ impl App {
     /// klatce: fala nigdy nie wychodzila z fade-inu i byla niewidoczna.)
     fn waves_tick(&mut self) {
         if self.waves.is_none() {
+            // "Tylko ekran laptopa": na zewnetrznym monitorze nie startujemy,
+            // ale odliczamy dalej - po przeniesieniu okna na panel ochrona
+            // wystartuje po kolejnym okresie bezczynnosci. `W` (podglad) omija to.
+            if self.waves_laptop_only
+                && !self.waves_forced
+                && !spectre_shell_win::display::on_internal_display(self.hwnd)
+            {
+                self.arm_amoled_timers();
+                return;
+            }
             self.start_waves();
         }
         self.render();
@@ -1603,6 +1660,9 @@ impl App {
                 dock: self.toolbar.dock.name(),
                 toolbar_pin: self.toolbar_pin,
                 scroll_mult: self.scroll_mult,
+                waves_on: self.waves_on,
+                waves_laptop_only: self.waves_laptop_only,
+                autostart: self.autostart,
                 waves_idle_s: self.waves_idle_s,
                 waves_dim_pct: self.waves_dim_pct,
                 sync: &self.sync.status,

@@ -40,12 +40,16 @@ fn main() -> windows::core::Result<()> {
     window::init_process();
 
     let space_dir = std::env::args()
-        .nth(1)
+        .skip(1)
+        .find(|a| !a.starts_with("--"))
         .map(PathBuf::from)
         .unwrap_or_else(default_space_dir);
 
+    // `--tray` (autostart z systemem): start schowany, okno na Win+Shift+N.
+    let start_hidden = std::env::args().any(|a| a == spectre_shell_win::autostart::TRAY_ARG);
+
     let hwnd = window::create_window("SpectreNotes", "SpectreNotes", app::wndproc, 1400, 900)?;
-    app::install(hwnd, &space_dir)?;
+    app::install(hwnd, &space_dir, start_hidden)?;
     window::run_message_loop();
     Ok(())
 }

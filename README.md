@@ -57,9 +57,12 @@ na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę
 zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
 *Ustawienia* pogrupowane funkcjonalnie: *Wyświetlanie* (vsync, tearing, pełny ekran,
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
-przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (czas bezczynności do
-fal: 10 s – 10 min albo wył.; jasność notatki między pasami 0–100 %). Trwałe wartości
-lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba (kod w przeglądarce albo
+przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (włącz/wyłącz; **tylko
+na ekranie laptopa** — na zewnętrznym monitorze fale nie startują, panel wbudowany
+rozpoznawany po typie złącza; czas bezczynności 10 s – 10 min; jasność notatki między
+pasami 0–100 %), *Sieć lokalna* (rysowanie na żywo), *System* (**autostart** — wpis
+w kluczu `Run` użytkownika, aplikacja startuje z `--tray`, czyli schowana w trayu).
+Trwałe wartości lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba (kod w przeglądarce albo
 wklejony token — GitHub nie przyjmuje już logowania hasłem, więc login jest przez
 przeglądarkę lub PAT), stan synchronizacji i budżetu ruchu, „Synchronizuj teraz".
 Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go.
