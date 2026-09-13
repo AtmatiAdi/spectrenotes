@@ -175,6 +175,15 @@ Zanim dojdzie przeglądarka wersji i kolejne narzędzia, jedna sesja na spisanie
 co aplikacja ma robić i jak ma wyglądać. Wynik: aktualizacja `00-ZALOZENIA.md`
 (nowe Z-ki albo doprecyzowanie istniejących) i lista zmian GUI tutaj.
 
+Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
+- [ ] **Stan synchronizacji w menu, obok informacji „synced"**: licznik czasu od
+      ostatniej udanej synchronizacji, **tykający na żywo** (nie zaokrąglone „5 min
+      temu", tylko np. `synced 4:37 ago` odświeżane co sekundę przy otwartym menu),
+      plus dokładna godzina ostatniego syncu — użytkownik ma widzieć **dokładnie**,
+      kiedy to było. Dziś nagłówek pokazuje `human_age` z `last_remote_ok`, liczone
+      tylko przy przerysowaniu; potrzebny timer odświeżający nagłówek, gdy menu jest
+      otwarte, i rozróżnienie „zapisane lokalnie" od „na GitHubie / u peera"
+
 Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,
       gdzie ląduje przeglądarka wersji, jak wygląda przenoszenie notatek i foldery
