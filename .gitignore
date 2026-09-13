@@ -1,12 +1,31 @@
+# Rust / Cargo
 /target/
 **/target/
+target-test/
 Cargo.lock.bak
 *.pdb
 *.rlib
-.vscode/
-.idea/
+# Cargo.lock jest wersjonowany celowo: to workspace z binarka (spectrenotes.exe),
+# chcemy powtarzalnych buildow.
+
+# Artefakty i dystrybucja
 /dist/
 /out/
 *.log
+
+# Katalogi robocze (poza repo)
 scratch/
-target-test/
+
+# IDE / edytory
+.vscode/
+.idea/
+*.swp
+*~
+
+# Cruft systemowy
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Dane aplikacji nigdy nie trafiaja do repo kodu (leza w %APPDATA%\SpectreNotes):
+# config.txt, github.token (DPAPI), avatar.img, traffic.txt, oraz space'y z notatkami.
