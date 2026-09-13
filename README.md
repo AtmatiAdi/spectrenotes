@@ -34,10 +34,12 @@ Aplikacja **żyje w tray'u**: `Esc`, zamknięcie okna i `Win+Shift+N` chowają j
 (w tle ~2 MB), `Win+Shift+N` lub klik w ikonę odsłania w ~20 ms. Zakończenie:
 `Ctrl+Q` albo prawy klik na ikonie → Zakończ.
 
-**Okno nie ma systemowej ramki** — pasek tytułowy rysuje aplikacja: po lewej nazwa
-i numer notatki, na środku edytowalny tytuł (tap, wpisz, `Enter`), po prawej
-minimalizuj / maksymalizuj / zamknij (= ukryj do tray). Przeciąganie za pusty
-fragment paska, dwuklik maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
+**Okno nie ma systemowej ramki ani paska tytułowego** — canvas zaczyna się od samej
+góry. Nad nim wiszą dwie małe **zakładki**: tytuł notatki na środku (tap, wpisz,
+`Enter`; z lewej uchwyt do przesuwania okna) i przyciski minimalizuj / maksymalizuj /
+zamknij (= ukryj do tray) w prawym rogu. Gdy pasek narzędzi jest zadokowany u góry,
+**wchłania** oba pola — tytuł i przyciski stają się jego elementami i znikają razem
+z nim. Dwuklik na uchwycie maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
 
 **Pasek narzędzi** wyjeżdża, gdy rysik zbliży się do krawędzi, przy której jest
 zadokowany, i chowa się po 2,5 s bezczynności (Z7). **Jest dokowalny**: złap za
@@ -45,8 +47,10 @@ uchwyt (kropki na początku paska) i upuść przy dowolnej krawędzi — góra/d
 przełącza go w orientację poziomą. Dok i położenie okna zapisują się
 w `%APPDATA%\SpectreNotes\config.txt` (jawny `klucz=wartość`).
 
-**Menu** (☰ w lewym rogu paska tytułowego, na pasku narzędzi albo `M`) to panel
-z trzema zakładkami. *Notatki*: lista w folderach, od najnowszej, z datą utworzenia;
+**Menu** (☰ na pasku narzędzi albo `M`) to panel z trzema zakładkami. U góry stały
+**nagłówek konta**: zdjęcie profilowe z GitHuba (albo inicjał, gdy niezalogowany),
+nazwa i stan logowania, ile temu była synchronizacja i przycisk „synchronizuj teraz".
+*Notatki*: lista w folderach, od najnowszej, z datą utworzenia;
 tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,
 na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę,
 `Enter`). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
@@ -56,8 +60,9 @@ HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mno
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (czas bezczynności do
 fal: 10 s – 10 min albo wył.; jasność notatki między pasami 0–100 %). Trwałe wartości
 lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba (kod w przeglądarce albo
-wklejony token), stan synchronizacji i budżetu ruchu, „Synchronizuj teraz". Panel jest
-nieprzezroczysty; dotknięcie poza nim zamyka go.
+wklejony token — GitHub nie przyjmuje już logowania hasłem, więc login jest przez
+przeglądarkę lub PAT), stan synchronizacji i budżetu ruchu, „Synchronizuj teraz".
+Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go.
 
 **Synchronizacja (Etap 5).** Space jest repozytorium git — `libgit2` siedzi w binarce,
 niczego nie trzeba instalować (ADR 0003/0006). Aplikacja sama robi `commit` 10 s po

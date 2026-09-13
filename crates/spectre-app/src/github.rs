@@ -140,8 +140,15 @@ fn auth_header(token: &str) -> String {
     format!("Authorization: Bearer {token}")
 }
 
-/// Login zalogowanego uzytkownika.
-pub fn user_login(token: &str) -> Result<String> {
+/// Zalogowany uzytkownik: login i adres avataru.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct User {
+    pub login: String,
+    pub avatar_url: String,
+}
+
+/// Kto jest zalogowany (i skad wziac avatar).
+pub fn user_info(token: &str) -> Result<User> {
     let r = http::request(
         "GET",
         &format!("{API}/user"),
@@ -150,7 +157,35 @@ pub fn user_login(token: &str) -> Result<String> {
     )
     .map_err(map_http)?;
     check_status(&r, "user")?;
-    json_str(&r.body, "login").ok_or_else(|| GitError::Other("user: brak login".into()))
+    let login =
+        json_str(&r.body, "login").ok_or_else(|| GitError::Other("user: brak login".into()))?;
+    Ok(User {
+        login,
+        avatar_url: json_str(&r.body, "avatar_url").unwrap_or_default(),
+    })
+}
+
+/// Login zalogowanego uzytkownika.
+pub fn user_login(token: &str) -> Result<String> {
+    user_info(token).map(|u| u.login)
+}
+
+/// Bok avataru pobieranego z GitHuba (`?s=`); w menu ma 44 px.
+pub const AVATAR_PX: u32 = 96;
+
+/// Surowe bajty avataru (PNG/JPEG) w rozmiarze `AVATAR_PX`. Zwraca tez ile
+/// bajtow przyszlo - do budzetu ruchu.
+pub fn fetch_avatar(avatar_url: &str) -> Result<Vec<u8>> {
+    if avatar_url.is_empty() {
+        return Err(GitError::Other("avatar: brak adresu".into()));
+    }
+    let sep = if avatar_url.contains('?') { '&' } else { '?' };
+    let url = format!("{avatar_url}{sep}s={AVATAR_PX}");
+    let (status, bytes) = http::request_bytes("GET", &url, &[UA], None).map_err(map_http)?;
+    if !(200..=299).contains(&status) {
+        return Err(GitError::Other(format!("avatar: HTTP {status}")));
+    }
+    Ok(bytes)
 }
 
 /// Prywatne repo `login/name`: istniejace albo zalozone. Zwraca URL do klonowania.

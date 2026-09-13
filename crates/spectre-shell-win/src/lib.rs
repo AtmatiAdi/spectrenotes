@@ -5,6 +5,7 @@
 //! platforme polega na napisaniu rownoleglego `spectre-shell-*`.
 
 pub mod http;
+pub mod image;
 pub mod pen;
 pub mod secret;
 pub mod tray;

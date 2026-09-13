@@ -259,7 +259,7 @@ impl App {
         toolbar.visible = toolbar_pin;
         toolbar.layout(w as f32, h as f32, PALETTE.len());
         let mut menu = Menu::new();
-        menu.layout(w as f32, h as f32, toolbar.content_top());
+        menu.layout(w as f32, h as f32);
         let data_dir = Config::path()
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -606,7 +606,6 @@ impl App {
     /// Dotkniecie paska tytulowego: przyciski okna albo edycja tytulu.
     fn title_tap(&mut self, action: TitleAction) {
         match action {
-            TitleAction::Menu => self.menu.toggle(),
             TitleAction::EditTitle => {
                 self.toolbar.title_edit = Some(self.title());
                 unsafe {
@@ -750,15 +749,14 @@ impl App {
 
     fn toggle_fullscreen(&mut self) {
         self.fullscreen.toggle(self.hwnd);
-        self.toolbar.title_bar = !self.fullscreen.is_active();
+        self.toolbar.chrome = !self.fullscreen.is_active();
         self.relayout();
     }
 
     fn relayout(&mut self) {
         let (w, h) = self.renderer.size();
         self.toolbar.layout(w as f32, h as f32, PALETTE.len());
-        self.menu
-            .layout(w as f32, h as f32, self.toolbar.content_top());
+        self.menu.layout(w as f32, h as f32);
     }
 
     fn commit_folder_edit(&mut self) {
@@ -982,7 +980,13 @@ impl App {
                     // Od razu: wykrycie/zalozenie repo i pierwszy pelny cykl.
                     self.git_sync(true);
                 }
-                SyncEvent::LoggedOut => self.sync.last = "wylogowano".to_string(),
+                SyncEvent::LoggedOut => {
+                    self.sync.last = "wylogowano".to_string();
+                    self.renderer.clear_avatar();
+                }
+                SyncEvent::Avatar(img) => {
+                    let _ = self.renderer.set_avatar(img.w, img.h, &img.bgra);
+                }
                 SyncEvent::Deferred { until } => {
                     self.sync.last = format!(
                         "zapisane lokalnie; do GitHuba o {}",
@@ -1352,6 +1356,8 @@ impl App {
                 sync: &self.sync.status,
                 sync_last: &self.sync.last,
                 sync_busy: self.sync.pending > 0,
+                sync_age_s: self.sync.last_remote_ok.map(|t| t.elapsed().as_secs()),
+                avatar: self.renderer.has_avatar(),
                 device_code: self.sync.device_code.as_deref(),
             };
             self.menu.build(&ms, &mut prims);
@@ -1864,8 +1870,8 @@ pub unsafe extern "system" fn wndproc(
             if let Some(ht) = window::resize_hit(hwnd, x, y) {
                 return LRESULT(ht as isize);
             }
-            // Pasek tytulowy bez przyciskow i tytulu = uchwyt do przesuwania okna.
-            if app.toolbar.in_title_bar(x, y) && app.toolbar.title_hit(x, y).is_none() {
+            // Uchwyt zakladki tytulu albo puste miejsce paska u gory = przesuwanie okna.
+            if app.toolbar.caption_hit(x, y) {
                 return LRESULT(HTCAPTION as isize);
             }
             LRESULT(HTCLIENT as isize)

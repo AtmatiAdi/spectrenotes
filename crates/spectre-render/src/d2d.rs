@@ -11,12 +11,14 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1Brush, ID2D1DeviceContext, ID2D1DeviceContext1,
-    ID2D1Factory1, ID2D1GeometryRealization, ID2D1StrokeStyle1, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1Brush, ID2D1DeviceContext,
+    ID2D1DeviceContext1, ID2D1Factory1, ID2D1GeometryRealization, ID2D1StrokeStyle1,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_BRUSH_PROPERTIES1,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_INTERPOLATION_MODE_CUBIC, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_CUBIC,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
     D2D1_STROKE_STYLE_PROPERTIES1, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
@@ -100,6 +102,13 @@ pub enum UiPrim {
         text: String,
         color: Rgba,
         font: UiFont,
+    },
+    /// Avatar uzytkownika (`Renderer::set_avatar`) w kolku o boku `size`;
+    /// nic nie rysuje, gdy avataru nie ma.
+    Avatar {
+        x: f32,
+        y: f32,
+        size: f32,
     },
     /// Od tego miejsca rysowanie jest przycinane do prostokata - do `Unclip`.
     Clip {
@@ -185,6 +194,8 @@ pub struct Renderer {
     /// Bitmapa maski przyciemnienia (Z7) i jej rozmiar; bufor BGRA do przeslania.
     dim_bmp: Option<(ID2D1Bitmap1, u32, u32)>,
     dim_px: Vec<u8>,
+    /// Avatar zalogowanego uzytkownika (naglowek menu): pedzel bitmapowy i rozmiar zrodla.
+    avatar: Option<(ID2D1BitmapBrush1, u32, u32)>,
     round: ID2D1StrokeStyle1,
     text_fmt: IDWriteTextFormat,
     text_fmt_big: IDWriteTextFormat,
@@ -313,6 +324,8 @@ impl Renderer {
                 20.0,
                 w("en-us"),
             )?;
+            text_fmt_big.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            text_fmt_big.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             let text_fmt_center = dwrite.CreateTextFormat(
                 w("Segoe UI"),
                 None,
@@ -356,6 +369,7 @@ impl Renderer {
                 cursor_brush,
                 dim_bmp: None,
                 dim_px: Vec::new(),
+                avatar: None,
                 round,
                 text_fmt,
                 text_fmt_big,
@@ -456,6 +470,48 @@ impl Renderer {
     pub fn clear_geometry(&mut self) {
         self.geo_cache.clear();
         self.geo_cache_verts = 0;
+    }
+
+    /// Avatar do `UiPrim::Avatar`: piksele BGRA premultiplied, `w * h * 4` bajtow.
+    pub fn set_avatar(&mut self, w: u32, h: u32, bgra: &[u8]) -> Result<()> {
+        if w == 0 || h == 0 || bgra.len() != (w * h * 4) as usize {
+            self.avatar = None;
+            return Ok(());
+        }
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                ..Default::default()
+            };
+            let size = D2D_SIZE_U {
+                width: w,
+                height: h,
+            };
+            let bmp = self.ctx.CreateBitmap(size, None, 0, &props)?;
+            bmp.CopyFromMemory(None, bgra.as_ptr() as *const _, w * 4)?;
+            let bprops = D2D1_BITMAP_BRUSH_PROPERTIES1 {
+                extendModeX: D2D1_EXTEND_MODE_CLAMP,
+                extendModeY: D2D1_EXTEND_MODE_CLAMP,
+                interpolationMode: D2D1_INTERPOLATION_MODE_LINEAR,
+            };
+            let brush = self.ctx.CreateBitmapBrush(&bmp, Some(&bprops), None)?;
+            self.avatar = Some((brush, w, h));
+        }
+        Ok(())
+    }
+
+    pub fn clear_avatar(&mut self) {
+        self.avatar = None;
+    }
+
+    pub fn has_avatar(&self) -> bool {
+        self.avatar.is_some()
     }
 
     /// Okno schowane: oddajemy pamiec sterownika (Z2). Bitmapy zostaja, ale
@@ -936,6 +992,30 @@ impl Renderer {
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
+                }
+                UiPrim::Avatar { x, y, size } => {
+                    if let Some((brush, bw, bh)) = &self.avatar {
+                        // Pedzel bitmapowy przeskalowany do kolka i wypelnienie elipsy.
+                        let sx = size / *bw as f32;
+                        let sy = size / *bh as f32;
+                        brush.SetTransform(&Matrix3x2 {
+                            M11: sx,
+                            M12: 0.0,
+                            M21: 0.0,
+                            M22: sy,
+                            M31: *x,
+                            M32: *y,
+                        });
+                        let e = D2D1_ELLIPSE {
+                            point: Vector2 {
+                                X: x + size * 0.5,
+                                Y: y + size * 0.5,
+                            },
+                            radiusX: size * 0.5,
+                            radiusY: size * 0.5,
+                        };
+                        self.ctx.FillEllipse(&e, brush);
+                    }
                 }
                 UiPrim::Clip { x, y, w, h } => {
                     let r = D2D_RECT_F {

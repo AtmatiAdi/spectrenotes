@@ -1,12 +1,13 @@
-//! Panel boczny: notatki w folderach, ustawienia, konto.
+//! Panel boczny: naglowek konta, notatki w folderach, ustawienia, konto.
 //!
-//! Otwierany z paska tytulowego (☰) lub paska narzedzi; zamyka go dotkniecie
-//! poza panelem, `Esc` albo ponowne ☰. Rysowany tak jak reszta UI - prymitywami
-//! renderera, bez wlasnej petli. Lista notatek przewija sie kolkiem nad panelem.
+//! Otwierany z paska narzedzi (☰); zamyka go dotkniecie poza panelem, `Esc`
+//! albo ponowne ☰. Rysowany tak jak reszta UI - prymitywami renderera, bez
+//! wlasnej petli. Lista notatek przewija sie kolkiem nad panelem.
 //!
-//! Zakladki "Ustawienia" i "Konto" sa na razie wydmuszkami: ustawienia pokazuja
-//! i przelaczaja to, co juz jest w aplikacji, konto tylko informuje, ze
-//! logowanie przyjdzie z Etapem 5 (git/GitHub).
+//! U gory panelu stale widoczny naglowek: avatar z GitHuba (albo inicjal),
+//! nazwa uzytkownika i stan logowania, ile minut temu byla synchronizacja
+//! i przycisk "synchronizuj teraz". Zakladka "Konto" ma szczegoly (logowanie,
+//! budzet ruchu), "Ustawienia" przelaczaja to, co juz jest w aplikacji.
 
 use spectre_render::{UiFont, UiPrim};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
@@ -16,6 +17,10 @@ use crate::sync::Status as SyncStatus;
 use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
+/// Naglowek panelu: avatar, nazwa, stan synchronizacji, przycisk sync.
+const HEADER_H: f32 = 76.0;
+const AVATAR: f32 = 44.0;
+const SYNC_BTN: f32 = 38.0;
 const TAB_H: f32 = 44.0;
 const ROW_H: f32 = 40.0;
 const HEAD_H: f32 = 34.0;
@@ -105,6 +110,10 @@ pub struct MenuState<'a> {
     pub sync: &'a SyncStatus,
     pub sync_last: &'a str,
     pub sync_busy: bool,
+    /// Sekundy od ostatniej udanej synchronizacji ze zdalnym.
+    pub sync_age_s: Option<u64>,
+    /// Renderer ma avatar zalogowanego uzytkownika.
+    pub avatar: bool,
     /// Trwajace logowanie Device Flow: kod do wpisania.
     pub device_code: Option<&'a str>,
 }
@@ -122,9 +131,10 @@ pub struct Menu {
     scroll: f32,
     hot: Option<MenuHit>,
     /// Elementy z ostatniego `build` - juz po przewinieciu, w pikselach ekranu.
+    /// Pierwsze `fixed_rows` (naglowek, zakladki) leza poza przewijana lista.
     rows: Vec<(MenuHit, Rect)>,
+    fixed_rows: usize,
     view: (f32, f32),
-    top: f32,
     content_h: f32,
     /// Foldery w kolejnosci z ostatniego `build` - `MoveTo(i)` odnosi sie do niej.
     folder_names: Vec<String>,
@@ -140,34 +150,34 @@ impl Menu {
             scroll: 0.0,
             hot: None,
             rows: Vec::new(),
+            fixed_rows: 0,
             view: (0.0, 0.0),
-            top: 0.0,
             content_h: 0.0,
             folder_names: Vec::new(),
         }
     }
 
-    pub fn layout(&mut self, w: f32, h: f32, top: f32) {
+    pub fn layout(&mut self, w: f32, h: f32) {
         self.view = (w, h);
-        self.top = top;
     }
 
     pub fn panel_rect(&self) -> Rect {
         Rect {
             x: 0.0,
-            y: self.top,
+            y: 0.0,
             w: PANEL_W.min(self.view.0 - 24.0).max(120.0),
-            h: self.view.1 - self.top,
+            h: self.view.1,
         }
     }
 
     fn list_rect(&self) -> Rect {
         let p = self.panel_rect();
+        let top = HEADER_H + TAB_H;
         Rect {
             x: p.x,
-            y: p.y + TAB_H,
+            y: p.y + top,
             w: p.w,
-            h: p.h - TAB_H,
+            h: (p.h - top).max(0.0),
         }
     }
 
@@ -218,10 +228,11 @@ impl Menu {
         Some(
             self.rows
                 .iter()
-                .find(|(h, r)| {
-                    r.contains(x, y) && (matches!(h, MenuHit::Tab(_)) || list.contains(x, y))
+                .enumerate()
+                .find(|(i, (_, r))| {
+                    r.contains(x, y) && (*i < self.fixed_rows || list.contains(x, y))
                 })
-                .map(|(h, _)| *h)
+                .map(|(_, (h, _))| *h)
                 .unwrap_or(MenuHit::Panel),
         )
     }
@@ -262,13 +273,15 @@ impl Menu {
             r: 0.0,
         });
 
+        self.build_header(s, p, out);
+
         // Zakladki.
         let tabs = [Tab::Notes, Tab::Settings, Tab::Account];
         let tw = p.w / tabs.len() as f32;
         for (i, t) in tabs.iter().enumerate() {
             let r = Rect {
                 x: p.x + tw * i as f32,
-                y: p.y,
+                y: p.y + HEADER_H,
                 w: tw,
                 h: TAB_H,
             };
@@ -306,12 +319,13 @@ impl Menu {
         }
         out.push(UiPrim::Rect {
             x: p.x,
-            y: p.y + TAB_H - 1.0,
+            y: p.y + HEADER_H + TAB_H - 1.0,
             w: p.w,
             h: 1.0,
             color: LINE,
             r: 0.0,
         });
+        self.fixed_rows = self.rows.len();
 
         let list = self.list_rect();
         out.push(UiPrim::Clip {
@@ -703,6 +717,127 @@ impl Menu {
         y + 10.0 - (list.y - self.scroll)
     }
 
+    /// Naglowek: avatar (z GitHuba albo inicjal), kto i czy zalogowany, ile
+    /// minut temu byla synchronizacja, przycisk sync (albo "Zaloguj").
+    fn build_header(&mut self, s: &MenuState, p: Rect, out: &mut Vec<UiPrim>) {
+        let st = s.sync;
+        let logged = st.login.is_some();
+        let (ax, ay) = (p.x + PAD, p.y + (HEADER_H - AVATAR) * 0.5);
+        let (cx, cy) = (ax + AVATAR * 0.5, ay + AVATAR * 0.5);
+        // Placeholder pod avatarem: kolko z inicjalem. Avatar (jesli jest) je zakryje.
+        out.push(UiPrim::Circle {
+            x: cx,
+            y: cy,
+            radius: AVATAR * 0.5,
+            color: if logged { ACTIVE } else { HOT },
+        });
+        let initial = st
+            .login
+            .as_deref()
+            .unwrap_or(s.author)
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        out.push(UiPrim::Text {
+            x: ax,
+            y: ay,
+            w: AVATAR,
+            h: AVATAR,
+            text: initial,
+            color: if logged { FG } else { FG_DIM },
+            font: UiFont::Big,
+        });
+        if logged && s.avatar {
+            out.push(UiPrim::Avatar {
+                x: ax,
+                y: ay,
+                size: AVATAR,
+            });
+        }
+
+        // Przycisk z prawej: sync (zalogowany) albo przejscie do Konta.
+        let br = Rect {
+            x: p.x + p.w - PAD - SYNC_BTN,
+            y: p.y + (HEADER_H - SYNC_BTN) * 0.5,
+            w: SYNC_BTN,
+            h: SYNC_BTN,
+        };
+        let hit = if logged {
+            MenuHit::SyncNow
+        } else {
+            MenuHit::Tab(Tab::Account)
+        };
+        let hot = self.hot == Some(hit);
+        out.push(UiPrim::Outline {
+            x: br.x,
+            y: br.y,
+            w: br.w,
+            h: br.h,
+            color: if hot { FG_DIM } else { LINE },
+            width: 1.0,
+            r: SYNC_BTN * 0.5,
+        });
+        out.push(UiPrim::Text {
+            x: br.x,
+            y: br.y,
+            w: br.w,
+            h: br.h,
+            text: if logged { "↻" } else { "→" }.to_string(),
+            color: if s.sync_busy { FG_DIM } else { FG },
+            font: UiFont::Big,
+        });
+        self.rows.push((hit, br));
+
+        // Dwie linie tekstu miedzy avatarem i przyciskiem.
+        let tx = ax + AVATAR + 12.0;
+        let tw = br.x - 8.0 - tx;
+        let (name, name_color) = match &st.login {
+            Some(l) => (l.clone(), FG),
+            None => ("niezalogowany".to_string(), FG),
+        };
+        let b = &st.budget;
+        let (info, info_color) = if !logged {
+            ("notatki tylko lokalnie".to_string(), FG_DIM)
+        } else if let Some(u) = b.backoff_until {
+            (format!("sync wstrzymany do {}", local_time_at(u)), ACCENT)
+        } else if s.sync_busy {
+            ("synchronizacja...".to_string(), FG_DIM)
+        } else if let Some(age) = s.sync_age_s {
+            (format!("sync {}", human_age(age)), FG_DIM)
+        } else if st.remote.is_none() {
+            ("lacze z repozytorium...".to_string(), FG_DIM)
+        } else {
+            ("jeszcze nie synchronizowano".to_string(), FG_DIM)
+        };
+        out.push(UiPrim::Text {
+            x: tx,
+            y: p.y + HEADER_H * 0.5 - 22.0,
+            w: tw,
+            h: 22.0,
+            text: name,
+            color: name_color,
+            font: UiFont::Ui,
+        });
+        out.push(UiPrim::Text {
+            x: tx,
+            y: p.y + HEADER_H * 0.5,
+            w: tw,
+            h: 22.0,
+            text: info,
+            color: info_color,
+            font: UiFont::Ui,
+        });
+        out.push(UiPrim::Rect {
+            x: p.x,
+            y: p.y + HEADER_H - 1.0,
+            w: p.w,
+            h: 1.0,
+            color: LINE,
+            r: 0.0,
+        });
+    }
+
     fn build_account(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let mut y = list.y - self.scroll + 6.0;
         y += self.section(list, y, "Ten komputer", out);
@@ -1011,5 +1146,18 @@ fn human_bytes(b: u64) -> String {
         format!("{:.0} kB", b as f64 / 1024.0)
     } else {
         format!("{b} B")
+    }
+}
+
+/// "przed chwila", "3 min temu", "2 h temu" - do naglowka panelu.
+pub fn human_age(secs: u64) -> String {
+    if secs < 60 {
+        "przed chwila".to_string()
+    } else if secs < 3600 {
+        format!("{} min temu", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} h temu", secs / 3600)
+    } else {
+        format!("{} dni temu", secs / 86_400)
     }
 }

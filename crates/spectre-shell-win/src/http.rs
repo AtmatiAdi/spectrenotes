@@ -14,9 +14,24 @@ pub struct Response {
     pub body: String,
 }
 
-/// Zadanie HTTPS. `url` musi byc `https://host/sciezka`. Naglowki jako
-/// gotowe linie `Nazwa: wartosc`. Limit ciala odpowiedzi 4 MB.
+/// Zadanie HTTPS z odpowiedzia tekstowa (JSON GitHuba).
 pub fn request(method: &str, url: &str, headers: &[&str], body: Option<&str>) -> Result<Response> {
+    let (status, bytes) = request_bytes(method, url, headers, body)?;
+    Ok(Response {
+        status,
+        body: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+/// Zadanie HTTPS. `url` musi byc `https://host/sciezka`. Naglowki jako
+/// gotowe linie `Nazwa: wartosc`. Limit ciala odpowiedzi 4 MB. Zwraca
+/// (status, surowe bajty) - do obrazkow (avatar).
+pub fn request_bytes(
+    method: &str,
+    url: &str,
+    headers: &[&str],
+    body: Option<&str>,
+) -> Result<(u32, Vec<u8>)> {
     let rest = url
         .strip_prefix("https://")
         .ok_or_else(|| Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))?;
@@ -106,10 +121,7 @@ pub fn request(method: &str, url: &str, headers: &[&str], body: Option<&str>) ->
                 break;
             }
         }
-        Ok(Response {
-            status,
-            body: String::from_utf8_lossy(&out).into_owned(),
-        })
+        Ok((status, out))
     }
 }
 

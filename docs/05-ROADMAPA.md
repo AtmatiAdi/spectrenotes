@@ -86,16 +86,17 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       kolory, grubość, undo/redo, poprzednia/następna/nowa notatka
 - [x] Tytuł notatki: tap w nagłówek, edycja z klawiatury, `Enter`/`Esc`
 - [x] Zoom `Ctrl+kółko` wokół kursora
-- [x] Okno bez systemowej ramki (WM_NCCALCSIZE/NCHITTEST): własny pasek tytułowy
-      z tytułem notatki i przyciskami okna; snap i Win+strzałki zachowane
+- [x] Okno bez systemowej ramki (WM_NCCALCSIZE/NCHITTEST): **canvas od samej góry**,
+      tytuł notatki i przyciski okna w dwóch zakładkach nad canvasem; pasek narzędzi
+      zadokowany u góry wchłania oba pola; snap i Win+strzałki zachowane
 - [x] Pasek narzędzi dokowalny do 4 krawędzi (przeciąganie za uchwyt), orientacja
       pozioma dla góra/dół; dok i położenie okna w `config.txt`
 - [ ] Więcej narzędzi (zaznaczanie, kształty) — po Etapie 5, wymaga `StrokeTransform`
 - [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
-- [x] Menu (☰ w pasku tytułowym i na pasku narzędzi, `M`): lista notatek w folderach
-      (folder = `Meta` notatki, LWW; cache `<space>/.cache/meta`), przenoszenie między
-      folderami, nowa notatka/folder; zakładki Ustawienia i Konto jako wydmuszki
-      (ustawienia przełączają to, co już jest; logowanie czeka na Etap 5)
+- [x] Menu (☰ na pasku narzędzi, `M`) z nagłówkiem konta (avatar z GitHuba, nazwa,
+      wiek synchronizacji, przycisk sync): lista notatek w folderach (folder = `Meta`
+      notatki, LWW; cache `<space>/.cache/meta`), przenoszenie między folderami,
+      nowa notatka/folder; Ustawienia i Konto działają (Etap 5)
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
 - [x] Ochrona AMOLED po bezczynności (Z7): fale przyciemnienia — patrz Etap 2
 
@@ -111,7 +112,10 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [x] **Repozytorium automatyczne**: `spectrenotes-<space>` wykrywane albo zakładane
       przez GitHub REST API po zalogowaniu; użytkownik nie widzi adresów
 - [x] Logowanie GitHub Device Flow (kod + przeglądarka, token w DPAPI) albo wklejony PAT;
-      wylogowanie. Wymaga `client_id` aplikacji OAuth (`github.rs::CLIENT_ID`)
+      wylogowanie. Wymaga `client_id` aplikacji OAuth (`github.rs::CLIENT_ID`).
+      Logowania hasłem GitHub już nie obsługuje — Device Flow jest odpowiednikiem
+- [x] **Avatar konta** w nagłówku menu: pobrany raz z GitHuba (WIC → BGRA, pędzel
+      bitmapowy D2D), zapisany w `avatar.img`, po restarcie z cache (bez ruchu sieci)
 - [x] **Budżet ruchu** (`spectre-sync::budget`): księga połączeń, odstęp min. 30 s,
       progi 120/h, 1200/dobę, 500 MB/dobę, predykcja dobowa; odmowa serwera → odczekanie
       10 min ×2 do 2 h z ostrzeżeniem w Konto i HUD, commity lokalne w tym czasie

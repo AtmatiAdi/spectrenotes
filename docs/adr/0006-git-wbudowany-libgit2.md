@@ -31,6 +31,11 @@ ma zainstalowane, i wymagała ręcznego wskazywania repozytorium. Wymaganie prod
    na tej maszynie go odczyta). Wymaga `client_id` aplikacji OAuth zarejestrowanej
    na GitHubie z włączonym Device Flow (`github.rs::CLIENT_ID`, nadpisywalne
    `github_client_id=` w `config.txt`). Zapasowo: wklejenie tokenu (PAT, zakres `repo`).
+   **Logowania samą nazwą i hasłem nie ma** — GitHub wyłączył je dla API i git po
+   HTTPS w 2021; Device Flow (przeglądarka) jest jego bezpiecznym odpowiednikiem.
+   Nagłówek menu Konto pokazuje **zdjęcie profilowe** zalogowanego (jedno pobranie
+   z GitHuba, dekodowane przez systemowy WIC do BGRA i rysowane pędzlem bitmapowym
+   D2D; cache w `avatar.img`, po restarcie bez ruchu sieci), nazwę i wiek synchronizacji.
 5. **Budżet ruchu** (`spectre-sync::budget`): księga połączeń z 24 h (plik `traffic.txt`),
    minimalny odstęp między cyklami 30 s, twarde progi 120 połączeń/h, 1200/dobę,
    500 MB/dobę, **predykcja** — tempo z ostatniej godziny rzutowane na dobę rozciąga

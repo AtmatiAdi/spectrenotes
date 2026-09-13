@@ -18,7 +18,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use spectre_shell_win::{secret, window};
+use spectre_shell_win::image::Image;
+use spectre_shell_win::{image, secret, window};
 use spectre_sync::{AuthorName, Budget, BudgetStatus, Git, GitError, SyncReport, Transfer};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
@@ -54,6 +55,8 @@ pub enum Event {
     },
     LoggedIn(String),
     LoggedOut,
+    /// Avatar zalogowanego (z GitHuba albo z pamieci podrecznej) - do renderera.
+    Avatar(Image),
     /// Cykl odlozony przez budzet ruchu - do kiedy (unix s).
     Deferred {
         until: u64,
@@ -93,6 +96,8 @@ pub struct SyncWorker {
     pub last: String,
     /// Trwajace logowanie: kod do wpisania.
     pub device_code: Option<String>,
+    /// Ostatnia udana synchronizacja ze zdalnym (fetch/push) - do "sync 3 min temu".
+    pub last_remote_ok: Option<std::time::Instant>,
 }
 
 /// Sciezki i ustawienia stale dla watku.
@@ -101,6 +106,7 @@ struct Ctx {
     author: AuthorName,
     token_path: PathBuf,
     budget_path: PathBuf,
+    avatar_path: PathBuf,
     client_id: String,
     repo_name: String,
     hwnd_raw: isize,
@@ -125,6 +131,7 @@ impl SyncWorker {
             author: author.clone(),
             token_path: data_dir.join("github.token"),
             budget_path: data_dir.join("traffic.txt"),
+            avatar_path: data_dir.join("avatar.img"),
             client_id: client_id.to_string(),
             repo_name: github::repo_name(&space_name),
             // HWND to wskaznik - przenosimy jako liczbe, okno zyje dluzej niz watek.
@@ -141,6 +148,7 @@ impl SyncWorker {
             status: Status::default(),
             last: String::new(),
             device_code: None,
+            last_remote_ok: None,
         }
     }
 
@@ -161,6 +169,9 @@ impl SyncWorker {
                     self.pending = self.pending.saturating_sub(1);
                 }
                 Event::Skipped => self.pending = self.pending.saturating_sub(1),
+                Event::Synced(r) if r.transfer.remote_ops > 0 => {
+                    self.last_remote_ok = Some(std::time::Instant::now());
+                }
                 Event::DeviceCode { code, .. } => self.device_code = Some(code.clone()),
                 Event::LoggedIn(_) | Event::LoggedOut => self.device_code = None,
                 _ => {}
@@ -191,7 +202,7 @@ fn wake(hwnd_raw: isize) {
 
 fn worker(ctx: Ctx, jobs: Receiver<Job>, events: Sender<Event>) {
     let mut budget = Budget::load(&ctx.budget_path);
-    let mut login: Option<String> = None;
+    let mut session = Session::default();
     let mut queue = VecDeque::new();
     loop {
         if queue.is_empty() {
@@ -215,7 +226,7 @@ fn worker(ctx: Ctx, jobs: Receiver<Job>, events: Sender<Event>) {
         let Some(job) = queue.pop_front() else {
             continue;
         };
-        let out = run(&ctx, &mut budget, &mut login, job, &events);
+        let out = run(&ctx, &mut budget, &mut session, job, &events);
         for e in out {
             if events.send(e).is_err() {
                 return;
@@ -225,13 +236,21 @@ fn worker(ctx: Ctx, jobs: Receiver<Job>, events: Sender<Event>) {
     }
 }
 
+/// Stan watku miedzy zadaniami: kto jest zalogowany i czy avatar juz poszedl do okna.
+#[derive(Default)]
+struct Session {
+    login: Option<String>,
+    avatar_sent: bool,
+}
+
 fn run(
     ctx: &Ctx,
     budget: &mut Budget,
-    login: &mut Option<String>,
+    session: &mut Session,
     job: Job,
     events: &Sender<Event>,
 ) -> Vec<Event> {
+    let login = &mut session.login;
     let mut out = Vec::new();
     let token = secret::load(&ctx.token_path);
     let git = match Git::open_or_init(&ctx.root, &ctx.author) {
@@ -247,11 +266,17 @@ fn run(
     // Login znamy z tokenu; sprawdzamy raz (i po kazdej zmianie tokenu).
     if login.is_none() {
         if let Some(t) = &token {
-            match github::user_login(t) {
-                Ok(l) => *login = Some(l),
+            match github::user_info(t) {
+                Ok(u) => {
+                    *login = Some(u.login.clone());
+                    if !session.avatar_sent {
+                        session.avatar_sent = avatar(ctx, budget, &u, &mut out);
+                    }
+                }
                 Err(GitError::Auth(_)) => {
                     // Token nieaktualny - zapominamy, uzytkownik zaloguje sie od nowa.
                     let _ = secret::store(&ctx.token_path, None);
+                    let _ = std::fs::remove_file(&ctx.avatar_path);
                     out.push(Event::Error(
                         "token GitHub wygasl - zaloguj sie ponownie".into(),
                     ));
@@ -291,20 +316,24 @@ fn run(
                 spawn_device_login(ctx, events.clone());
             }
         }
-        Job::SetToken(t) => match github::user_login(&t) {
-            Ok(l) => {
+        Job::SetToken(t) => match github::user_info(&t) {
+            Ok(u) => {
                 if let Err(e) = secret::store(&ctx.token_path, Some(&t)) {
                     out.push(Event::Error(format!("zapis tokenu: {e}")));
                 } else {
-                    *login = Some(l.clone());
-                    out.push(Event::LoggedIn(l));
+                    *login = Some(u.login.clone());
+                    let _ = std::fs::remove_file(&ctx.avatar_path);
+                    session.avatar_sent = avatar(ctx, budget, &u, &mut out);
+                    out.push(Event::LoggedIn(u.login));
                 }
             }
             Err(e) => out.push(Event::Error(format!("token odrzucony: {e}"))),
         },
         Job::Logout => {
             let _ = secret::store(&ctx.token_path, None);
+            let _ = std::fs::remove_file(&ctx.avatar_path);
             *login = None;
+            session.avatar_sent = false;
             out.push(Event::LoggedOut);
         }
     }
@@ -423,4 +452,44 @@ fn spawn_device_login(ctx: &Ctx, events: Sender<Event>) {
             };
             wake(hwnd_raw);
         });
+}
+
+/// Avatar do naglowka menu: z pamieci podrecznej (`avatar.img`), a gdy jej
+/// nie ma - z GitHuba (jedno polaczenie, liczone do budzetu). Zwraca, czy
+/// obrazek poszedl do okna; nieudane pobranie nie jest bledem sync.
+fn avatar(ctx: &Ctx, budget: &mut Budget, user: &github::User, out: &mut Vec<Event>) -> bool {
+    let bytes = match std::fs::read(&ctx.avatar_path) {
+        Ok(b) if !b.is_empty() => b,
+        _ => {
+            if !budget.allowed(now_unix()) {
+                return false;
+            }
+            match github::fetch_avatar(&user.avatar_url) {
+                Ok(b) => {
+                    budget.record(
+                        now_unix(),
+                        Transfer {
+                            sent: 0,
+                            received: b.len() as u64,
+                            remote_ops: 1,
+                        },
+                    );
+                    let _ = std::fs::write(&ctx.avatar_path, &b);
+                    b
+                }
+                Err(_) => return false,
+            }
+        }
+    };
+    match image::decode(&bytes, github::AVATAR_PX) {
+        Ok(img) => {
+            out.push(Event::Avatar(img));
+            true
+        }
+        Err(_) => {
+            // Uszkodzony plik - nastepnym razem pobierzemy od nowa.
+            let _ = std::fs::remove_file(&ctx.avatar_path);
+            false
+        }
+    }
 }

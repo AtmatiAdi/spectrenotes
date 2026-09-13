@@ -18,8 +18,22 @@
 
 use spectre_render::{DimMask, DIM_STEP};
 
-/// Rozjasnianie od zera po starcie, s - fala nie ma sie pojawic skokowo.
-const FADE_IN_S: f32 = 4.0;
+/// Wejscie ma byc spokojne: najpierw cala notatka bardzo powoli przygasa do
+/// jasnosci z ustawien (`DIM_IN_S`), pasy zaczynaja sie pojawiac dopiero po
+/// `STRIPES_DELAY_S` i dochodza do pelnego krycia przez `STRIPES_IN_S`; w tym
+/// czasie plyna tez wolniej (od `SLOW_START` predkosci docelowej). Obie rampy
+/// to smoothstep - zerowa pochodna na starcie, wiec poczatku nie widac.
+const DIM_IN_S: f32 = 25.0;
+const STRIPES_DELAY_S: f32 = 12.0;
+const STRIPES_IN_S: f32 = 35.0;
+const SLOW_START: f32 = 0.25;
+
+/// Smoothstep 0..1 dla `t / len`, obcinany.
+#[inline]
+fn ease(t: f32, len: f32) -> f32 {
+    let x = (t / len).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
 
 /// Warstwa rownoleglych pasow. Dlugosci w px ekranu, katy w rad, czas w s.
 struct Layer {
@@ -57,11 +71,13 @@ impl Layer {
     /// podniesiony cosinus o szerokosci `duty` wokol srodka pasa (gladki brzeg,
     /// plaskie zero na styku). Liczone dla kazdej probki co tik, wiec bez funkcji
     /// z libm i bez galezi - sama arytmetyka, ktora kompilator moze zwektoryzowac.
-    fn row(&self, y: f32, step: f32, through: &mut [f32]) {
+    /// `gain` skaluje krycie wszystkich pasow (rampa wejscia).
+    fn row(&self, y: f32, step: f32, gain: f32, through: &mut [f32]) {
         use std::f32::consts::{PI, TAU};
         let (s, c) = self.sc;
         let half = 0.5 * self.duty;
         let inv_half = 1.0 / half;
+        let amp = self.amp * gain;
         let (u0, v0) = (y * s + self.shift, y * c);
         for (i, t) in through.iter_mut().enumerate() {
             let x = i as f32 * step;
@@ -71,7 +87,7 @@ impl Layer {
                 + self.wave_amp * fast_sin(TAU * v * self.inv_wave_len + self.wave_phase);
             let d = (fract_pos(u * self.inv_period) - 0.5).abs().min(half);
             // Podniesiony cosinus; d obciete do `half` daje cos(pi) = -1, czyli 0.
-            let a = self.amp * 0.5 * (1.0 + fast_sin(PI * d * inv_half + 0.5 * PI));
+            let a = amp * 0.5 * (1.0 + fast_sin(PI * d * inv_half + 0.5 * PI));
             *t *= 1.0 - a;
         }
     }
@@ -231,18 +247,27 @@ impl Waves {
         }
     }
 
-    /// Do HUD-u: liczba warstw i postep rozjasniania 0..1.
+    /// Do HUD-u: liczba warstw i postep wejscia 0..1 (1 = pasy w pelnym kryciu).
     pub fn status(&self) -> (usize, f32) {
-        (self.layers.len(), (self.t / FADE_IN_S).clamp(0.0, 1.0))
+        (self.layers.len(), self.stripes_gain())
+    }
+
+    /// Rampa pasow: 0 przez `STRIPES_DELAY_S`, potem smoothstep do 1.
+    fn stripes_gain(&self) -> f32 {
+        ease(self.t - STRIPES_DELAY_S, STRIPES_IN_S)
     }
 
     /// Krok symulacji o `dt` sekund. Zwraca maske do narysowania.
     pub fn step(&mut self, dt: f32) -> &DimMask {
         self.t += dt;
-        let fade = (self.t / FADE_IN_S).clamp(0.0, 1.0);
+        let gain = self.stripes_gain();
+        // Jasnosc miedzy pasami: od 1 powoli do wartosci z ustawien.
+        let b = 1.0 - (1.0 - self.brightness) * ease(self.t, DIM_IN_S);
+        // Pasy ruszaja wolno i przyspieszaja razem z kryciem.
+        let speed = SLOW_START + (1.0 - SLOW_START) * gain;
         for l in &mut self.layers {
-            l.shift += l.speed * dt;
-            l.wave_phase += l.wave_speed * dt;
+            l.shift += l.speed * speed * dt;
+            l.wave_phase += l.wave_speed * speed * dt;
         }
         let step = DIM_STEP as f32;
         let (mw, mh) = (self.mask.w as usize, self.mask.h as usize);
@@ -253,13 +278,12 @@ impl Waves {
             // wiersza mnozona przez (1 - krycie) kazdej warstwy.
             self.row_buf.fill(1.0);
             for l in &self.layers {
-                l.row(y, step, &mut self.row_buf);
+                l.row(y, step, gain, &mut self.row_buf);
             }
             let row = &mut self.mask.alpha[j * mw..(j + 1) * mw];
-            // Miedzy pasami swieci `brightness`, pod pasem odpowiednio mniej.
-            let b = self.brightness;
+            // Miedzy pasami swieci `b`, pod pasem odpowiednio mniej.
             for (out, &through) in row.iter_mut().zip(self.row_buf.iter()) {
-                *out = ((1.0 - through * b) * fade * 255.0 + 0.5) as u8;
+                *out = ((1.0 - through * b) * 255.0 + 0.5) as u8;
             }
         }
         &self.mask
@@ -273,11 +297,30 @@ mod tests {
     #[test]
     fn fale_rozjasniaja_sie_stopniowo_i_plyna() {
         let mut w = Waves::new((2880, 1800), 7);
+        w.set_brightness(0.3);
+        let range = |m: &DimMask| {
+            m.alpha
+                .iter()
+                .fold((255u8, 0u8), |(lo, hi), &a| (lo.min(a), hi.max(a)))
+        };
         let first = w.step(0.06).clone();
         assert_eq!(first.alpha.len(), (first.w * first.h) as usize);
-        // Na poczatku prawie niewidoczne (fade-in), po 12 s pelne krycie.
-        assert!(first.alpha.iter().all(|&a| a < 13));
-        for _ in 0..200 {
+        // Start niewidoczny: smoothstep ma zerowa pochodna, pasy jeszcze spia.
+        assert!(first.alpha.iter().all(|&a| a == 0));
+        // Po 3 s: lekkie, jednolite przygaszenie, zadnych pasow.
+        for _ in 0..49 {
+            w.step(0.06);
+        }
+        let (lo, hi) = range(w.step(0.06));
+        assert!(hi > 0 && hi < 40 && hi - lo <= 1, "3 s: {lo}..{hi}");
+        // Po ~12 s pasow nadal nie ma (opoznienie), notatka przygasa dalej.
+        for _ in 0..149 {
+            w.step(0.06);
+        }
+        let (lo, hi) = range(w.step(0.06));
+        assert!(hi > 40 && hi - lo <= 1, "12 s: {lo}..{hi}");
+        // Po minucie: pelne wejscie.
+        for _ in 0..800 {
             w.step(0.06);
         }
         let later = w.step(0.06).clone();
@@ -285,9 +328,10 @@ mod tests {
             later.alpha.iter().any(|&a| a > 250),
             "glowny pas gasi do zera"
         );
+        // 30 % jasnosci = krycie 0.7 -> 178.
         assert!(
-            later.alpha.iter().any(|&a| a < 5),
-            "obok pasa pelna jasnosc"
+            later.alpha.iter().any(|&a| (172..=184).contains(&a)),
+            "obok pasa jasnosc z ustawien"
         );
         // Pasy sie przemieszczaja: po kolejnej sekundzie maska jest inna.
         for _ in 0..16 {
@@ -321,6 +365,8 @@ mod tests {
             let mut w = Waves::new((1920, 1152), seed);
             let n = (w.mask.w * w.mask.h) as usize;
             let mut hit = vec![false; n];
+            // Pierwsza minuta to wejscie - pokrycie liczymy od pelnych pasow.
+            w.step(60.0);
             for _ in 0..(300.0 / 0.25) as usize {
                 let m = w.step(0.25);
                 for (h, &a) in hit.iter_mut().zip(m.alpha.iter()) {
