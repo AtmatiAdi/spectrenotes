@@ -8,15 +8,15 @@ formatem operacji**:
 
 ```
        rysowanie                        co ~10 s / na idle
-  ┌──────────────┐   QUIC 1-5 ms   ┌──────────────┐   git   ┌────────────┐
+  ┌──────────────┐   TCP <1 ms     ┌──────────────┐   git   ┌────────────┐
   │  peer A      │ ◄─────────────► │  peer B      │ ◄─────► │ GitHub     │
-  │  op-log      │   Tailscale/LAN │  op-log      │  push   │ (private)  │
+  │  op-log      │   LAN/Tailscale │  op-log      │  push   │ (private)  │
   └──────────────┘                 └──────────────┘         └────────────┘
         │                                                          ▲
         └────────────────────── git push ──────────────────────────┘
 ```
 
-Te same bajty operacji lecą po QUIC i lądują w pliku. Jeden format: `spectre-proto`.
+Te same bajty operacji lecą po TCP do peera i lądują w pliku. Jeden format: `spectre-proto`.
 
 ## Układ repozytorium (space)
 
@@ -34,6 +34,7 @@ space-repo/
           000001.ops
         kuba@surface/
           000001.ops
+          via-adi@spectre-x360-000001.ops   # operacje kuby odebrane na zywo przez adi@spectre-x360
       snapshots/
         000000123456-8f3a.snap   # stan do lamporta N; nazwa zawiera hash
   assets/
@@ -50,7 +51,9 @@ Trzy własności, działające razem:
 1. **Pliki `.ops` są append-only.** Nic nie jest nadpisywane ani kasowane.
 2. **Autor to para (użytkownik, urządzenie).** `adi@spectre-x360` i `adi@desktop`
    to różni autorzy, czyli różne pliki. Nawet ja sam, pracując na dwóch maszynach
-   jednocześnie, nie mogę wejść sobie w drogę.
+   jednocześnie, nie mogę wejść sobie w drogę. Operacje odebrane na żywo od innych
+   odbiorca odkłada do **własnego** pliku `via-<odbiorca>-*.ops` w katalogu autora —
+   nadal jeden pisarz na plik (ADR 0007).
 3. **Snapshoty mają hash w nazwie**, więc każdy jest nowym plikiem, nigdy modyfikacją.
 
 Skoro dwóch autorów nigdy nie dotyka tego samego pliku, `git merge` sprowadza się
@@ -86,18 +89,24 @@ Kompresja próbek: pozycje jako delty w stałym punkcie (1/32 px), zigzag + vari
 nacisk 10 bitów, tilt po 8 bitów na oś. Realnie 3–4 bajty na próbkę zamiast 24.
 Przy 240 Hz to około 1 MB na godzinę nieprzerwanego rysowania.
 
-## Warstwa live
+## Warstwa live (Etap 6, ADR 0007)
 
-- **Transport**: QUIC (`quinn`). Strumień niezawodny dla operacji, datagramy
-  zawodne dla obecności (kursor, hover pióra) — obecność się nie starzeje
-  w sensie trwałym, więc zgubienie datagramu jest bez znaczenia.
-- **Zdalnie**: adres Tailscale peera. Tailscale daje szyfrowanie i tożsamość,
-  więc nie budujemy własnego PKI.
-- **LAN**: rozgłoszenie mDNS `_spectrenotes._udp`, działa bez internetu.
-- **Wysyłka**: operacje lecą batchami co ~8 ms **w trakcie** stroke'a, żeby druga
-  osoba widziała kreskę na bieżąco, a nie dopiero po jej zakończeniu.
-- **Dołączenie w trakcie**: peer prosi o stan od lamporta N i dostaje snapshot
-  plus ogon operacji. To dokładnie ta sama ścieżka co wczytanie z dysku.
+- **Transport**: TCP z `TCP_NODELAY` (`std::net`), ramki = te same rekordy, co
+  w pliku `.ops`. QUIC odłożony: w LAN TCP daje ~0,1 ms, a przez Tailscale jedzie
+  w tunelu WireGuard; `quinn` to tokio + rustls w binarce bez powodu.
+- **LAN**: własny beacon multicast `239.255.94.94:47941` co 2 s (nazwa space'u,
+  autor, port TCP, id instancji); łączy instancja o mniejszym id. Działa bez
+  internetu. Rozgłaszanie tylko przy widocznym oknie (Z2).
+- **Zdalnie**: adres Tailscale peera (`Job::Connect`) — Tailscale daje szyfrowanie
+  i tożsamość, więc nie budujemy własnego PKI.
+- **Mokra kreska**: paczka próbek na każdy komunikat pióra (~4 ms), z kolorem
+  i grubością; odbiorca rysuje ją tym samym `StrokeBuilder`, co własną. Obecność
+  (rysik peera) tym samym strumieniem.
+- **Dołączenie w trakcie**: wymiana `Summary` — (notatka, autor) → ostatni lamport —
+  i dosłanie różnicy. Ta sama ścieżka co po merge'u gita.
+- **Zdalne operacje na dysku**: `ops/<autor>/via-<ja>-000001.ops` — plik, który
+  pisze tylko ta maszyna; niezmiennik „jeden plik = jeden pisarz" zostaje.
+  Odczyt deduplikuje po `(autor, lamport)`.
 
 ## Pętla synchronizacji
 
@@ -105,7 +114,7 @@ Przy 240 Hz to około 1 MB na godzinę nieprzerwanego rysowania.
 operacja lokalna
    ├─► pamięć (render widzi natychmiast)
    ├─► bufor .ops        → fsync na idle
-   └─► QUIC → peers      → batch co 8 ms
+   └─► TCP → peers       → co komunikat piora (mokra kreska), operacja na koniec
 
 10 s po ostatniej zmianie:
    git add -A, commit              (wątek sync, nigdy nie blokuje renderu)

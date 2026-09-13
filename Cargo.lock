@@ -535,6 +535,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
 name = "spectre-app"
 version = "0.1.0"
 dependencies = [
@@ -593,6 +603,7 @@ name = "spectre-sync"
 version = "0.1.0"
 dependencies = [
  "git2",
+ "socket2",
  "spectre-core",
  "spectre-proto",
 ]

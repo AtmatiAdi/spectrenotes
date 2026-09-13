@@ -132,12 +132,23 @@ pub enum UiFont {
     Big,
 }
 
+/// Czubek cudzej kreski w trakcie rysowania (warstwa live), we wlasnym kolorze.
+#[derive(Debug, Clone, Default)]
+pub struct WetTail {
+    pub segs: Vec<Segment>,
+    pub color: Rgba,
+}
+
 /// Co narysowac na wierzchu klatki, poza dokumentem.
 #[derive(Default, Clone, Copy)]
 pub struct Overlay<'a> {
     pub hud: Option<&'a str>,
     /// Okrag gumki: (x, y, promien) w pikselach ekranu.
     pub cursor: Option<(f32, f32, f32)>,
+    /// Czubki kresek innych osob (live) - jak `tail`, ale kazdy w swoim kolorze.
+    pub tails: &'a [WetTail],
+    /// Rysiki innych osob: (x, y) w pikselach ekranu, mala kropka.
+    pub marks: &'a [(f32, f32)],
     pub ui: &'a [UiPrim],
     /// Fale lokalnego przyciemnienia (Z7, po bezczynnosci), na samym wierzchu.
     pub dim: Option<&'a DimMask>,
@@ -810,12 +821,27 @@ impl Renderer {
             return Ok(());
         };
         let brush = self.brush(color)?;
+        let mut tail_brushes = Vec::with_capacity(overlay.tails.len());
+        for t in overlay.tails {
+            tail_brushes.push(self.brush(t.color)?);
+        }
         unsafe {
             self.ctx.SetTarget(&back);
             self.ctx.BeginDraw();
             self.ctx
                 .DrawImage(&dry, None, None, Default::default(), Default::default());
+            for (t, b) in overlay.tails.iter().zip(&tail_brushes) {
+                self.draw_segments(&t.segs, b, cam);
+            }
             self.draw_segments(tail, &brush, cam);
+            for &(x, y) in overlay.marks {
+                let e = D2D1_ELLIPSE {
+                    point: Vector2 { X: x, Y: y },
+                    radiusX: 4.0,
+                    radiusY: 4.0,
+                };
+                self.ctx.FillEllipse(&e, &self.cursor_brush);
+            }
             if let Some((x, y, r)) = overlay.cursor {
                 let e = D2D1_ELLIPSE {
                     point: Vector2 { X: x, Y: y },

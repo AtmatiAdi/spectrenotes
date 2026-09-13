@@ -11,3 +11,6 @@ spectre-proto = { path = "../spectre-proto" }
 # libgit2 statycznie w binarce (ADR 0006): bez zaleznosci od gita na maszynie.
 # `https` na Windows = WinHTTP (systemowe TLS, proxy, bez OpenSSL).
 git2 = { version = "0.21", default-features = false, features = ["https", "vendored-libgit2"] }
+# Multicast do wykrywania peerow w LAN: dwie instancje na jednej maszynie musza
+# dzielic port (SO_REUSEADDR), a std tego nie wystawia. Malutki, bez zaleznosci.
+socket2 = "0.6"

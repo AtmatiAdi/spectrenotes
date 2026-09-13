@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
 use spectre_core::hittest::stroke_hit;
-use spectre_core::{Bbox, Camera, Document, Rgba, StrokeData, StrokeId};
+use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
-use spectre_render::{Overlay, PresentMode, Renderer, UiPrim};
+use spectre_render::{Overlay, PresentMode, Renderer, UiPrim, WetTail};
 use spectre_shell_win::tray::{self, Tray, HOTKEY_TOGGLE, WM_TRAY};
 use spectre_shell_win::window::{self, Fullscreen};
 use spectre_shell_win::{PenBatch, PenButtons, PenDecoder};
+use spectre_sync::live::{Event as LiveEvent, Job as LiveJob};
 use spectre_sync::{AuthorName, NoteStore, Space};
 use windows::core::Result;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -20,6 +22,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::amoled::Waves;
 use crate::config::Config;
+use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, Setting};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
@@ -55,6 +58,8 @@ const WAVES_DIM_PCT_DEFAULT: u32 = 30;
 const WAVES_TICK_MS: u32 = 60;
 /// Ruch hoveru mniejszy niz tyle px nie liczy sie jako wejscie uzytkownika.
 const HOVER_ACTIVITY_PX: f32 = 12.0;
+/// Pozycja rysika do peerow (obecnosc) najwyzej co tyle ms.
+const CURSOR_SHARE_MS: u128 = 40;
 const ZOOM_MIN: f32 = 0.25;
 const ZOOM_MAX: f32 = 4.0;
 
@@ -77,6 +82,13 @@ enum Dirty {
     /// Fragment canvasu do przerysowania (po wymazaniu).
     Region(Bbox),
     Full,
+}
+
+/// Kreska innej osoby w trakcie rysowania: ten sam `StrokeBuilder`, co dla
+/// wlasnej - odcinki ostateczne ida do warstwy suchej, czubek na wierzch.
+struct RemoteWet {
+    builder: StrokeBuilder,
+    color: Rgba,
 }
 
 impl Dirty {
@@ -164,6 +176,14 @@ pub struct App {
     sync_booted: bool,
     /// Merge zmienil biezaca notatke w trakcie akcji - przeladuj po jej koncu.
     reload_pending: bool,
+    /// Live (Etap 6): peerzy w LAN, mokre kreski innych, ich rysiki.
+    live: LiveWorker,
+    remote_wet: HashMap<AuthorId, RemoteWet>,
+    peer_cursors: HashMap<AuthorId, (f32, f32)>,
+    /// Numer paczki probek biezacej kreski (0 = poczatek) - do `LiveJob::Wet`.
+    wet_seq: u32,
+    cursor_shared: Instant,
+    wet_tails: Vec<WetTail>,
     ui_prims: Vec<UiPrim>,
     _tray: Tray,
     hidden: bool,
@@ -270,6 +290,8 @@ impl App {
             .unwrap_or(crate::github::CLIENT_ID)
             .to_string();
         let sync = SyncWorker::start(hwnd, space.root(), &author, &data_dir, &client_id);
+        let live_enabled = config.get("live") != Some("0");
+        let live = LiveWorker::start(hwnd, space.root(), &author, live_enabled);
         let mut cam = Camera::default();
         cam.fit_width(w as f32);
 
@@ -317,6 +339,12 @@ impl App {
             sync,
             sync_booted: false,
             reload_pending: false,
+            live,
+            remote_wet: HashMap::new(),
+            peer_cursors: HashMap::new(),
+            wet_seq: 0,
+            cursor_shared: Instant::now(),
+            wet_tails: Vec::new(),
             ui_prims: Vec::with_capacity(64),
             _tray: tray,
             hidden: false,
@@ -397,16 +425,62 @@ impl App {
     }
 
     fn feed(&mut self, batch: &PenBatch) {
+        let share = self.live.has_peers();
+        let mut shared = Vec::with_capacity(if share { batch.samples.len() } else { 0 });
         for s in &batch.samples {
             let (x, y) = self.cam.to_canvas(s.x, s.y);
-            self.stroke.push(Sample { x, y, ..*s });
+            let s = Sample { x, y, ..*s };
+            self.stroke.push(s);
+            if share {
+                shared.push(s);
+            }
+        }
+        // Mokra kreska do peerow paczka po paczce (co komunikat piora, ~4 ms) -
+        // druga osoba widzi ja w trakcie, nie dopiero po oderwaniu rysika.
+        if share && !shared.is_empty() {
+            self.live.send(LiveJob::Wet {
+                note: self.notes[self.note_idx].id.clone(),
+                seq: self.wet_seq,
+                data: StrokeData {
+                    tool: 0,
+                    color: self.color(),
+                    base_width: self.ink.base_width,
+                    samples: shared,
+                },
+            });
+            self.wet_seq += 1;
         }
     }
 
     fn begin_stroke(&mut self, batch: &PenBatch) {
         self.stroke.clear();
         self.mode = Mode::Draw;
+        self.wet_seq = 0;
         self.feed(batch);
+    }
+
+    /// Pozycja rysika nad notatka do peerow (obecnosc), z ograniczeniem tempa.
+    fn share_cursor(&mut self, sx: f32, sy: f32) {
+        if !self.live.has_peers() || self.cursor_shared.elapsed().as_millis() < CURSOR_SHARE_MS {
+            return;
+        }
+        self.cursor_shared = Instant::now();
+        let (x, y) = self.cam.to_canvas(sx, sy);
+        self.live.send(LiveJob::Cursor {
+            note: self.notes[self.note_idx].id.clone(),
+            x,
+            y,
+        });
+    }
+
+    fn hide_cursor_from_peers(&mut self) {
+        if self.live.has_peers() {
+            self.live.send(LiveJob::Cursor {
+                note: self.notes[self.note_idx].id.clone(),
+                x: f32::NAN,
+                y: f32::NAN,
+            });
+        }
     }
 
     /// Koniec kreski: do dokumentu i na dysk. Warstwa sucha dostaje ja przez
@@ -727,6 +801,15 @@ impl App {
                 self.stop_waves();
                 self.arm_amoled_timers();
             }
+            Setting::Live => {
+                let on = !self.live.enabled;
+                self.live.set_enabled(on);
+                self.remote_wet.clear();
+                self.peer_cursors.clear();
+                self.dirty = Dirty::Full;
+                self.config.set("live", if on { "1" } else { "0" });
+                self.config.save();
+            }
             Setting::WavesDim => {
                 self.waves_dim_pct = match self.waves_dim_pct {
                     0 => 10,
@@ -822,6 +905,14 @@ impl App {
         // Do systemu od razu (przezyje crash aplikacji); fsync po ciszy
         // (przezyje utrate zasilania).
         let _ = self.store.flush();
+        // Te same bajty do peerow w LAN (po zapisie: watek live czyta plik,
+        // gdy peer jest w tyle).
+        if !ops.is_empty() {
+            self.live.send(LiveJob::Local {
+                note: self.notes[self.note_idx].id.clone(),
+                ops: ops.to_vec(),
+            });
+        }
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_SYNC, SYNC_IDLE_MS, None);
             SetTimer(Some(self.hwnd), TIMER_GIT, GIT_IDLE_MS, None);
@@ -879,6 +970,8 @@ impl App {
                 self.renderer.clear_geometry();
                 self.doc = doc;
                 self.note_idx = idx;
+                self.remote_wet.clear();
+                self.peer_cursors.clear();
                 self.cam = Camera::default();
                 self.fit_width();
                 self.status.clear();
@@ -903,6 +996,7 @@ impl App {
                 self.store = store;
                 self.renderer.clear_geometry();
                 self.doc = doc;
+                self.remote_wet.clear();
                 self.dirty = Dirty::Full;
                 self.sync_entry();
             }
@@ -1028,6 +1122,9 @@ impl App {
         for id in &ids {
             self.space.invalidate_meta(id);
         }
+        // Peerzy w LAN dostana to, co przyszlo z GitHuba (np. od maszyny bez live).
+        self.live
+            .send(LiveJob::Rescan(ids.iter().cloned().collect()));
         let current = self.notes[self.note_idx].id.clone();
         if let Ok(notes) = load_entries(&self.space) {
             if !notes.is_empty() {
@@ -1038,6 +1135,134 @@ impl App {
         self.folders = self.space.list_folders();
         if ids.contains(&current) {
             self.reload_current();
+        }
+    }
+
+    // ----- live (Etap 6) -----------------------------------------------------
+
+    /// Zdarzenia z watku live (po `WM_LIVE`): operacje peerow do dokumentu,
+    /// ich mokre kreski do warstwy mokrej, rysiki do overlayu.
+    fn on_live_events(&mut self) {
+        let current = self.notes[self.note_idx].id.clone();
+        let mut repaint = false;
+        let mut list_changed = false;
+        for ev in self.live.poll() {
+            match ev {
+                LiveEvent::Ops {
+                    note,
+                    author,
+                    ops,
+                    new_note,
+                } => {
+                    if new_note || !self.notes.iter().any(|e| e.id == note) {
+                        list_changed = true;
+                    }
+                    if note != current {
+                        if ops.iter().any(|o| matches!(o.kind, OpKind::Meta { .. })) {
+                            self.space.invalidate_meta(&note);
+                            list_changed = true;
+                        }
+                        continue;
+                    }
+                    // Kreska skonczona: jej mokra wersja schodzi, dokument przejmuje.
+                    if self.remote_wet.remove(&author).is_some() {
+                        self.dirty = Dirty::Full;
+                    }
+                    for op in &ops {
+                        let erased = match &op.kind {
+                            OpKind::StrokeErase { id } => self.doc.get(*id).map(Bbox::of),
+                            _ => None,
+                        };
+                        if !self.doc.apply(op) {
+                            continue;
+                        }
+                        repaint = true;
+                        match &op.kind {
+                            OpKind::StrokeAdd { data, .. } => {
+                                self.dirty = self.dirty.add_region(Bbox::of(data));
+                            }
+                            OpKind::StrokeErase { .. } => match erased {
+                                Some(b) => self.dirty = self.dirty.add_region(b),
+                                None => self.dirty = Dirty::Full,
+                            },
+                            OpKind::Meta { .. } => {
+                                self.sync_entry();
+                                list_changed = true;
+                            }
+                        }
+                    }
+                }
+                LiveEvent::Wet {
+                    note,
+                    author,
+                    seq,
+                    data,
+                    ..
+                } => {
+                    if note != current {
+                        continue;
+                    }
+                    let w = self.remote_wet.entry(author).or_insert_with(|| RemoteWet {
+                        builder: StrokeBuilder::new(InkConfig::default()),
+                        color: data.color,
+                    });
+                    if seq == 0 {
+                        w.builder.clear();
+                    }
+                    let mut cfg = *w.builder.config();
+                    if (cfg.base_width - data.base_width).abs() > 1e-3 {
+                        cfg.base_width = data.base_width;
+                        w.builder.set_config(cfg);
+                    }
+                    w.color = data.color;
+                    for s in &data.samples {
+                        w.builder.push(*s);
+                    }
+                    repaint = true;
+                }
+                LiveEvent::Cursor { note, author, x, y } => {
+                    if x.is_nan() || note != current {
+                        self.peer_cursors.remove(&author);
+                    } else {
+                        self.peer_cursors.insert(author, (x, y));
+                    }
+                    repaint = true;
+                }
+                LiveEvent::Peer {
+                    author_dir,
+                    connected,
+                    ..
+                } => {
+                    self.status = if connected {
+                        format!("LAN: dolaczyl {author_dir}")
+                    } else {
+                        format!("LAN: odszedl {author_dir}")
+                    };
+                    if !connected {
+                        let gone = AuthorId::from_name(&author_dir);
+                        if self.remote_wet.remove(&gone).is_some() {
+                            self.dirty = Dirty::Full;
+                        }
+                        self.peer_cursors.remove(&gone);
+                    }
+                    repaint = true;
+                }
+                LiveEvent::Error(e) => self.status = format!("live: {}", one_line(&e, 90)),
+            }
+        }
+        if list_changed {
+            let current = self.notes[self.note_idx].id.clone();
+            if let Ok(notes) = load_entries(&self.space) {
+                if !notes.is_empty() {
+                    self.notes = notes;
+                }
+            }
+            self.note_idx = self.notes.iter().position(|e| e.id == current).unwrap_or(0);
+            self.folders = self.space.list_folders();
+            repaint = true;
+        }
+        if repaint || self.menu.open || self.show_hud {
+            self.render();
         }
     }
 
@@ -1249,6 +1474,8 @@ impl App {
         self.save_placement();
         self.hidden = true;
         self.kill_amoled_timers();
+        self.live.send(LiveJob::Visible(false));
+        self.hide_cursor_from_peers();
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
@@ -1259,6 +1486,7 @@ impl App {
     fn show(&mut self) {
         self.show_requested = Some(Instant::now());
         self.hidden = false;
+        self.live.send(LiveJob::Visible(true));
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hwnd);
@@ -1311,6 +1539,29 @@ impl App {
             let _ = self.renderer.commit(&segs, self.color(), &self.cam);
             self.commit_buf = segs;
         }
+        // Mokre kreski peerow: tak samo jak wlasna - odcinki ostateczne do
+        // warstwy suchej, czubek na wierzch klatki.
+        let mut wet_tails = std::mem::take(&mut self.wet_tails);
+        wet_tails.clear();
+        for w in self.remote_wet.values_mut() {
+            self.commit_buf.clear();
+            w.builder.commit(&mut self.commit_buf);
+            if !self.commit_buf.is_empty() {
+                let _ = self.renderer.commit(&self.commit_buf, w.color, &self.cam);
+            }
+            let mut t = WetTail {
+                segs: Vec::new(),
+                color: w.color,
+            };
+            w.builder.tail(&mut t.segs);
+            wet_tails.push(t);
+        }
+        self.commit_buf.clear();
+        let marks: Vec<(f32, f32)> = self
+            .peer_cursors
+            .values()
+            .map(|&(x, y)| self.cam.to_screen(x, y))
+            .collect();
 
         let hud = if self.show_hud {
             Some(self.hud_text())
@@ -1336,6 +1587,7 @@ impl App {
         }
         if self.menu.open && self.waves.is_none() {
             let author = self.author.dir_name();
+            let live_line = self.live.status_line();
             // Pola wprost (nie metoda na `self`): `build` bierze &mut menu, stan czyta reszte.
             let ms = MenuState {
                 notes: &self.notes,
@@ -1359,6 +1611,8 @@ impl App {
                 sync_age_s: self.sync.last_remote_ok.map(|t| t.elapsed().as_secs()),
                 avatar: self.renderer.has_avatar(),
                 device_code: self.sync.device_code.as_deref(),
+                live: &live_line,
+                live_enabled: self.live.enabled,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -1381,6 +1635,8 @@ impl App {
             Overlay {
                 hud: hud.as_deref(),
                 cursor,
+                tails: &wet_tails,
+                marks: &marks,
                 ui: &prims,
                 dim,
             },
@@ -1394,6 +1650,7 @@ impl App {
         );
         self.tail_buf = tail;
         self.ui_prims = prims;
+        self.wet_tails = wet_tails;
         self.frame_ms = t0.elapsed().as_secs_f32() * 1000.0;
         self.frame_max_ms = self.frame_max_ms.max(self.frame_ms) * 0.98;
 
@@ -1419,7 +1676,8 @@ impl App {
              [1-6] kolor  [E] gumka  [[ ]] grubosc  [Ctrl+Z/Y] cofnij/ponow  [Home] gora  [Ctrl+kolko] zoom\n\
              [przycisk boczny]/[kolko] przewijanie   [PgUp/PgDn] notatki  [Ctrl+N] nowa   [Win+Shift+N] pokaz/ukryj\n\
              [F11] pelny ekran  [H] hud  [V] vsync  [T] przewijanie: {}  [Esc] ukryj  [Ctrl+Q] zakoncz\n\
-             git: {}{}",
+             git: {}
+             live: {}{}",
             self.note_idx + 1,
             self.notes.len(),
             self.doc.live_count(),
@@ -1453,6 +1711,7 @@ impl App {
                 "bez tearingu (czysty obraz)"
             },
             self.git_hud(),
+            self.live.hud_line(),
             if self.status.is_empty() {
                 String::new()
             } else {
@@ -1678,6 +1937,7 @@ pub unsafe extern "system" fn wndproc(
                         app.hover = true;
                         app.last_screen = pos;
                         app.activity_move(pos);
+                        app.share_cursor(pos.0, pos.1);
                         if changed && !more_pending {
                             app.render();
                         }
@@ -1694,6 +1954,8 @@ pub unsafe extern "system" fn wndproc(
                                 Mode::DragBar => app.toolbar.dragging = Some(app.last_screen),
                                 Mode::Idle => {}
                             }
+                            let (px, py) = app.last_screen;
+                            app.share_cursor(px, py);
                         }
                         if !more_pending {
                             app.render();
@@ -1740,6 +2002,7 @@ pub unsafe extern "system" fn wndproc(
         WM_POINTERLEAVE => {
             app.hover = false;
             app.buttons = PenButtons::default();
+            app.hide_cursor_from_peers();
             app.render();
             LRESULT(0)
         }
@@ -1882,6 +2145,10 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_SYNC => {
             app.on_sync_events();
+            LRESULT(0)
+        }
+        WM_LIVE => {
+            app.on_live_events();
             LRESULT(0)
         }
         WM_TIMER => {

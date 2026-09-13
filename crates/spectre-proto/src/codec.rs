@@ -88,12 +88,12 @@ fn decode_stroke_id(r: &mut Reader) -> Result<StrokeId, DecodeError> {
     })
 }
 
-fn encode_str(s: &str, out: &mut Vec<u8>) {
+pub fn encode_str(s: &str, out: &mut Vec<u8>) {
     put_u64(out, s.len() as u64);
     out.extend_from_slice(s.as_bytes());
 }
 
-fn decode_str(r: &mut Reader) -> Result<String, DecodeError> {
+pub fn decode_str(r: &mut Reader) -> Result<String, DecodeError> {
     let n = r.usize()?;
     let b = r.bytes(n)?;
     String::from_utf8(b.to_vec()).map_err(|_| DecodeError::BadUtf8)
@@ -114,7 +114,7 @@ fn q_tilt(t: f32) -> i64 {
     t.clamp(-90.0, 90.0).round() as i64
 }
 
-fn encode_stroke(s: &StrokeData, out: &mut Vec<u8>) {
+pub fn encode_stroke(s: &StrokeData, out: &mut Vec<u8>) {
     out.push(s.tool);
     out.extend_from_slice(&[s.color.r, s.color.g, s.color.b, s.color.a]);
     out.extend_from_slice(&s.base_width.to_le_bytes());
@@ -142,7 +142,7 @@ fn encode_stroke(s: &StrokeData, out: &mut Vec<u8>) {
     }
 }
 
-fn decode_stroke(r: &mut Reader) -> Result<StrokeData, DecodeError> {
+pub fn decode_stroke(r: &mut Reader) -> Result<StrokeData, DecodeError> {
     let tool = r.u8()?;
     let c = r.bytes(4)?;
     let color = Rgba {

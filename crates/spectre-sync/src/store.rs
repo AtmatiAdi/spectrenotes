@@ -67,8 +67,19 @@ impl Space {
 
     pub fn create_note(&self) -> io::Result<String> {
         let id = ulid::new();
-        fs::create_dir_all(self.root.join("notes").join(&id).join("ops"))?;
+        self.ensure_note(&id)?;
         Ok(id)
+    }
+
+    /// Katalog notatki o znanym id (przyszla od peera albo z gita). Idempotentne.
+    pub fn ensure_note(&self, id: &str) -> io::Result<()> {
+        if !ulid::is_valid(id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zly id notatki",
+            ));
+        }
+        fs::create_dir_all(self.root.join("notes").join(id).join("ops"))
     }
 
     pub fn note_dir(&self, id: &str) -> PathBuf {
@@ -231,9 +242,12 @@ impl NoteStore {
 
         let own_dir = ops_dir.join(author.dir_name());
         fs::create_dir_all(&own_dir)?;
+        // Tylko wlasne chunki `NNNNNN.ops`; obok moga lezec pliki `via-*.ops`
+        // dopisane przez inne maszyny (warstwa live) - te nie sa nasze.
         let chunk_no = read_sorted_chunks(&own_dir)?
-            .last()
-            .and_then(|p| chunk_number(p))
+            .iter()
+            .filter_map(|p| chunk_number(p))
+            .max()
             .unwrap_or(0)
             .max(1);
 
@@ -303,7 +317,7 @@ impl NoteStore {
     }
 }
 
-fn read_sorted_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
+pub(crate) fn read_sorted_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut v: Vec<PathBuf> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
@@ -313,7 +327,7 @@ fn read_sorted_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(v)
 }
 
-fn read_sorted_chunks(dir: &Path) -> io::Result<Vec<PathBuf>> {
+pub(crate) fn read_sorted_chunks(dir: &Path) -> io::Result<Vec<PathBuf>> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -328,6 +342,21 @@ fn read_sorted_chunks(dir: &Path) -> io::Result<Vec<PathBuf>> {
 
 fn chunk_number(p: &Path) -> Option<u32> {
     p.file_stem()?.to_str()?.parse().ok()
+}
+
+/// Wszystkie operacje jednego autora w notatce - z jego wlasnych chunkow
+/// i z plikow `via-*` dopisanych przez inne maszyny (warstwa live) - bez
+/// duplikatow, rosnaco po lamporcie. Lamport jest w obrebie autora unikalny.
+pub(crate) fn read_author_ops(author_dir: &Path) -> io::Result<Vec<Op>> {
+    let mut ops = Vec::new();
+    for chunk in read_sorted_chunks(author_dir)? {
+        if let Some(parsed) = OpsReader::read_path(&chunk)? {
+            ops.extend(parsed.ops);
+        }
+    }
+    ops.sort_by_key(|o| o.lamport);
+    ops.dedup_by_key(|o| o.lamport);
+    Ok(ops)
 }
 
 #[cfg(test)]

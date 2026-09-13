@@ -99,6 +99,9 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       nowa notatka/folder; Ustawienia i Konto działają (Etap 5)
 - [ ] Autostart z systemem (klucz Run) — dopiero gdy stabilne
 - [x] Ochrona AMOLED po bezczynności (Z7): fale przyciemnienia — patrz Etap 2
+- [ ] Ustawienia ochrony AMOLED: **przełącznik włącz/wyłącz** całej ochrony oraz
+      opcja **ograniczenia do głównego ekranu laptopa** (na pozostałych monitorach
+      ochrona się wtedy nie uruchamia)
 
 ## Etap 5 — Git jako warstwa trwała  ◐ PRAWIE ZAMKNIĘTY
 
@@ -128,12 +131,27 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [ ] Przeglądarka wersji notatki (`log_note` jest; brak UI i odtwarzania stanu z commita)
 - [ ] Snapshoty i przycinanie HEAD — razem z Etapem 3
 
-## Etap 6 — Realtime P2P
+## Etap 6 — Realtime P2P  ◐ DZIAŁA W LAN
 
-- QUIC (`quinn`) po Tailscale, discovery mDNS w LAN
-- Strumień operacji + kanał obecności (kursor drugiej osoby)
-- Dołączenie w trakcie sesji (snapshot + ogon)
-- **Kryterium: dwie maszyny, rozjazd wizualny <20 ms**
+- [x] Transport **TCP + `TCP_NODELAY`** z wykrywaniem multicastem w LAN (ADR 0007;
+      nie QUIC/`quinn` — tokio+rustls bez powodu, nie mDNS — beacon `SPCTLV1` co 2 s).
+      Łączy instancja o mniejszym id; rozgłaszanie tylko przy widocznym oknie
+- [x] **Mokra kreska u drugiej osoby w trakcie rysowania**: paczka próbek na każdy
+      komunikat pióra, odbiorca prowadzi ten sam `StrokeBuilder`; rysik peera jako
+      kropka. Ustawienie *Sieć lokalna → Rysowanie na żywo* (`live=` w `config.txt`)
+- [x] Dołączenie w trakcie: `Summary` (notatka, autor → ostatni lamport) i różnica;
+      po merge'u gita dosłanie peerom tego, co przyszło z GitHuba
+- [x] Zdalne operacje w plikach `via-<odbiorca>-*.ops` — jeden pisarz na plik,
+      merge gita nadal bezkonfliktowy; instancja bez logowania ma kopię przez zalogowaną
+- [x] **Kryterium <20 ms: spełnione z zapasem** — dwie instancje na jednej maszynie
+      (różny `COMPUTERNAME`), mokra kreska 0,08–0,3 ms od wysłania do odbioru (HUD),
+      kreska widoczna u drugiej strony w trakcie (zrzuty co 150 ms). Dwie fizyczne
+      maszyny w LAN — do potwierdzenia na sprzęcie (Windows Firewall musi przepuścić
+      `spectrenotes.exe`; prompt przy pierwszym starcie)
+- [ ] Peer przez Tailscale bez multicastu: adres w ustawieniach (`Job::Connect` jest)
+- [ ] Zabezpieczenie space'u w sieci (hasło/parowanie) — dziś granicą zaufania jest LAN
+- [ ] Przycinanie `via-*`, gdy plik autora w gicie już to pokrywa (razem ze snapshotami)
+- [ ] Heartbeat / wykrywanie zerwanego połączenia szybciej niż timeout TCP
 
 ## Etap 7 — Dystrybucja
 

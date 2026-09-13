@@ -150,9 +150,8 @@ pub fn run() -> windows::core::Result<()> {
                 &cam,
                 Overlay {
                     hud: Some(hud),
-                    cursor: None,
                     ui: &[],
-                    dim: None,
+                    ..Default::default()
                 },
                 PresentMode::Immediate,
             )

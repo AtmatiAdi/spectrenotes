@@ -49,7 +49,7 @@ hybrydowe GPU (musimy *świadomie* zostać na iGPU — patrz `docs/04-ENERGIA-I-
 
 ### Z4. Realtime współpraca na jednym canvasie
 - Dwie (lub więcej) osób rysuje jednocześnie na tej samej notatce.
-- Transport: QUIC po Tailscale (zdalnie) lub mDNS + QUIC (LAN, działa bez internetu).
+- Transport: TCP w LAN (wykrywanie multicastem, działa bez internetu) lub po Tailscale (zdalnie). QUIC odłożony — ADR 0007.
 - Model danych to CRDT — zbieżność stanu bez serwera-arbitra i bez blokad.
 - Obecność (kursor, kolor, pióro drugiej osoby) jest **efemeryczna** — nigdy nie ląduje w gicie.
 

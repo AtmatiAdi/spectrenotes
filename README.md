@@ -76,6 +76,18 @@ logowania: tylko lokalna historia. Ruchu do GitHuba pilnuje budżet (odstępy, l
 godzinowe i dobowe z predykcją); odmowa serwera (`429`, „too many requests") wstrzymuje
 sync na 10 min – 2 h z ostrzeżeniem w Konto i HUD, commity idą dalej lokalnie.
 
+**Rysowanie na żywo w LAN (Etap 6).** Dwa urządzenia w tej samej sieci ze space'em
+o tej samej nazwie (domyślnie `default`) **znajdują się same** (multicast, bez
+internetu) i łączą po TCP; kreska drugiej osoby pojawia się **w trakcie rysowania**,
+jej rysik jako kropka, a nowe notatki i tytuły natychmiast — niezależnie od GitHuba.
+Cudze operacje lądują w plikach `via-*.ops` w katalogu autora, więc git dalej nie
+ma jak się skonfliktować, a instancja bez logowania ma kopię przez zalogowaną (ADR 0007).
+Stan w Konto (*Sieć lokalna*) i w HUD-zie (peerzy, opóźnienie mokrej kreski);
+wyłączenie w *Ustawienia → Sieć lokalna*. **Windows Firewall zapyta o zgodę przy
+pierwszym uruchomieniu** — bez niej działa tylko między instancjami na tej samej
+maszynie. Test na jednej maszynie: druga instancja z innym `COMPUTERNAME` i `APPDATA`
+oraz własnym katalogiem space'u o tej samej nazwie.
+
 | Sterowanie | Działanie |
 |---|---|
 | pióro | rysowanie |
@@ -154,7 +166,7 @@ crates/
   spectre-proto      format .ops: varint, CRC32, kodowanie probek, odzysk po awarii  [dziala]
   spectre-core       op-log CRDT, zegar Lamporta, undo/redo, hit-test, kamera      [dziala]
   spectre-ink        probki -> krzywa nacisku -> interpolacja -> geometria         [dziala]
-  spectre-sync       store + git (libgit2 w binarce, ADR 0006) + budzet ruchu; QUIC: Etap 6  [dziala]
+  spectre-sync       store + git (libgit2, ADR 0006) + budzet ruchu + live w LAN (TCP, ADR 0007)  [dziala]
   spectre-render     Direct2D na DXGI flip-model, przewijanie przyrostowe          [dziala]
   spectre-shell-win  okno Win32, WM_POINTER, DPI, feedback piora, pelny ekran      [dziala]
   spectre-app        binarka `spectrenotes`                                       [dziala]
@@ -163,7 +175,8 @@ tools/
 docs/                zalozenia, architektura, ADR-y
 ```
 
-`spectre-proto`, `-core`, `-ink` i `-sync` nie mają żadnej zależności od Windows.
+`spectre-proto`, `-core`, `-ink` i `-sync` nie mają żadnej zależności od Windows
+(`-sync` używa `socket2` tylko do multicastu z `SO_REUSEADDR`).
 To jest cała przenośność rdzenia: port polega na napisaniu nowego `spectre-shell-*`
 i `spectre-render-*` (ADR 0005).
 

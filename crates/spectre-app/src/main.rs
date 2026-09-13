@@ -13,6 +13,7 @@ mod app;
 mod bench;
 mod config;
 mod github;
+mod live;
 mod menu;
 mod sync;
 mod ui;

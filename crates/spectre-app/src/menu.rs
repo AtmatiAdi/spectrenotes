@@ -57,6 +57,8 @@ pub enum Setting {
     WavesIdle,
     /// Jasnosc reszty notatki podczas fal (procent); 100 = bez przyciemnienia.
     WavesDim,
+    /// Warstwa live w LAN (Etap 6) wl./wyl.
+    Live,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +118,9 @@ pub struct MenuState<'a> {
     pub avatar: bool,
     /// Trwajace logowanie Device Flow: kod do wpisania.
     pub device_code: Option<&'a str>,
+    /// Stan warstwy live: peerzy w LAN (jedna linia).
+    pub live: &'a str,
+    pub live_enabled: bool,
 }
 
 /// Wiersz ustawienia: (klucz, etykieta, wartosc do wyswietlenia).
@@ -594,7 +599,7 @@ impl Menu {
         };
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.
-        let groups: [(&str, Vec<SettingRow>); 4] = [
+        let groups: [(&str, Vec<SettingRow>); 5] = [
             (
                 "Wyswietlanie",
                 vec![
@@ -649,6 +654,14 @@ impl Menu {
                         },
                     ),
                 ],
+            ),
+            (
+                "Siec lokalna",
+                vec![(
+                    Setting::Live,
+                    "Rysowanie na zywo z innymi w LAN",
+                    on_off(s.live_enabled).to_string(),
+                )],
             ),
         ];
         for (gi, (title, items)) in groups.into_iter().enumerate() {
@@ -846,6 +859,17 @@ impl Menu {
             list,
             y,
             "uzytkownik@komputer - tak podpisywane sa kreski",
+            FG_DIM,
+            out,
+        );
+        y += 12.0;
+
+        y += self.section(list, y, "Siec lokalna (na zywo)", out);
+        y += self.line(list, y, s.live, FG, out);
+        y += self.line(
+            list,
+            y,
+            "ten sam space na innym urzadzeniu w tej sieci = wspolne rysowanie",
             FG_DIM,
             out,
         );
