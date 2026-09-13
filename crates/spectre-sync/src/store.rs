@@ -74,10 +74,7 @@ impl Space {
     /// Katalog notatki o znanym id (przyszla od peera albo z gita). Idempotentne.
     pub fn ensure_note(&self, id: &str) -> io::Result<()> {
         if !ulid::is_valid(id) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "zly id notatki",
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad note id"));
         }
         fs::create_dir_all(self.root.join("notes").join(id).join("ops"))
     }

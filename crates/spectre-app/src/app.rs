@@ -49,6 +49,11 @@ const TIMER_WAVES: usize = 3;
 /// Commit (i push, gdy jest zdalne) po tylu ms bez rysowania (Etap 5).
 const TIMER_GIT: usize = 4;
 const GIT_IDLE_MS: u32 = 10_000;
+/// Dzierzawa wstrzymania ochrony w aplikacji Spectre (`shell_win::shield`):
+/// ping co 10 s, kazdy prosi o 30 s - trzy zgubione pingi i Spectre wraca do ochrony.
+const TIMER_PARTNER: usize = 5;
+const PARTNER_PING_MS: u32 = 10_000;
+const PARTNER_HOLD_MS: u32 = 30_000;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -164,6 +169,11 @@ pub struct App {
     waves_laptop_only: bool,
     /// Wpis autostartu w rejestrze (stan odczytany na starcie i po zmianie).
     autostart: bool,
+    /// Spectre (osobna aplikacja chroniaca panel): czy trzymamy jej ochrone
+    /// wstrzymana i kiedy poszedl ostatni udany ping.
+    shield: spectre_shell_win::shield::ShieldPartner,
+    shield_held: bool,
+    shield_ping: Option<Instant>,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     waves_idle_s: u32,
     /// Fale wlaczone recznie (`W`): nie gasna od wejscia, tylko od `W`.
@@ -211,13 +221,13 @@ pub struct App {
 /// okno niepokazane, timery bezczynnosci nie chodza (Z2).
 pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
     let app = Box::new(App::new(hwnd, space_dir).map_err(|e| {
-        eprintln!("blad: {e}");
+        eprintln!("error: {e}");
         windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
     })?);
     eprintln!("GPU: {}", app.renderer.adapter_name());
     eprintln!("space: {}", space_dir.display());
-    eprintln!("autor: {}", app.author.dir_name());
-    eprintln!("hotkey: Win+Shift+N   tray: klik = pokaz/ukryj, prawy = menu");
+    eprintln!("author: {}", app.author.dir_name());
+    eprintln!("hotkey: Win+Shift+N   tray: click = show/hide, right-click = menu");
     let placement = app.config.get("window").map(str::to_string);
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(app) as isize);
@@ -234,7 +244,7 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
         }
     }
     if let Err(e) = tray::register_toggle_hotkey(hwnd, 'N') {
-        eprintln!("hotkey Win+Shift+N zajety: {e}");
+        eprintln!("hotkey Win+Shift+N is taken: {e}");
     }
     if let Some(app) = unsafe { app_of(hwnd) } {
         if start_hidden {
@@ -242,6 +252,7 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
             app.live.send(LiveJob::Visible(false));
         } else {
             app.arm_amoled_timers();
+            app.arm_partner_timer();
         }
         app.sync.send(SyncJob::Status);
     }
@@ -348,6 +359,9 @@ impl App {
             waves_on,
             waves_laptop_only,
             autostart: spectre_shell_win::autostart::is_enabled(),
+            shield: spectre_shell_win::shield::ShieldPartner::new(),
+            shield_held: false,
+            shield_ping: None,
             waves_idle_s,
             waves_forced: false,
             waves_dim_pct,
@@ -745,7 +759,7 @@ impl App {
             }
             MenuHit::Setting(s) => self.toggle_setting(s),
             MenuHit::Login => {
-                self.sync.last = "logowanie: dokoncz w przegladarce".to_string();
+                self.sync.last = "signing in: finish in the browser".to_string();
                 self.sync.send(SyncJob::Login);
             }
             MenuHit::Logout => self.sync.send(SyncJob::Logout),
@@ -810,6 +824,7 @@ impl App {
                 self.waves_forced = false;
                 self.stop_waves();
                 self.arm_amoled_timers();
+                self.partner_tick();
             }
             Setting::WavesLaptopOnly => {
                 self.waves_laptop_only = !self.waves_laptop_only;
@@ -946,7 +961,7 @@ impl App {
     fn persist(&mut self, ops: &[spectre_core::Op]) {
         for op in ops {
             if let Err(e) = self.store.append(op) {
-                self.status = format!("zapis: {e}");
+                self.status = format!("write: {e}");
             }
         }
         // Do systemu od razu (przezyje crash aplikacji); fsync po ciszy
@@ -1024,7 +1039,7 @@ impl App {
                 self.status.clear();
                 self.sync_entry();
             }
-            Err(e) => self.status = format!("otwarcie notatki: {e}"),
+            Err(e) => self.status = format!("opening note: {e}"),
         }
     }
 
@@ -1047,7 +1062,7 @@ impl App {
                 self.dirty = Dirty::Full;
                 self.sync_entry();
             }
-            Err(e) => self.status = format!("przeladowanie notatki: {e}"),
+            Err(e) => self.status = format!("reloading note: {e}"),
         }
     }
 
@@ -1058,7 +1073,7 @@ impl App {
     fn git_sync(&mut self, force: bool) {
         self.sync_now();
         self.sync.send(SyncJob::Sync {
-            message: format!("{}: zapis", self.author.dir_name()),
+            message: format!("{}: save", self.author.dir_name()),
             force,
         });
     }
@@ -1092,16 +1107,16 @@ impl App {
                     let now = menu::local_time_now();
                     self.sync.last = if !report.merged.is_empty() {
                         format!(
-                            "{now}: pobrano {} plikow{}",
+                            "{now}: pulled {} files{}",
                             report.merged.len(),
-                            if report.pushed { ", wyslano" } else { "" }
+                            if report.pushed { ", pushed" } else { "" }
                         )
                     } else if report.pushed {
-                        format!("{now}: wyslano")
+                        format!("{now}: pushed")
                     } else if self.sync.status.remote.is_some() {
-                        format!("{now}: aktualne")
+                        format!("{now}: up to date")
                     } else {
-                        format!("{now}: zapisane lokalnie")
+                        format!("{now}: saved locally")
                     };
                     if !report.merged.is_empty() {
                         self.apply_merged(&report.merged);
@@ -1109,7 +1124,7 @@ impl App {
                     }
                 }
                 SyncEvent::DeviceCode { code, url } => {
-                    self.sync.last = format!("wpisz kod {code} na {url}");
+                    self.sync.last = format!("enter code {code} at {url}");
                     if !self.menu.open {
                         self.menu.toggle();
                     }
@@ -1117,33 +1132,31 @@ impl App {
                     repaint = true;
                 }
                 SyncEvent::LoggedIn(user) => {
-                    self.sync.last = format!("zalogowano: {user}");
+                    self.sync.last = format!("signed in: {user}");
                     // Od razu: wykrycie/zalozenie repo i pierwszy pelny cykl.
                     self.git_sync(true);
                 }
                 SyncEvent::LoggedOut => {
-                    self.sync.last = "wylogowano".to_string();
+                    self.sync.last = "signed out".to_string();
                     self.renderer.clear_avatar();
                 }
                 SyncEvent::Avatar(img) => {
                     let _ = self.renderer.set_avatar(img.w, img.h, &img.bgra);
                 }
                 SyncEvent::Deferred { until } => {
-                    self.sync.last = format!(
-                        "zapisane lokalnie; do GitHuba o {}",
-                        menu::local_time_at(until)
-                    );
+                    self.sync.last =
+                        format!("saved locally; to GitHub at {}", menu::local_time_at(until));
                     self.schedule_git_retry(until);
                 }
                 SyncEvent::RateLimited { until } => {
                     self.sync.last = format!(
-                        "GitHub zglosil limit ruchu - sync wstrzymany do {}",
+                        "GitHub reported a rate limit - sync paused until {}",
                         menu::local_time_at(until)
                     );
                     self.schedule_git_retry(until);
                 }
                 SyncEvent::Error(e) => {
-                    self.sync.last = format!("blad: {}", one_line(&e, 90));
+                    self.sync.last = format!("error: {}", one_line(&e, 90));
                 }
                 SyncEvent::Skipped => {}
             }
@@ -1281,9 +1294,9 @@ impl App {
                     ..
                 } => {
                     self.status = if connected {
-                        format!("LAN: dolaczyl {author_dir}")
+                        format!("LAN: {author_dir} joined")
                     } else {
-                        format!("LAN: odszedl {author_dir}")
+                        format!("LAN: {author_dir} left")
                     };
                     if !connected {
                         let gone = AuthorId::from_name(&author_dir);
@@ -1366,7 +1379,7 @@ impl App {
             if token.is_empty() {
                 return;
             }
-            self.sync.last = "sprawdzam token...".to_string();
+            self.sync.last = "checking token...".to_string();
             self.sync.send(SyncJob::SetToken(token));
         }
     }
@@ -1384,7 +1397,7 @@ impl App {
                     self.move_note_to(&folder);
                 }
             }
-            Err(e) => self.status = format!("nowa notatka: {e}"),
+            Err(e) => self.status = format!("new note: {e}"),
         }
     }
 
@@ -1395,6 +1408,64 @@ impl App {
         let op = self.doc.set_meta("folder", folder);
         self.persist(&[op]);
         self.sync_entry();
+    }
+
+    // ----- Spectre (partner chroniacy panel) ---------------------------------
+
+    /// Co 10 s: gdy notatka jest widoczna na panelu laptopa i nasza ochrona
+    /// jest wlaczona, prosimy Spectre o wstrzymanie jego czarnej nakladki
+    /// (30 s dzierzawy). W przeciwnym razie zwalniamy - Spectre chroni sam.
+    fn partner_tick(&mut self) {
+        let minimized = unsafe { IsIconic(self.hwnd).as_bool() };
+        let want = !self.hidden
+            && !minimized
+            && self.waves_on
+            && spectre_shell_win::display::on_internal_display(self.hwnd);
+        if want {
+            self.shield_held = self.shield.hold(PARTNER_HOLD_MS);
+            if self.shield_held {
+                self.shield_ping = Some(Instant::now());
+            }
+        } else if self.shield_held {
+            self.shield.release();
+            self.shield_held = false;
+        }
+        // Ten sam timer sluzy za "ocen za chwile" (`partner_soon`) - tu wraca do okresu.
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_PARTNER, PARTNER_PING_MS, None);
+        }
+    }
+
+    fn arm_partner_timer(&mut self) {
+        self.partner_tick();
+    }
+
+    /// Po przeniesieniu okna albo zmianie ukladu ekranow: ocena za chwile,
+    /// nie dopiero za 10 s (okno moglo wjechac na panel albo z niego zjechac).
+    fn partner_soon(&self) {
+        if !self.hidden {
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_PARTNER, 500, None);
+            }
+        }
+    }
+
+    fn release_partner(&mut self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_PARTNER);
+        }
+        if self.shield_held {
+            self.shield.release();
+            self.shield_held = false;
+        }
+    }
+
+    fn partner_hud(&self) -> String {
+        match (self.shield_held, self.shield_ping) {
+            (true, Some(t)) => format!("Spectre: shield held ({} s ago)", t.elapsed().as_secs()),
+            (false, Some(_)) => "Spectre: released".to_string(),
+            _ => "Spectre: not running".to_string(),
+        }
     }
 
     // ----- AMOLED (Z7) -------------------------------------------------------
@@ -1531,6 +1602,7 @@ impl App {
         self.save_placement();
         self.hidden = true;
         self.kill_amoled_timers();
+        self.release_partner();
         self.live.send(LiveJob::Visible(false));
         self.hide_cursor_from_peers();
         unsafe {
@@ -1548,6 +1620,7 @@ impl App {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hwnd);
         }
+        self.arm_partner_timer();
         self.arm_amoled_timers();
         // Inne maszyny mogly cos dopisac, gdy okno bylo schowane.
         self.git_sync(false);
@@ -1716,35 +1789,36 @@ impl App {
 
         if let Some(t) = self.show_requested.take() {
             let ms = t.elapsed().as_secs_f32() * 1000.0;
-            self.status = format!("hotkey -> klatka: {ms:.1} ms");
-            eprintln!("hotkey -> klatka: {ms:.1} ms");
+            self.status = format!("hotkey -> frame: {ms:.1} ms");
+            eprintln!("hotkey -> frame: {ms:.1} ms");
         }
     }
 
     fn hud_text(&self) -> String {
         let tool = match self.mode {
-            Mode::Pan => "PRZEWIJANIE".to_string(),
-            Mode::DragBar => "PRZENOSZENIE PASKA".to_string(),
-            Mode::Erase => "GUMKA".to_string(),
-            Mode::Draw => format!("pioro #{}", self.color_idx + 1),
-            Mode::Idle if self.buttons.eraser || self.eraser_tool => "gumka".to_string(),
-            Mode::Idle => format!("pioro #{}", self.color_idx + 1),
+            Mode::Pan => "SCROLLING".to_string(),
+            Mode::DragBar => "MOVING TOOLBAR".to_string(),
+            Mode::Erase => "ERASER".to_string(),
+            Mode::Draw => format!("pen #{}", self.color_idx + 1),
+            Mode::Idle if self.buttons.eraser || self.eraser_tool => "eraser".to_string(),
+            Mode::Idle => format!("pen #{}", self.color_idx + 1),
         };
         format!(
-            "SpectreNotes   notatka {}/{}   kresek: {}   {}   zoom {:.0}%\n\
-             narzedzie: {}   grubosc: {:.1} px   przewiniecie: {:.0}   fale: {}   klatka: {:.2} ms (max {:.1})   GPU: {}\n\
-             [1-6] kolor  [E] gumka  [[ ]] grubosc  [Ctrl+Z/Y] cofnij/ponow  [Home] gora  [Ctrl+kolko] zoom\n\
-             [przycisk boczny]/[kolko] przewijanie   [PgUp/PgDn] notatki  [Ctrl+N] nowa   [Win+Shift+N] pokaz/ukryj\n\
-             [F11] pelny ekran  [H] hud  [V] vsync  [T] przewijanie: {}  [Esc] ukryj  [Ctrl+Q] zakoncz\n\
+            "SpectreNotes   note {}/{}   strokes: {}   {}   zoom {:.0}%\n\
+             tool: {}   width: {:.1} px   scroll: {:.0}   waves: {}   frame: {:.2} ms (max {:.1})   GPU: {}\n\
+             [1-6] color  [E] eraser  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top  [Ctrl+wheel] zoom\n\
+             [barrel button]/[wheel] scroll   [PgUp/PgDn] notes  [Ctrl+N] new   [Win+Shift+N] show/hide\n\
+             [F11] fullscreen  [H] hud  [V] vsync  [T] scrolling: {}  [Esc] hide  [Ctrl+Q] quit\n\
              git: {}
-             live: {}{}",
+             live: {}
+             {}{}",
             self.note_idx + 1,
             self.notes.len(),
             self.doc.live_count(),
             if self.store.pending() > 0 {
-                "zapis..."
+                "saving..."
             } else {
-                "zapisane"
+                "saved"
             },
             self.cam.zoom * 100.0,
             tool,
@@ -1754,24 +1828,25 @@ impl App {
                 (Some(wv), forced) => {
                     let (n, fade) = wv.status();
                     format!(
-                        "tak{} - {} warstwy, krycie {:.0}%",
-                        if forced { " (W, wymuszone)" } else { "" },
+                        "yes{} - {} layers, opacity {:.0}%",
+                        if forced { " (W, forced)" } else { "" },
                         n,
                         fade * 100.0
                     )
                 }
-                (None, _) => "nie".to_string(),
+                (None, _) => "no".to_string(),
             },
             self.frame_ms,
             self.frame_max_ms,
             self.renderer.adapter_name(),
             if self.pan_tearing {
-                "tearing (reakcja)"
+                "tearing (responsive)"
             } else {
-                "bez tearingu (czysty obraz)"
+                "no tearing (clean image)"
             },
             self.git_hud(),
             self.live.hud_line(),
+            self.partner_hud(),
             if self.status.is_empty() {
                 String::new()
             } else {
@@ -1783,13 +1858,13 @@ impl App {
     fn git_hud(&self) -> String {
         let st = &self.sync.status;
         if !st.repo_ok {
-            return "repozytorium niedostepne".to_string();
+            return "repository unavailable".to_string();
         }
         let b = &st.budget;
         let mut s = format!(
-            "{}  {}  login: {}  +{} -{}  ruch: {}/h {}/d",
+            "{}  {}  login: {}  +{} -{}  traffic: {}/h {}/d",
             st.head.as_deref().unwrap_or("-"),
-            st.remote.as_deref().unwrap_or("bez zdalnego"),
+            st.remote.as_deref().unwrap_or("no remote"),
             st.login.as_deref().unwrap_or("-"),
             st.ahead,
             st.behind,
@@ -1797,10 +1872,10 @@ impl App {
             b.ops_day
         );
         if let Some(u) = b.backoff_until {
-            s.push_str(&format!("  WSTRZYMANY do {}", menu::local_time_at(u)));
+            s.push_str(&format!("  PAUSED until {}", menu::local_time_at(u)));
         }
         if self.sync.pending > 0 {
-            s.push_str("  [w toku]");
+            s.push_str("  [in progress]");
         }
         if !self.sync.last.is_empty() {
             s.push_str("  ");
@@ -2176,7 +2251,7 @@ pub unsafe extern "system" fn wndproc(
         WM_TRAY => {
             match (lparam.0 & 0xffff) as u32 {
                 WM_LBUTTONUP => app.toggle_visible(),
-                WM_RBUTTONUP => match app._tray.menu(&["Pokaz / ukryj", "", "Zakoncz"]) {
+                WM_RBUTTONUP => match app._tray.menu(&["Show / hide", "", "Quit"]) {
                     Some(1) => app.toggle_visible(),
                     Some(3) => {
                         let _ = DestroyWindow(hwnd);
@@ -2203,6 +2278,10 @@ pub unsafe extern "system" fn wndproc(
             app.hide();
             LRESULT(0)
         }
+        WM_MOVE => {
+            app.partner_soon();
+            LRESULT(0)
+        }
         WM_SYNC => {
             app.on_sync_events();
             LRESULT(0)
@@ -2221,6 +2300,7 @@ pub unsafe extern "system" fn wndproc(
                     }
                 }
                 TIMER_WAVES => app.waves_tick(),
+                TIMER_PARTNER => app.partner_tick(),
                 TIMER_GIT => {
                     let _ = KillTimer(Some(hwnd), TIMER_GIT);
                     app.git_sync(false);
@@ -2257,6 +2337,7 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_DISPLAYCHANGE | WM_DPICHANGED => {
             app.pen.invalidate();
+            app.partner_soon();
             LRESULT(0)
         }
         WM_PAINT => {
@@ -2277,6 +2358,7 @@ pub unsafe extern "system" fn wndproc(
                 app.save_placement();
                 app.commit_title();
                 app.sync_now();
+                app.release_partner();
                 drop(app);
             }
             PostQuitMessage(0);

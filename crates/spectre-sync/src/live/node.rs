@@ -430,7 +430,7 @@ impl State {
                     notes.iter().try_for_each(|n| self.replica.rescan_note(n))
                 };
                 if let Err(e) = r {
-                    return self.emit(Event::Error(format!("live: skan: {e}")));
+                    return self.emit(Event::Error(format!("live: scan: {e}")));
                 }
                 let ids: Vec<u64> = self.conns.keys().copied().collect();
                 for id in ids {
@@ -576,7 +576,7 @@ impl State {
                     self.conns.remove(&id);
                     return same_author
                         && self.emit(Event::Error(format!(
-                            "live: {author_dir} na innym urzadzeniu ma te sama nazwe autora"
+                            "live: {author_dir} on another device has the same author name"
                         )));
                 }
                 let summary = Msg::Summary(self.replica.summary());
@@ -614,7 +614,7 @@ impl State {
                         .store_remote(&note, &author_dir, author, &records)
                     {
                         Ok(r) => r,
-                        Err(e) => return self.emit(Event::Error(format!("live: zapis: {e}"))),
+                        Err(e) => return self.emit(Event::Error(format!("live: write: {e}"))),
                     };
                 let last = self.replica.last(&note, &author_dir);
                 let key = (note.clone(), author_dir.clone());

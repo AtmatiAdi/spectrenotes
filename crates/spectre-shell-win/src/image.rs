@@ -107,6 +107,6 @@ mod tests {
 
     #[test]
     fn smieci_to_blad() {
-        assert!(decode(b"nie obrazek", 64).is_err());
+        assert!(decode(b"not an image", 64).is_err());
     }
 }

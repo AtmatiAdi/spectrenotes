@@ -366,3 +366,14 @@ pub fn open_in_browser(url: &str) {
         );
     }
 }
+
+/// Dolacza proces do konsoli rodzica (terminala, z ktorego go uruchomiono).
+/// Binarka jest okienkowa (bez wlasnej konsoli), wiec `println!` z trybow
+/// wierszowych (`--bench`) bez tego szedlby w prozno. Brak rodzica z konsola
+/// (start z Eksploratora) to nie blad - wyjscie jest wtedy po prostu pomijane.
+pub fn attach_parent_console() {
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}

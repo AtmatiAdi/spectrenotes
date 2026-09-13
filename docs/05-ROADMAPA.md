@@ -105,6 +105,16 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       (`QueryDisplayConfig`, `OUTPUT_TECHNOLOGY_INTERNAL`), nie po „monitor główny";
       na zewnętrznym odliczanie trwa, ochrona startuje po przeniesieniu okna.
       Zweryfikowane: na `DISPLAY1` (panel) fale startują, na `DISPLAY6` nie
+- [x] **Współpraca ze Spectre** (osobne repo `C:\Projects\Spectre`): widoczna notatka na
+      panelu = prośba o wstrzymanie czarnej nakładki Spectre, jako **dzierżawa** 30 s
+      odnawiana co 10 s (`RegisterWindowMessage("Spectre.ShieldHold")` → okno
+      `SpectreShield`); `0` zwalnia przy ukryciu/zamknięciu. Zabity SpectreNotes nigdy
+      nie zostawia panelu bez ochrony. Zweryfikowane end-to-end (log Spectre + jasność
+      panelu). Spectre: `BEHAVIOR.md` S10, D-11
+- [x] Bez okna konsoli (`windows_subsystem = "windows"`); `--console` i tryby wierszowe
+      dołączają się do konsoli terminala
+- [x] **Interfejs po angielsku** — menu, HUD, komunikaty synchronizacji i błędów;
+      dokumentacja i komentarze po polsku. Bez warstwy i18n (jeden język, prosto)
 
 ## Etap 5 — Git jako warstwa trwała  ◐ PRAWIE ZAMKNIĘTY
 

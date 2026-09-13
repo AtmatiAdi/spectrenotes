@@ -10,6 +10,7 @@ pub mod http;
 pub mod image;
 pub mod pen;
 pub mod secret;
+pub mod shield;
 pub mod tray;
 pub mod window;
 

@@ -87,11 +87,11 @@ fn open_run_key() -> Option<HKEY> {
 }
 
 pub fn set_enabled(on: bool) -> std::io::Result<()> {
-    let h = open_run_key().ok_or_else(|| std::io::Error::other("klucz Run niedostepny"))?;
+    let h = open_run_key().ok_or_else(|| std::io::Error::other("Run key unavailable"))?;
     let value = wide(VALUE);
     let rc = unsafe {
         if on {
-            let cmd = command().ok_or_else(|| std::io::Error::other("sciezka binarki"))?;
+            let cmd = command().ok_or_else(|| std::io::Error::other("executable path"))?;
             let data = wide(&cmd);
             let bytes: Vec<u8> = data.iter().flat_map(|c| c.to_le_bytes()).collect();
             RegSetValueExW(h, PCWSTR(value.as_ptr()), None, REG_SZ, Some(&bytes))
@@ -111,6 +111,6 @@ pub fn set_enabled(on: bool) -> std::io::Result<()> {
     if rc == ERROR_SUCCESS {
         Ok(())
     } else {
-        Err(std::io::Error::other(format!("rejestr: kod {}", rc.0)))
+        Err(std::io::Error::other(format!("registry: code {}", rc.0)))
     }
 }

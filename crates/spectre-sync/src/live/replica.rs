@@ -167,7 +167,7 @@ impl Replica {
         if !valid_dir_name(author_dir) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "zla nazwa autora",
+                "bad author name",
             ));
         }
         if author_dir == self.me.dir_name() {
@@ -180,7 +180,7 @@ impl Replica {
         let last = self.known.get(&key).map(|(_, l)| *l).unwrap_or(0);
 
         let parsed = OpsReader::parse(&with_header(author, records))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "zle rekordy operacji"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad operation records"))?;
         let mut fresh: Vec<Op> = parsed
             .ops
             .into_iter()

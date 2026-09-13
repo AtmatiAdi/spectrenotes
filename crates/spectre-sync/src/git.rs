@@ -69,8 +69,8 @@ pub enum GitError {
 impl fmt::Display for GitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GitError::RateLimited(s) => write!(f, "limit ruchu: {s}"),
-            GitError::Auth(s) => write!(f, "uwierzytelnienie: {s}"),
+            GitError::RateLimited(s) => write!(f, "rate limit: {s}"),
+            GitError::Auth(s) => write!(f, "authentication: {s}"),
             GitError::Other(s) => write!(f, "{s}"),
         }
     }
@@ -252,7 +252,7 @@ impl Git {
             None => Err(git2::Error::new(
                 ErrorCode::Auth,
                 ErrorClass::Http,
-                "brak tokenu GitHub - zaloguj sie w menu Konto",
+                "no GitHub token - sign in from the Account tab",
             )),
         });
         let c1 = counters.clone();
@@ -323,7 +323,7 @@ impl Git {
                     .map(|e| String::from_utf8_lossy(&e.path).into_owned())
                     .collect();
                 return Err(GitError::Other(format!(
-                    "merge: konflikt w {} - to nie powinno sie zdarzyc",
+                    "merge: conflict in {} - this should never happen",
                     paths.join(", ")
                 )));
             }
@@ -377,7 +377,7 @@ impl Git {
         transfer.remote_ops += 1;
         res?;
         if let Some(s) = rejected.lock().unwrap().take() {
-            return Err(GitError::Other(format!("push odrzucony: {s}")));
+            return Err(GitError::Other(format!("push rejected: {s}")));
         }
         Ok(())
     }

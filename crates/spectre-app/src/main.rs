@@ -7,6 +7,12 @@
 //! kazda kreska laduje w pliku autora natychmiast po zakonczeniu, `fsync`
 //! po 400 ms ciszy. Bez UI poza HUD-em - sterowanie klawiatura i przyciskami
 //! rysika (patrz `hud_text`).
+//!
+//! Binarka jest aplikacja okienkowa (`windows_subsystem`): bez okna konsoli.
+//! Tryby wierszowe (`--bench`, `--fill-white`) i `--console` dolaczaja sie do
+//! konsoli rodzica, zeby ich wyjscie bylo widoczne w terminalu.
+
+#![windows_subsystem = "windows"]
 
 mod amoled;
 mod app;
@@ -23,6 +29,9 @@ use std::path::PathBuf;
 use spectre_shell_win::window;
 
 fn main() -> windows::core::Result<()> {
+    if std::env::args().any(|a| a == "--bench" || a == "--fill-white" || a == "--console") {
+        window::attach_parent_console();
+    }
     if std::env::args().any(|a| a == "--bench") {
         return bench::run();
     }

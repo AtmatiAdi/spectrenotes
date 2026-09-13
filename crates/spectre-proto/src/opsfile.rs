@@ -141,12 +141,12 @@ impl OpsWriter {
             file.sync_data()?;
         } else {
             let parsed = OpsReader::parse(&existing).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "zly naglowek pliku .ops")
+                io::Error::new(io::ErrorKind::InvalidData, "bad .ops file header")
             })?;
             if parsed.header.author != author {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "plik .ops nalezy do innego autora",
+                    ".ops file belongs to another author",
                 ));
             }
             if parsed.truncated {

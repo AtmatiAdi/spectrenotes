@@ -259,7 +259,7 @@ fn run(
             Some(g)
         }
         Err(e) => {
-            out.push(Event::Error(format!("repozytorium: {e}")));
+            out.push(Event::Error(format!("repository: {e}")));
             None
         }
     };
@@ -277,9 +277,7 @@ fn run(
                     // Token nieaktualny - zapominamy, uzytkownik zaloguje sie od nowa.
                     let _ = secret::store(&ctx.token_path, None);
                     let _ = std::fs::remove_file(&ctx.avatar_path);
-                    out.push(Event::Error(
-                        "token GitHub wygasl - zaloguj sie ponownie".into(),
-                    ));
+                    out.push(Event::Error("GitHub token expired - sign in again".into()));
                 }
                 Err(GitError::RateLimited(m)) => {
                     let until = budget.refused(now_unix(), Transfer::default());
@@ -310,7 +308,7 @@ fn run(
         Job::Login => {
             if ctx.client_id.is_empty() {
                 out.push(Event::Error(
-                    "brak client_id aplikacji GitHub - wklej token (PAT) w menu Konto".into(),
+                    "no GitHub app client_id - paste a token (PAT) in the Account tab".into(),
                 ));
             } else {
                 spawn_device_login(ctx, events.clone());
@@ -319,7 +317,7 @@ fn run(
         Job::SetToken(t) => match github::user_info(&t) {
             Ok(u) => {
                 if let Err(e) = secret::store(&ctx.token_path, Some(&t)) {
-                    out.push(Event::Error(format!("zapis tokenu: {e}")));
+                    out.push(Event::Error(format!("saving token: {e}")));
                 } else {
                     *login = Some(u.login.clone());
                     let _ = std::fs::remove_file(&ctx.avatar_path);
@@ -327,7 +325,7 @@ fn run(
                     out.push(Event::LoggedIn(u.login));
                 }
             }
-            Err(e) => out.push(Event::Error(format!("token odrzucony: {e}"))),
+            Err(e) => out.push(Event::Error(format!("token rejected: {e}"))),
         },
         Job::Logout => {
             let _ = secret::store(&ctx.token_path, None);
@@ -383,7 +381,7 @@ fn sync_cycle(
                         out.push(Event::RateLimited { until });
                         out.push(Event::Error(m));
                     }
-                    Err(e) => out.push(Event::Error(format!("repozytorium GitHub: {e}"))),
+                    Err(e) => out.push(Event::Error(format!("GitHub repository: {e}"))),
                 }
             }
         }
@@ -417,7 +415,7 @@ fn sync_cycle(
             out.push(Event::Error(m));
         }
         Err(GitError::Auth(m)) => {
-            out.push(Event::Error(format!("GitHub odrzucil token: {m}")));
+            out.push(Event::Error(format!("GitHub rejected the token: {m}")));
         }
         Err(e) => out.push(Event::Error(e.to_string())),
     }
@@ -443,7 +441,7 @@ fn spawn_device_login(ctx: &Ctx, events: Sender<Event>) {
                 let token = github::device_wait(&client_id, &d)?;
                 let login = github::user_login(&token)?;
                 secret::store(&token_path, Some(&token))
-                    .map_err(|e| GitError::Other(format!("zapis tokenu: {e}")))?;
+                    .map_err(|e| GitError::Other(format!("saving token: {e}")))?;
                 Ok(login)
             })();
             let _ = match result {

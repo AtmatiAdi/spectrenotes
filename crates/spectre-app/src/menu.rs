@@ -6,8 +6,8 @@
 //!
 //! U gory panelu stale widoczny naglowek: avatar z GitHuba (albo inicjal),
 //! nazwa uzytkownika i stan logowania, ile minut temu byla synchronizacja
-//! i przycisk "synchronizuj teraz". Zakladka "Konto" ma szczegoly (logowanie,
-//! budzet ruchu), "Ustawienia" przelaczaja to, co juz jest w aplikacji.
+//! i przycisk "synchronizuj teraz". Zakladka "Account" ma szczegoly (logowanie,
+//! budzet ruchu), "Settings" przelaczaja to, co juz jest w aplikacji.
 
 use spectre_render::{UiFont, UiPrim};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
@@ -38,9 +38,9 @@ pub enum Tab {
 impl Tab {
     fn label(self) -> &'static str {
         match self {
-            Tab::Notes => "Notatki",
-            Tab::Settings => "Ustawienia",
-            Tab::Account => "Konto",
+            Tab::Notes => "Notes",
+            Tab::Settings => "Settings",
+            Tab::Account => "Account",
         }
     }
 }
@@ -410,7 +410,7 @@ impl Menu {
             });
         }
         let (text, color) = if n.title.is_empty() {
-            ("bez tytulu".to_string(), FG_DIM)
+            ("untitled".to_string(), FG_DIM)
         } else {
             (n.title.clone(), FG)
         };
@@ -434,7 +434,7 @@ impl Menu {
         });
     }
 
-    /// Naglowek folderu z przyciskiem "przenies tutaj" (gdy biezaca notatka
+    /// Naglowek folderu z przyciskiem "move here" (gdy biezaca notatka
     /// jest gdzie indziej). Zwraca wysokosc.
     fn folder_head(
         &mut self,
@@ -446,7 +446,7 @@ impl Menu {
         out: &mut Vec<UiPrim>,
     ) -> f32 {
         let (name, label) = match folder {
-            None => ("", "Notatki"),
+            None => ("", "Notes"),
             Some((_, n)) => (n, n),
         };
         let r = Rect {
@@ -488,7 +488,7 @@ impl Menu {
                 y: br.y,
                 w: br.w,
                 h: br.h,
-                text: "przenies tutaj".to_string(),
+                text: "move here".to_string(),
                 color: if self.hot == Some(hit) { FG } else { FG_DIM },
                 font: UiFont::Center,
             });
@@ -545,8 +545,8 @@ impl Menu {
         });
         y += 8.0;
         for (hit, label) in [
-            (MenuHit::NewNote, "+  Nowa notatka"),
-            (MenuHit::NewFolder, "+  Nowy folder"),
+            (MenuHit::NewNote, "+  New note"),
+            (MenuHit::NewFolder, "+  New folder"),
         ] {
             let r = Rect {
                 x: list.x,
@@ -571,7 +571,7 @@ impl Menu {
                         w: r.w - PAD * 2.0 - 16.0,
                         h: r.h,
                         text: if buf.is_empty() {
-                            "nazwa folderu, Enter".to_string()
+                            "folder name, Enter".to_string()
                         } else {
                             format!("{buf}|")
                         },
@@ -600,9 +600,9 @@ impl Menu {
 
     fn build_settings(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let mut y = list.y - self.scroll + 6.0;
-        let on_off = |b: bool| if b { "wl." } else { "wyl." };
+        let on_off = |b: bool| if b { "on" } else { "off" };
         let waves = match s.waves_idle_s {
-            0 => "wyl.".to_string(),
+            0 => "off".to_string(),
             s if s < 60 => format!("{s} s"),
             s => format!("{} min", s / 60),
         };
@@ -610,64 +610,64 @@ impl Menu {
         // zamiast ladowac na koncu jednej dlugiej listy.
         let groups: [(&str, Vec<SettingRow>); 6] = [
             (
-                "Wyswietlanie",
+                "Display",
                 vec![
                     (Setting::Vsync, "VSync (V)", on_off(s.vsync).to_string()),
                     (
                         Setting::PanTearing,
-                        "Tearing przy przewijaniu (T)",
+                        "Tearing while scrolling (T)",
                         on_off(s.pan_tearing).to_string(),
                     ),
                     (
                         Setting::Fullscreen,
-                        "Pelny ekran (F11)",
+                        "Fullscreen (F11)",
                         on_off(s.fullscreen).to_string(),
                     ),
                     (
                         Setting::Hud,
-                        "HUD diagnostyczny (H)",
+                        "Diagnostic HUD (H)",
                         on_off(s.hud).to_string(),
                     ),
                 ],
             ),
             (
-                "Pasek narzedzi",
+                "Toolbar",
                 vec![
-                    (Setting::Dock, "Krawedz dokowania", s.dock.to_string()),
+                    (Setting::Dock, "Docked edge", s.dock.to_string()),
                     (
                         Setting::ToolbarPin,
-                        "Zawsze widoczny",
+                        "Always visible",
                         on_off(s.toolbar_pin).to_string(),
                     ),
                 ],
             ),
             (
-                "Nawigacja",
+                "Navigation",
                 vec![(
                     Setting::ScrollMult,
-                    "Mnoznik przewijania",
+                    "Scroll multiplier",
                     format!("x{:.1}", s.scroll_mult),
                 )],
             ),
             (
-                "Ochrona AMOLED",
+                "AMOLED protection",
                 vec![
                     (
                         Setting::WavesOn,
-                        "Fale przyciemnienia",
+                        "Dimming waves",
                         on_off(s.waves_on).to_string(),
                     ),
                     (
                         Setting::WavesLaptopOnly,
-                        "Tylko na ekranie laptopa",
+                        "Laptop screen only",
                         on_off(s.waves_laptop_only).to_string(),
                     ),
-                    (Setting::WavesIdle, "Fale po bezczynnosci (W)", waves),
+                    (Setting::WavesIdle, "Waves after idle (W)", waves),
                     (
                         Setting::WavesDim,
-                        "Jasnosc notatki podczas fal",
+                        "Note brightness during waves",
                         if s.waves_dim_pct >= 100 {
-                            "pelna".to_string()
+                            "full".to_string()
                         } else {
                             format!("{}%", s.waves_dim_pct)
                         },
@@ -675,10 +675,10 @@ impl Menu {
                 ],
             ),
             (
-                "Siec lokalna",
+                "Local network",
                 vec![(
                     Setting::Live,
-                    "Rysowanie na zywo (LAN)",
+                    "Live drawing (LAN)",
                     on_off(s.live_enabled).to_string(),
                 )],
             ),
@@ -686,7 +686,7 @@ impl Menu {
                 "System",
                 vec![(
                     Setting::Autostart,
-                    "Autostart (do traya)",
+                    "Start with Windows (in tray)",
                     on_off(s.autostart).to_string(),
                 )],
             ),
@@ -727,7 +727,7 @@ impl Menu {
         }
 
         y += 10.0;
-        y += self.section(list, y, "Ta maszyna", out);
+        y += self.section(list, y, "This machine", out);
         for (label, value) in [("Space", s.space), ("GPU", s.gpu)] {
             out.push(UiPrim::Text {
                 x: list.x + PAD + 8.0,
@@ -830,21 +830,21 @@ impl Menu {
         let tw = br.x - 8.0 - tx;
         let (name, name_color) = match &st.login {
             Some(l) => (l.clone(), FG),
-            None => ("niezalogowany".to_string(), FG),
+            None => ("not signed in".to_string(), FG),
         };
         let b = &st.budget;
         let (info, info_color) = if !logged {
-            ("notatki tylko lokalnie".to_string(), FG_DIM)
+            ("notes stay local".to_string(), FG_DIM)
         } else if let Some(u) = b.backoff_until {
-            (format!("sync wstrzymany do {}", local_time_at(u)), ACCENT)
+            (format!("sync paused until {}", local_time_at(u)), ACCENT)
         } else if s.sync_busy {
-            ("synchronizacja...".to_string(), FG_DIM)
+            ("syncing...".to_string(), FG_DIM)
         } else if let Some(age) = s.sync_age_s {
-            (format!("sync {}", human_age(age)), FG_DIM)
+            (format!("synced {}", human_age(age)), FG_DIM)
         } else if st.remote.is_none() {
-            ("lacze z repozytorium...".to_string(), FG_DIM)
+            ("connecting to repository...".to_string(), FG_DIM)
         } else {
-            ("jeszcze nie synchronizowano".to_string(), FG_DIM)
+            ("not synced yet".to_string(), FG_DIM)
         };
         out.push(UiPrim::Text {
             x: tx,
@@ -876,23 +876,23 @@ impl Menu {
 
     fn build_account(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let mut y = list.y - self.scroll + 6.0;
-        y += self.section(list, y, "Ten komputer", out);
+        y += self.section(list, y, "This computer", out);
         y += self.line(list, y, s.author, FG, out);
         y += self.line(
             list,
             y,
-            "uzytkownik@komputer - tak podpisywane sa kreski",
+            "user@computer - this is how strokes are signed",
             FG_DIM,
             out,
         );
         y += 12.0;
 
-        y += self.section(list, y, "Siec lokalna (na zywo)", out);
+        y += self.section(list, y, "Local network (live)", out);
         y += self.line(list, y, s.live, FG, out);
         y += self.line(
             list,
             y,
-            "ten sam space na innym urzadzeniu w tej sieci = wspolne rysowanie",
+            "same space on another device here = shared drawing",
             FG_DIM,
             out,
         );
@@ -902,18 +902,18 @@ impl Menu {
         y += self.section(list, y, "GitHub", out);
         match &st.login {
             Some(user) => {
-                y += self.line(list, y, &format!("zalogowany: {user}"), FG, out);
+                y += self.line(list, y, &format!("signed in: {user}"), FG, out);
                 let repo = match &st.remote {
-                    Some(_) => format!("repozytorium: {user}/{}", st.repo_name),
-                    None => format!("repozytorium {} - lacze...", st.repo_name),
+                    Some(_) => format!("repository: {user}/{}", st.repo_name),
+                    None => format!("repository {} - connecting...", st.repo_name),
                 };
                 y += self.line(list, y, &repo, FG_DIM, out);
                 y += 6.0;
-                y += self.button(list, y, MenuHit::Logout, "Wyloguj", FG_DIM, out);
+                y += self.button(list, y, MenuHit::Logout, "Sign out", FG_DIM, out);
             }
             None => {
                 if let Some(code) = s.device_code {
-                    y += self.line(list, y, "wpisz ten kod w przegladarce:", FG, out);
+                    y += self.line(list, y, "enter this code in the browser:", FG, out);
                     out.push(UiPrim::Text {
                         x: list.x + PAD,
                         y,
@@ -927,17 +927,11 @@ impl Menu {
                     y += self.line(list, y, "github.com/login/device", FG_DIM, out);
                     y += 6.0;
                 } else {
+                    y += self.line(list, y, "not signed in - notes stay local", FG_DIM, out);
                     y += self.line(
                         list,
                         y,
-                        "niezalogowany - notatki tylko lokalnie",
-                        FG_DIM,
-                        out,
-                    );
-                    y += self.line(
-                        list,
-                        y,
-                        &format!("po zalogowaniu: prywatne repo {}", st.repo_name),
+                        &format!("after signing in: private repo {}", st.repo_name),
                         FG_DIM,
                         out,
                     );
@@ -947,7 +941,7 @@ impl Menu {
                             list,
                             y,
                             MenuHit::Login,
-                            "Zaloguj przez GitHub (przegladarka)",
+                            "Sign in with GitHub (browser)",
                             FG,
                             out,
                         );
@@ -976,7 +970,7 @@ impl Menu {
                         w: r.w - 16.0,
                         h: r.h,
                         text: if buf.is_empty() {
-                            "token (PAT, zakres repo): Ctrl+V, Enter".to_string()
+                            "token (PAT, repo scope): Ctrl+V, Enter".to_string()
                         } else {
                             format!("{}|", "*".repeat(buf.chars().count().min(40)))
                         },
@@ -990,7 +984,7 @@ impl Menu {
                         list,
                         y,
                         MenuHit::PasteToken,
-                        "Wklej token GitHub (PAT)",
+                        "Paste GitHub token (PAT)",
                         if st.device_flow { FG_DIM } else { FG },
                         out,
                     );
@@ -999,23 +993,23 @@ impl Menu {
         }
         y += 12.0;
 
-        y += self.section(list, y, "Synchronizacja", out);
+        y += self.section(list, y, "Sync", out);
         let b = &st.budget;
         let state = if let Some(until) = b.backoff_until {
             format!(
-                "WSTRZYMANA do {} - GitHub zglosil limit ruchu",
+                "PAUSED until {} - GitHub reported a rate limit",
                 local_time_at(until)
             )
         } else if s.sync_busy {
-            "w toku...".to_string()
+            "in progress...".to_string()
         } else if st.remote.is_none() {
-            format!("{} zapisow lokalnie (bez GitHuba)", st.ahead)
+            format!("{} local commits (no GitHub)", st.ahead)
         } else {
             match (st.ahead, st.behind) {
-                (0, 0) => "wszystko na GitHubie".to_string(),
-                (a, 0) => format!("{a} do wyslania"),
-                (0, bh) => format!("{bh} do pobrania"),
-                (a, bh) => format!("{a} do wyslania, {bh} do pobrania"),
+                (0, 0) => "everything is on GitHub".to_string(),
+                (a, 0) => format!("{a} to push"),
+                (0, bh) => format!("{bh} to pull"),
+                (a, bh) => format!("{a} to push, {bh} to pull"),
             }
         };
         y += self.line(
@@ -1034,7 +1028,7 @@ impl Menu {
                 list,
                 y,
                 &format!(
-                    "za duzo prob ({}x) - czekamy, zeby blokada ustapila",
+                    "too many attempts ({}x) - waiting for the block to lift",
                     b.refusals
                 ),
                 FG_DIM,
@@ -1048,7 +1042,7 @@ impl Menu {
             list,
             y,
             &format!(
-                "ruch: {} polaczen/h, {} /dobe, {}",
+                "traffic: {} connections/h, {} /day, {}",
                 b.ops_hour,
                 b.ops_day,
                 human_bytes(b.bytes_day)
@@ -1059,12 +1053,12 @@ impl Menu {
         y += self.line(
             list,
             y,
-            "automatycznie: 10 s po rysowaniu, przy ukryciu i pokazaniu okna",
+            "automatic: 10 s after drawing, on hide and show",
             FG_DIM,
             out,
         );
         y += 6.0;
-        y += self.button(list, y, MenuHit::SyncNow, "Synchronizuj teraz", FG, out);
+        y += self.button(list, y, MenuHit::SyncNow, "Sync now", FG, out);
         y + 10.0 - (list.y - self.scroll)
     }
 
@@ -1199,12 +1193,12 @@ fn human_bytes(b: u64) -> String {
 /// "przed chwila", "3 min temu", "2 h temu" - do naglowka panelu.
 pub fn human_age(secs: u64) -> String {
     if secs < 60 {
-        "przed chwila".to_string()
+        "just now".to_string()
     } else if secs < 3600 {
-        format!("{} min temu", secs / 60)
+        format!("{} min ago", secs / 60)
     } else if secs < 86_400 {
-        format!("{} h temu", secs / 3600)
+        format!("{} h ago", secs / 3600)
     } else {
-        format!("{} dni temu", secs / 86_400)
+        format!("{} days ago", secs / 86_400)
     }
 }

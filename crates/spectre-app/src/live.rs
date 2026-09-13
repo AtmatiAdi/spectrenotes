@@ -123,13 +123,13 @@ impl LiveWorker {
     /// Jedna linia do menu Konto / HUD-u.
     pub fn status_line(&self) -> String {
         if self.node.is_none() {
-            return "LAN: niedostepne (port zajety?)".to_string();
+            return "LAN: unavailable (port in use?)".to_string();
         }
         if !self.enabled {
-            return "LAN: wylaczone".to_string();
+            return "LAN: off".to_string();
         }
         if self.peers.is_empty() {
-            return "LAN: szukam innych urzadzen...".to_string();
+            return "LAN: looking for other devices...".to_string();
         }
         let names: Vec<String> = self
             .peers
@@ -149,14 +149,14 @@ impl LiveWorker {
         let mut s = self.status_line();
         if self.wet_in > 0 {
             s.push_str(&format!(
-                "   mokra kreska: {:.2} ms (sr. {:.2}, max {:.1})   odebrano {} op",
+                "   wet stroke: {:.2} ms (avg {:.2}, max {:.1})   received {} ops",
                 self.lat_last_us as f32 / 1000.0,
                 self.lat_avg_us / 1000.0,
                 self.lat_max_us as f32 / 1000.0,
                 self.ops_in
             ));
         } else if self.ops_in > 0 {
-            s.push_str(&format!("   odebrano {} op", self.ops_in));
+            s.push_str(&format!("   received {} ops", self.ops_in));
         }
         if !self.error.is_empty() {
             s.push_str("   ! ");

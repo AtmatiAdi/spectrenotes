@@ -32,7 +32,20 @@ argument). Każda kreska trafia do pliku autora natychmiast po zakończeniu,
 
 Aplikacja **żyje w tray'u**: `Esc`, zamknięcie okna i `Win+Shift+N` chowają ją
 (w tle ~2 MB), `Win+Shift+N` lub klik w ikonę odsłania w ~20 ms. Zakończenie:
-`Ctrl+Q` albo prawy klik na ikonie → Zakończ.
+`Ctrl+Q` albo prawy klik na ikonie → Quit. **Interfejs jest po angielsku** (menu,
+HUD, komunikaty); dokumentacja i komentarze w kodzie zostają po polsku.
+
+Binarka jest aplikacją okienkową — **bez okna konsoli**. Argumenty: `--tray` (start
+schowany do traya; tak startuje autostart), `--console` (dołącz do konsoli terminala,
+z którego uruchomiono — logi), `--bench`, `--fill-white` (tryby wierszowe, same
+dołączają konsolę).
+
+**Współpraca ze Spectre** (`C:\Projects\Spectre` — presety ekranów i czarna nakładka
+AMOLED na panel laptopa): gdy SpectreNotes jest widoczne na panelu i ma włączoną własną
+ochronę, co 10 s prosi Spectre o wstrzymanie nakładki (dzierżawa 30 s przez komunikat
+`Spectre.ShieldHold`). Spectre po wygaśnięciu dzierżawy wraca do ochrony sam — zamknięty
+czy zawieszony SpectreNotes nigdy nie zostawia panelu bez ochrony. Stan w HUD-zie
+(`Spectre: shield held`).
 
 **Okno nie ma systemowej ramki ani paska tytułowego** — canvas zaczyna się od samej
 góry. Nad nim wiszą dwie małe **zakładki**: tytuł notatki na środku (tap, wpisz,

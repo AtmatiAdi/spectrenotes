@@ -54,6 +54,23 @@ zależność nie zachodzi.
 6. **Budżet elementu statycznego.** Zasada projektowa: element, który potrafi stać
    w jednym miejscu dłużej niż 10 minut, musi albo dryfować, albo przygasać.
    Bez wyjątków.
+7. **Ochrona włącz/wyłącz i tylko na panelu laptopa.** W ustawieniach: fale można
+   wyłączyć w całości oraz ograniczyć do wbudowanego panelu — na zewnętrznym
+   monitorze (LCD) nie startują. Panel wbudowany rozpoznawany po **typie złącza**
+   (`QueryDisplayConfig`, `DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL`), nie po
+   „monitorze głównym" — u użytkownika główny to zewnętrzny 4K, a OLED to `DISPLAY1`.
+8. **Współpraca z aplikacją Spectre** (`C:\Projects\Spectre`, osobny program:
+   presety ekranów + czarna nakładka na panel AMOLED po bezczynności). Gdy notatka
+   jest widoczna na panelu i nasza ochrona jest włączona, czarna nakładka Spectre
+   zasłaniałaby ją — SpectreNotes prosi więc Spectre o **wstrzymanie**. Prośba to
+   **dzierżawa, nie przełącznik**: komunikat okienkowy `Spectre.ShieldHold`
+   (`RegisterWindowMessage`, `wParam` = 30 000 ms) do okna nakładki Spectre, powtarzany
+   **co 10 s**; `0` zwalnia od razu (ukrycie do traya, zamknięcie). Spectre po
+   wygaśnięciu dzierżawy wraca do ochrony sam (re-check po upływie dzierżawy + 1 s),
+   więc zabity, zawieszony albo schowany SpectreNotes nigdy nie zostawia panelu bez
+   ochrony. Bez gniazd, bez zapory. Zweryfikowane: okno na panelu → log Spectre
+   „held by partner", panel widoczny; `Esc` → „partner released the hold", po 40 s
+   panel czarny. Po stronie Spectre: `docs/BEHAVIOR.md` S10, D-11.
 
 ## Antyaliasing a subpiksele
 

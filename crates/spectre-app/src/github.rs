@@ -41,16 +41,16 @@ fn map_http(e: windows::core::Error) -> GitError {
 fn check_status(r: &http::Response, what: &str) -> Result<()> {
     match r.status {
         200..=299 => Ok(()),
-        401 => Err(GitError::Auth(format!("{what}: token odrzucony (401)"))),
+        401 => Err(GitError::Auth(format!("{what}: token rejected (401)"))),
         403 | 429 => {
             let lower = r.body.to_ascii_lowercase();
             if r.status == 429 || lower.contains("rate limit") || lower.contains("abuse") {
                 Err(GitError::RateLimited(format!(
-                    "{what}: GitHub zglasza limit ({})",
+                    "{what}: GitHub reports a rate limit ({})",
                     r.status
                 )))
             } else {
-                Err(GitError::Auth(format!("{what}: brak uprawnien (403)")))
+                Err(GitError::Auth(format!("{what}: no permission (403)")))
             }
         }
         s => Err(GitError::Other(format!(
@@ -76,9 +76,9 @@ pub fn device_start(client_id: &str) -> Result<Device> {
     .map_err(map_http)?;
     check_status(&r, "device/code")?;
     let device_code = json_str(&r.body, "device_code")
-        .ok_or_else(|| GitError::Other("device/code: brak device_code".into()))?;
+        .ok_or_else(|| GitError::Other("device/code: no device_code".into()))?;
     let user_code = json_str(&r.body, "user_code")
-        .ok_or_else(|| GitError::Other("device/code: brak user_code".into()))?;
+        .ok_or_else(|| GitError::Other("device/code: no user_code".into()))?;
     let verification_uri = json_str(&r.body, "verification_uri")
         .unwrap_or_else(|| "https://github.com/login/device".to_string());
     let interval = json_u64(&r.body, "interval").unwrap_or(5).max(1);
@@ -98,9 +98,7 @@ pub fn device_wait(client_id: &str, d: &Device) -> Result<String> {
     let mut interval = d.interval;
     loop {
         if Instant::now() >= d.expires_at {
-            return Err(GitError::Other(
-                "logowanie: kod wygasl, sprobuj ponownie".into(),
-            ));
+            return Err(GitError::Other("sign-in: code expired, try again".into()));
         }
         std::thread::sleep(interval);
         let body = format!(
@@ -125,12 +123,12 @@ pub fn device_wait(client_id: &str, d: &Device) -> Result<String> {
             Some("authorization_pending") => {}
             Some("slow_down") => interval += Duration::from_secs(5),
             Some("expired_token") => {
-                return Err(GitError::Other("logowanie: kod wygasl".into()));
+                return Err(GitError::Other("sign-in: code expired".into()));
             }
             Some("access_denied") => {
-                return Err(GitError::Other("logowanie: odmowa w przegladarce".into()));
+                return Err(GitError::Other("sign-in: denied in the browser".into()));
             }
-            Some(e) => return Err(GitError::Other(format!("logowanie: {e}"))),
+            Some(e) => return Err(GitError::Other(format!("sign-in: {e}"))),
             None => check_status(&r, "oauth/access_token")?,
         }
     }
@@ -158,7 +156,7 @@ pub fn user_info(token: &str) -> Result<User> {
     .map_err(map_http)?;
     check_status(&r, "user")?;
     let login =
-        json_str(&r.body, "login").ok_or_else(|| GitError::Other("user: brak login".into()))?;
+        json_str(&r.body, "login").ok_or_else(|| GitError::Other("user: no login".into()))?;
     Ok(User {
         login,
         avatar_url: json_str(&r.body, "avatar_url").unwrap_or_default(),
@@ -177,7 +175,7 @@ pub const AVATAR_PX: u32 = 96;
 /// bajtow przyszlo - do budzetu ruchu.
 pub fn fetch_avatar(avatar_url: &str) -> Result<Vec<u8>> {
     if avatar_url.is_empty() {
-        return Err(GitError::Other("avatar: brak adresu".into()));
+        return Err(GitError::Other("avatar: no url".into()));
     }
     let sep = if avatar_url.contains('?') { '&' } else { '?' };
     let url = format!("{avatar_url}{sep}s={AVATAR_PX}");
@@ -207,7 +205,7 @@ pub fn ensure_repo(token: &str, login: &str, name: &str) -> Result<String> {
     }
     let body = format!(
         "{{\"name\":\"{name}\",\"private\":true,\"auto_init\":false,\
-         \"description\":\"SpectreNotes space - notatki (op-log CRDT)\"}}"
+         \"description\":\"SpectreNotes space - notes (op-log CRDT)\"}}"
     );
     let r = http::request(
         "POST",

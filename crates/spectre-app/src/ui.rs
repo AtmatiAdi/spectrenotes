@@ -618,7 +618,7 @@ impl Toolbar {
         let editing = self.title_edit.is_some();
         let text = match &self.title_edit {
             Some(buf) => format!("{buf}|"),
-            None if s.title.is_empty() => "bez tytulu".to_string(),
+            None if s.title.is_empty() => "untitled".to_string(),
             None => s.title.to_string(),
         };
         if editing {
