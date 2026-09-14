@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use spectre_shell_win::image::Image;
 use spectre_shell_win::{image, secret, window};
@@ -43,6 +43,28 @@ pub enum Job {
     /// Token wklejony recznie (PAT) - gdy nie ma client_id.
     SetToken(String),
     Logout,
+}
+
+/// Chwila ostatniego udanego zdarzenia (zapis, sync, peer) - do licznika
+/// w menu. Dwa zegary naraz: `at` liczy wiek (monotoniczny, odporny na zmiane
+/// czasu systemowego), `unix_s` daje godzine do pokazania uzytkownikowi.
+#[derive(Debug, Clone, Copy)]
+pub struct Mark {
+    pub at: Instant,
+    pub unix_s: u64,
+}
+
+impl Mark {
+    pub fn now() -> Self {
+        Self {
+            at: Instant::now(),
+            unix_s: now_unix(),
+        }
+    }
+
+    pub fn age_s(&self) -> u64 {
+        self.at.elapsed().as_secs()
+    }
 }
 
 pub enum Event {
@@ -96,8 +118,8 @@ pub struct SyncWorker {
     pub last: String,
     /// Trwajace logowanie: kod do wpisania.
     pub device_code: Option<String>,
-    /// Ostatnia udana synchronizacja ze zdalnym (fetch/push) - do "sync 3 min temu".
-    pub last_remote_ok: Option<std::time::Instant>,
+    /// Ostatnia udana wymiana ze zdalnym (fetch/push) - do licznika w menu.
+    pub last_remote_ok: Option<Mark>,
 }
 
 /// Sciezki i ustawienia stale dla watku.
@@ -170,7 +192,7 @@ impl SyncWorker {
                 }
                 Event::Skipped => self.pending = self.pending.saturating_sub(1),
                 Event::Synced(r) if r.transfer.remote_ops > 0 => {
-                    self.last_remote_ok = Some(std::time::Instant::now());
+                    self.last_remote_ok = Some(Mark::now());
                 }
                 Event::DeviceCode { code, .. } => self.device_code = Some(code.clone()),
                 Event::LoggedIn(_) | Event::LoggedOut => self.device_code = None,

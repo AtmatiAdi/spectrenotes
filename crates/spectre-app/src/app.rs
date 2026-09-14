@@ -24,7 +24,7 @@ use crate::amoled::Waves;
 use crate::config::Config;
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, Setting};
-use crate::sync::{Event as SyncEvent, Job as SyncJob, SyncWorker, WM_SYNC};
+use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
@@ -54,6 +54,10 @@ const GIT_IDLE_MS: u32 = 10_000;
 const TIMER_PARTNER: usize = 5;
 const PARTNER_PING_MS: u32 = 10_000;
 const PARTNER_HOLD_MS: u32 = 30_000;
+/// Licznik "synced 4:37 ago" w naglowku menu tyka co sekunde - timer chodzi
+/// tylko przy otwartym menu i gasnie z nim (Z7: w tle zero wybudzen).
+const TIMER_MENU_CLOCK: usize = 6;
+const MENU_CLOCK_MS: u32 = 1000;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -174,6 +178,10 @@ pub struct App {
     shield: spectre_shell_win::shield::ShieldPartner,
     shield_held: bool,
     shield_ping: Option<Instant>,
+    /// Ostatni zapis operacji na dysk - do licznika w menu.
+    saved: Option<Mark>,
+    /// Timer sekundowy menu jest uzbrojony.
+    menu_clock: bool,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     waves_idle_s: u32,
     /// Fale wlaczone recznie (`W`): nie gasna od wejscia, tylko od `W`.
@@ -362,6 +370,8 @@ impl App {
             shield: spectre_shell_win::shield::ShieldPartner::new(),
             shield_held: false,
             shield_ping: None,
+            saved: None,
+            menu_clock: false,
             waves_idle_s,
             waves_forced: false,
             waves_dim_pct,
@@ -966,7 +976,9 @@ impl App {
         }
         // Do systemu od razu (przezyje crash aplikacji); fsync po ciszy
         // (przezyje utrate zasilania).
-        let _ = self.store.flush();
+        if self.store.flush().is_ok() && !ops.is_empty() {
+            self.saved = Some(Mark::now());
+        }
         // Te same bajty do peerow w LAN (po zapisie: watek live czyta plik,
         // gdy peer jest w tyle).
         if !ops.is_empty() {
@@ -1450,6 +1462,31 @@ impl App {
         }
     }
 
+    /// Timer sekundowy naglowka menu ("synced 4:37 ago"): uzbrojony dokladnie
+    /// wtedy, gdy menu jest na ekranie. Wolane z `render`, wiec kazde
+    /// otwarcie/zamkniecie menu (jest ich kilka drog) przechodzi tedy.
+    fn arm_menu_clock(&mut self, want: bool) {
+        if want == self.menu_clock {
+            return;
+        }
+        self.menu_clock = want;
+        unsafe {
+            if want {
+                SetTimer(Some(self.hwnd), TIMER_MENU_CLOCK, MENU_CLOCK_MS, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), TIMER_MENU_CLOCK);
+            }
+        }
+    }
+
+    fn menu_clock_tick(&mut self) {
+        if self.menu.open && self.waves.is_none() && !self.hidden {
+            self.render();
+        } else {
+            self.arm_menu_clock(false);
+        }
+    }
+
     fn release_partner(&mut self) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_PARTNER);
@@ -1715,6 +1752,7 @@ impl App {
         if self.waves.is_none() {
             self.toolbar.build(&st, &mut prims);
         }
+        self.arm_menu_clock(self.menu.open && self.waves.is_none());
         if self.menu.open && self.waves.is_none() {
             let author = self.author.dir_name();
             let live_line = self.live.status_line();
@@ -1741,7 +1779,9 @@ impl App {
                 sync: &self.sync.status,
                 sync_last: &self.sync.last,
                 sync_busy: self.sync.pending > 0,
-                sync_age_s: self.sync.last_remote_ok.map(|t| t.elapsed().as_secs()),
+                synced: self.sync.last_remote_ok,
+                saved: self.saved,
+                peer: self.live.last_ops,
                 avatar: self.renderer.has_avatar(),
                 device_code: self.sync.device_code.as_deref(),
                 live: &live_line,
@@ -2301,6 +2341,7 @@ pub unsafe extern "system" fn wndproc(
                 }
                 TIMER_WAVES => app.waves_tick(),
                 TIMER_PARTNER => app.partner_tick(),
+                TIMER_MENU_CLOCK => app.menu_clock_tick(),
                 TIMER_GIT => {
                     let _ = KillTimer(Some(hwnd), TIMER_GIT);
                     app.git_sync(false);

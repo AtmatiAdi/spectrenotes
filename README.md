@@ -62,7 +62,10 @@ w `%APPDATA%\SpectreNotes\config.txt` (jawny `klucz=wartość`).
 
 **Menu** (☰ na pasku narzędzi albo `M`) to panel z trzema zakładkami. U góry stały
 **nagłówek konta**: zdjęcie profilowe z GitHuba (albo inicjał, gdy niezalogowany),
-nazwa i stan logowania, ile temu była synchronizacja i przycisk „synchronizuj teraz".
+nazwa i stan logowania, licznik od ostatniej synchronizacji tykający co sekundę
+z dokładną godziną (`synced 4:37 ago · 12:04:11`; bez logowania `saved …`) i przycisk
+„synchronizuj teraz". Zakładka *Konto* rozdziela trzy zegary: zapis na dysk, GitHub,
+peer w LAN.
 *Notatki*: lista w folderach, od najnowszej, z datą utworzenia;
 tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,
 na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę,

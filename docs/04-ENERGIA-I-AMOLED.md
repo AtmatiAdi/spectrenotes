@@ -102,7 +102,8 @@ Po przeniesieniu okna na monitor zewnętrzny podpięty do dGPU przełączamy si�
   3 min bezczynności, potem co 60 ms, i gasną przy pierwszym wejściu albo ukryciu
   okna — w tle proces nie budzi się w ogóle. Decyzja: pełna
   bezczynność to dokładnie ten moment, w którym ochrona przed wypaleniem ma sens,
-  więc "zero timerów" ustąpiło "zero wybudzeń w tle".
+  więc "zero timerów" ustąpiło "zero wybudzeń w tle". Drugi, sekundowy, chodzi
+  tylko przy otwartym menu (licznik „synced 4:37 ago" ma tykać) i gaśnie z nim.
 - **MMCSS tylko w trakcie stroke'a.** Podnosimy priorytet wątku na czas rysowania
   i oddajemy natychmiast po `WM_POINTERUP`.
 - **Świadomość zasilania.** `RegisterPowerSettingNotification`: na baterii obniżamy

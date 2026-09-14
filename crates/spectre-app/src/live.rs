@@ -11,6 +11,8 @@ use spectre_sync::AuthorName;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
+use crate::sync::Mark;
+
 /// Watek live -> okno: "sa zdarzenia do odebrania" (`LiveWorker::poll`).
 pub const WM_LIVE: u32 = WM_APP + 3;
 
@@ -31,6 +33,9 @@ pub struct LiveWorker {
     pub lat_max_us: i64,
     pub wet_in: u64,
     pub ops_in: u64,
+    /// Ostatnia wymiana trwalych operacji z peerem (wyslane przy polaczeniu
+    /// albo odebrane) - do licznika "peer ... ago" w menu.
+    pub last_ops: Option<Mark>,
     pub error: String,
 }
 
@@ -44,7 +49,7 @@ impl LiveWorker {
                 None
             }
         };
-        let w = Self {
+        let mut w = Self {
             node,
             enabled,
             peers: Vec::new(),
@@ -53,6 +58,7 @@ impl LiveWorker {
             lat_max_us: 0,
             wet_in: 0,
             ops_in: 0,
+            last_ops: None,
             error: String::new(),
         };
         if !enabled {
@@ -61,7 +67,13 @@ impl LiveWorker {
         w
     }
 
-    pub fn send(&self, job: Job) {
+    pub fn send(&mut self, job: Job) {
+        // Wlasne operacje do polaczonego peera: TCP dostarczy albo zerwie
+        // polaczenie (wtedy peer znika z listy), wiec moment wyslania jest
+        // dobrym przyblizeniem "peer ma to, co ja".
+        if matches!(job, Job::Local { .. }) && self.has_peers() {
+            self.last_ops = Some(Mark::now());
+        }
         if let Some(n) = &self.node {
             n.send(job);
         }
@@ -112,7 +124,10 @@ impl LiveWorker {
                         self.lat_avg_us * 0.95 + *latency_us as f32 * 0.05
                     };
                 }
-                Event::Ops { ops, .. } => self.ops_in += ops.len() as u64,
+                Event::Ops { ops, .. } => {
+                    self.ops_in += ops.len() as u64;
+                    self.last_ops = Some(Mark::now());
+                }
                 Event::Error(e) => self.error = e.clone(),
                 Event::Cursor { .. } => {}
             }

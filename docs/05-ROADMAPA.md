@@ -176,13 +176,13 @@ co aplikacja ma robić i jak ma wyglądać. Wynik: aktualizacja `00-ZALOZENIA.md
 (nowe Z-ki albo doprecyzowanie istniejących) i lista zmian GUI tutaj.
 
 Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
-- [ ] **Stan synchronizacji w menu, obok informacji „synced"**: licznik czasu od
-      ostatniej udanej synchronizacji, **tykający na żywo** (nie zaokrąglone „5 min
-      temu", tylko np. `synced 4:37 ago` odświeżane co sekundę przy otwartym menu),
-      plus dokładna godzina ostatniego syncu — użytkownik ma widzieć **dokładnie**,
-      kiedy to było. Dziś nagłówek pokazuje `human_age` z `last_remote_ok`, liczone
-      tylko przy przerysowaniu; potrzebny timer odświeżający nagłówek, gdy menu jest
-      otwarte, i rozróżnienie „zapisane lokalnie" od „na GitHubie / u peera"
+- [x] **Stan synchronizacji w menu, obok informacji „synced"**: nagłówek pokazuje
+      `synced 4:37 ago · 12:04:11` (bez logowania: `saved …`) — wiek co do sekundy,
+      **tykający na żywo** (timer 1 s tylko przy otwartym menu), plus dokładna
+      godzina. Zakładka Account, sekcja Sync, rozdziela trzy zegary: `saved to disk`,
+      `on GitHub`, `with LAN peer` (`sync::Mark` = Instant + unix s). Zweryfikowane
+      zrzutami: 0:00 → 0:03 po 3 s, ta sama godzina; dwie instancje — wiersz peera
+      wypełnia się po wymianie operacji
 
 Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,

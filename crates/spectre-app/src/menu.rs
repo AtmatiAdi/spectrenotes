@@ -13,7 +13,7 @@ use spectre_render::{UiFont, UiPrim};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
-use crate::sync::Status as SyncStatus;
+use crate::sync::{Mark, Status as SyncStatus};
 use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
@@ -121,8 +121,13 @@ pub struct MenuState<'a> {
     pub sync: &'a SyncStatus,
     pub sync_last: &'a str,
     pub sync_busy: bool,
-    /// Sekundy od ostatniej udanej synchronizacji ze zdalnym.
-    pub sync_age_s: Option<u64>,
+    /// Ostatnia udana wymiana z GitHubem (fetch/push), ostatni zapis na dysk
+    /// i ostatnia wymiana operacji z peerem w LAN. Naglowek pokazuje jedna
+    /// z nich (najmocniejsza dostepna) z licznikiem tykajacym co sekunde,
+    /// zakladka Account - wszystkie trzy.
+    pub synced: Option<Mark>,
+    pub saved: Option<Mark>,
+    pub peer: Option<Mark>,
     /// Renderer ma avatar zalogowanego uzytkownika.
     pub avatar: bool,
     /// Trwajace logowanie Device Flow: kod do wpisania.
@@ -833,14 +838,20 @@ impl Menu {
             None => ("not signed in".to_string(), FG),
         };
         let b = &st.budget;
+        // Licznik tyka co sekunde (aplikacja przerysowuje otwarte menu timerem),
+        // obok dokladna godzina - uzytkownik ma widziec, kiedy to bylo, a nie
+        // zaokraglone "5 min temu".
         let (info, info_color) = if !logged {
-            ("notes stay local".to_string(), FG_DIM)
+            match s.saved {
+                Some(m) => (format!("saved {}", mark_text(&m)), FG_DIM),
+                None => ("notes stay local".to_string(), FG_DIM),
+            }
         } else if let Some(u) = b.backoff_until {
             (format!("sync paused until {}", local_time_at(u)), ACCENT)
         } else if s.sync_busy {
             ("syncing...".to_string(), FG_DIM)
-        } else if let Some(age) = s.sync_age_s {
-            (format!("synced {}", human_age(age)), FG_DIM)
+        } else if let Some(m) = s.synced {
+            (format!("synced {}", mark_text(&m)), FG_DIM)
         } else if st.remote.is_none() {
             ("connecting to repository...".to_string(), FG_DIM)
         } else {
@@ -1038,6 +1049,18 @@ impl Menu {
         if !s.sync_last.is_empty() {
             y += self.line(list, y, s.sync_last, FG_DIM, out);
         }
+        // Trzy zegary osobno - "zapisane" nie znaczy "na GitHubie".
+        for (what, mark) in [
+            ("saved to disk", s.saved),
+            ("on GitHub", s.synced),
+            ("with LAN peer", s.peer),
+        ] {
+            let text = match mark {
+                Some(m) => format!("{what}: {}", mark_text(&m)),
+                None => format!("{what}: not yet this session"),
+            };
+            y += self.line(list, y, &text, FG_DIM, out);
+        }
         y += self.line(
             list,
             y,
@@ -1163,6 +1186,21 @@ pub fn local_time_now() -> String {
 
 /// Lokalna godzina `HH:MM` dla chwili unix (s).
 pub fn local_time_at(unix_s: u64) -> String {
+    match local_at(unix_s) {
+        Some(l) => format!("{:02}:{:02}", l.wHour, l.wMinute),
+        None => String::new(),
+    }
+}
+
+/// Lokalna godzina `HH:MM:SS` dla chwili unix (s) - do licznika synchronizacji.
+pub fn local_clock_at(unix_s: u64) -> String {
+    match local_at(unix_s) {
+        Some(l) => format!("{:02}:{:02}:{:02}", l.wHour, l.wMinute, l.wSecond),
+        None => String::new(),
+    }
+}
+
+fn local_at(unix_s: u64) -> Option<SYSTEMTIME> {
     let ft_ticks = unix_s * 10_000_000 + 116_444_736_000_000_000;
     let ft = FILETIME {
         dwLowDateTime: ft_ticks as u32,
@@ -1174,10 +1212,10 @@ pub fn local_time_at(unix_s: u64) -> String {
         if FileTimeToSystemTime(&ft, &mut utc).is_err()
             || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err()
         {
-            return String::new();
+            return None;
         }
     }
-    format!("{:02}:{:02}", local.wHour, local.wMinute)
+    Some(local)
 }
 
 fn human_bytes(b: u64) -> String {
@@ -1187,6 +1225,28 @@ fn human_bytes(b: u64) -> String {
         format!("{:.0} kB", b as f64 / 1024.0)
     } else {
         format!("{b} B")
+    }
+}
+
+/// `4:37 ago · 12:04:11` - wiek co do sekundy plus godzina zdarzenia.
+pub fn mark_text(m: &Mark) -> String {
+    format!(
+        "{} ago · {}",
+        exact_age(m.age_s()),
+        local_clock_at(m.unix_s)
+    )
+}
+
+/// Wiek co do sekundy: `0:07`, `4:37`, `1:02:15`, `3 d 4:05:12`. Stala
+/// szerokosc w obrebie godziny, zeby tykajacy licznik nie skakal.
+pub fn exact_age(secs: u64) -> String {
+    let (d, h, m, s) = (secs / 86_400, secs / 3600 % 24, secs / 60 % 60, secs % 60);
+    if d > 0 {
+        format!("{d} d {h}:{m:02}:{s:02}")
+    } else if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
     }
 }
 
