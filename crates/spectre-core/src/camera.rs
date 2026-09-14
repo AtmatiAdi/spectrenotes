@@ -171,9 +171,11 @@ mod tests {
 
     #[test]
     fn widok_zablokowany_centruje_kolumne_odblokowany_nie_ogranicza() {
-        let mut c = Camera::default();
         // Zoom 0.5, okno 1440 px = 2880 jednostek = cala kolumna: brak marginesu.
-        c.zoom = 0.5;
+        let mut c = Camera {
+            zoom: 0.5,
+            ..Default::default()
+        };
         c.center_column(1440.0);
         assert_eq!(c.scroll_x, 0.0);
         // Zoom 1.0: okno pokazuje polowe kolumny, srodek kolumny na srodku okna.

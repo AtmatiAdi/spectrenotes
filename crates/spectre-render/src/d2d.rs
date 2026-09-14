@@ -130,6 +130,8 @@ pub enum UiFont {
     Center,
     /// Segoe UI 20, wysrodkowana (glify).
     Big,
+    /// Segoe UI 19, wysrodkowana - tytul notatki i przyciski okna w zakladkach.
+    Title,
 }
 
 /// Czubek cudzej kreski w trakcie rysowania (warstwa live), we wlasnym kolorze.
@@ -150,6 +152,9 @@ pub struct Overlay<'a> {
     /// Rysiki innych osob: (x, y) w pikselach ekranu, mala kropka.
     pub marks: &'a [(f32, f32)],
     pub ui: &'a [UiPrim],
+    /// Skala UI: prymitywy `ui` sa w jednostkach projektowych i przed rysowaniem
+    /// mnozone przez te liczbe (razem z czcionkami). `0` znaczy 1.
+    pub ui_scale: f32,
     /// Fale lokalnego przyciemnienia (Z7, po bezczynnosci), na samym wierzchu.
     pub dim: Option<&'a DimMask>,
 }
@@ -212,6 +217,7 @@ pub struct Renderer {
     text_fmt_big: IDWriteTextFormat,
     text_fmt_center: IDWriteTextFormat,
     text_fmt_ui: IDWriteTextFormat,
+    text_fmt_title: IDWriteTextFormat,
 
     /// Obrys per kreska zrealizowany do mesha (`geometry.rs`). Kreski sa
     /// niezmienne, wiec wpis dezaktualizuje sie tylko przy duzej zmianie zoomu
@@ -361,6 +367,18 @@ impl Renderer {
             )?;
             text_fmt_ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
             text_fmt_ui.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            let text_fmt_title = dwrite.CreateTextFormat(
+                w("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                19.0,
+                w("en-us"),
+            )?;
+            text_fmt_title.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            text_fmt_title.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            text_fmt_title.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
 
             let mut r = Self {
                 adapter_name,
@@ -386,6 +404,7 @@ impl Renderer {
                 text_fmt_big,
                 text_fmt_center,
                 text_fmt_ui,
+                text_fmt_title,
                 geo_cache: HashMap::new(),
                 geo_cache_verts: 0,
                 seg_scratch: Vec::with_capacity(4096),
@@ -850,7 +869,7 @@ impl Renderer {
                 };
                 self.ctx.DrawEllipse(&e, &self.cursor_brush, 1.0, None);
             }
-            self.draw_ui(overlay.ui)?;
+            self.draw_ui(overlay.ui, overlay.ui_scale)?;
             if let Some(text) = overlay.hud {
                 self.draw_hud(text);
             }
@@ -926,7 +945,24 @@ impl Renderer {
         Ok(())
     }
 
-    unsafe fn draw_ui(&mut self, prims: &[UiPrim]) -> Result<()> {
+    /// UI jest projektowane w jednostkach `1 / scale` piksela i rysowane pod
+    /// jedna transformacja skali - glify, czcionki i odstepy rosna razem.
+    unsafe fn draw_ui(&mut self, prims: &[UiPrim], scale: f32) -> Result<()> {
+        let s = if scale > 0.0 { scale } else { 1.0 };
+        self.ctx.SetTransform(&Matrix3x2 {
+            M11: s,
+            M12: 0.0,
+            M21: 0.0,
+            M22: s,
+            M31: 0.0,
+            M32: 0.0,
+        });
+        let res = self.draw_ui_prims(prims);
+        self.ctx.SetTransform(&Matrix3x2::identity());
+        res
+    }
+
+    unsafe fn draw_ui_prims(&mut self, prims: &[UiPrim]) -> Result<()> {
         let mut depth = 0u32;
         for p in prims {
             match p {
@@ -1002,6 +1038,7 @@ impl Renderer {
                         UiFont::Ui => &self.text_fmt_ui,
                         UiFont::Center => &self.text_fmt_center,
                         UiFont::Big => &self.text_fmt_big,
+                        UiFont::Title => &self.text_fmt_title,
                     };
                     let wide: Vec<u16> = text.encode_utf16().collect();
                     let rect = D2D_RECT_F {

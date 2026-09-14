@@ -15,6 +15,7 @@ use spectre_sync::{AuthorName, NoteStore, Space};
 use windows::core::Result;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
+use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, SetFocus, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_ESCAPE, VK_F11, VK_HOME, VK_NEXT,
     VK_OEM_4, VK_OEM_6, VK_PRIOR, VK_RETURN,
@@ -200,6 +201,10 @@ pub struct App {
     partner: PartnerState,
     shield_ping: Option<Instant>,
     partner_log: std::path::PathBuf,
+    /// Kanal wejscia testowego (`test_input`) - tylko gdy proces wystartowal
+    /// ze zmienna `SPECTRENOTES_TEST_INPUT`; inaczej `WM_COPYDATA` jest ignorowane.
+    test_input: bool,
+    started: Instant,
     /// Ostatni zapis operacji na dysk - do licznika w menu.
     saved: Option<Mark>,
     /// Timer sekundowy menu jest uzbrojony.
@@ -424,6 +429,8 @@ impl App {
             partner: PartnerState::Unknown,
             shield_ping: None,
             partner_log: data_dir.join("partner.log"),
+            test_input: std::env::var_os("SPECTRENOTES_TEST_INPUT").is_some(),
+            started: Instant::now(),
             saved: None,
             menu_clock: false,
             waves_idle_s,
@@ -520,6 +527,160 @@ impl App {
         self.mode = Mode::Idle;
         if self.reload_pending {
             self.reload_current();
+        }
+    }
+
+    /// Kontakt piora (`WM_POINTERDOWN` po `read`): co jest pod czubkiem -
+    /// element okna, menu, pasek albo canvas.
+    fn pointer_down(&mut self, batch: &PenBatch) {
+        let (x, y) = self.last_screen;
+        if let Some(t) = self.toolbar.title_hit(x, y) {
+            self.title_tap(t);
+        } else if let Some(h) = self.menu.hit(x, y) {
+            if h != MenuHit::Panel {
+                self.commit_folder_edit();
+                // Pola LAN: dotkniecie gdzie indziej = rezygnacja (haslo
+                // wpisane do polowy nie ma prawa zostac zatwierdzone).
+                self.menu.clear_lan_edits();
+            }
+            self.menu_tap(h);
+        } else {
+            if self.menu.open {
+                // Dotkniecie poza panelem zamyka go i od razu dziala
+                // jak zwykle - bez drugiego tapniecia.
+                self.commit_folder_edit();
+                self.menu.toggle();
+            }
+            if self.toolbar.pointer_inside(x, y) {
+                self.toolbar_tap(x, y);
+            } else {
+                if self.toolbar.title_edit.is_some() {
+                    self.commit_title();
+                }
+                self.apply_buttons(batch);
+            }
+        }
+        self.render();
+    }
+
+    /// Pioro w powietrzu (`WM_POINTERUPDATE` bez akcji): podswietlenia UI,
+    /// kursor gumki, kursor dla innych osob.
+    fn pointer_hover(&mut self, pos: (f32, f32), b: PenButtons, render: bool) {
+        let eraser_cursor = b.eraser || self.eraser_tool;
+        let ui_changed = if self.menu.contains(pos.0, pos.1) {
+            self.menu.hover(pos.0, pos.1)
+        } else {
+            let m = self.menu.open && self.menu.hover(-1.0, -1.0);
+            let t = self.toolbar.hover(pos.0, pos.1);
+            if t && self.toolbar.visible {
+                self.arm_ui_timer();
+            }
+            m || t
+        };
+        let changed = ui_changed
+            || b != self.buttons
+            || !self.hover
+            || (eraser_cursor && pos != self.last_screen);
+        self.buttons = b;
+        self.hover = true;
+        self.last_screen = pos;
+        self.activity_move(pos);
+        self.share_cursor(pos.0, pos.1);
+        if changed && render {
+            self.render();
+        }
+    }
+
+    /// Ruch w trakcie akcji (`WM_POINTERUPDATE` po `read`).
+    fn pointer_move(&mut self, batch: &PenBatch, render: bool) {
+        if !self.apply_buttons(batch) {
+            match self.mode {
+                Mode::Draw => self.feed(batch),
+                Mode::Erase => self.erase_with(batch),
+                Mode::Pan => self.update_pan(batch),
+                Mode::DragBar => self.toolbar.drag_to(self.last_screen.0, self.last_screen.1),
+                Mode::Idle => {}
+            }
+            let (px, py) = self.last_screen;
+            self.share_cursor(px, py);
+        }
+        if render {
+            self.render();
+        }
+    }
+
+    /// Oderwanie piora (`WM_POINTERUP`, utrata przechwycenia): ostatnie probki
+    /// i koniec akcji.
+    fn pointer_up(&mut self, batch: Option<&PenBatch>) {
+        if let Some(batch) = batch {
+            match self.mode {
+                Mode::Draw => self.feed(batch),
+                Mode::Erase => self.erase_with(batch),
+                _ => {}
+            }
+        }
+        self.end_action();
+        self.render();
+    }
+
+    /// Wejscie testowe (`WM_COPYDATA`, tylko z `SPECTRENOTES_TEST_INPUT` w
+    /// srodowisku): skrypt testu podaje pioro tekstem, bez ruszania prawdziwej
+    /// myszy i bez zabierania fokusu. Komendy: `down X Y [barrel|eraser]`,
+    /// `move X Y`, `up`, `hover X Y` - wspolrzedne w pikselach okna. Probki ida
+    /// ta sama droga co z `WM_POINTER`, tylko bez dekodera.
+    fn test_input(&mut self, cmd: &str) {
+        let mut it = cmd.split_whitespace();
+        let Some(op) = it.next() else {
+            return;
+        };
+        let mut num = || it.next().and_then(|s| s.parse::<f32>().ok());
+        let pos = match op {
+            "up" => self.last_screen,
+            _ => match (num(), num()) {
+                (Some(x), Some(y)) => (x, y),
+                _ => return,
+            },
+        };
+        let mut buttons = self.buttons;
+        if op == "down" {
+            buttons = PenButtons::default();
+            match it.next() {
+                Some("barrel") => buttons.barrel = true,
+                Some("eraser") => buttons.eraser = true,
+                _ => {}
+            }
+        }
+        let batch = PenBatch {
+            samples: vec![Sample {
+                x: pos.0,
+                y: pos.1,
+                pressure: 0.5,
+                tilt_x: 0.0,
+                tilt_y: 0.0,
+                t_us: self.started.elapsed().as_micros() as u64,
+            }],
+            buttons,
+            history_len: 0,
+        };
+        self.activity();
+        match op {
+            "down" => {
+                self.buttons = buttons;
+                self.last_screen = pos;
+                self.pointer_down(&batch);
+            }
+            "move" if self.mode != Mode::Idle => {
+                self.last_screen = pos;
+                self.pointer_move(&batch, true);
+            }
+            "move" | "hover" => self.pointer_hover(pos, buttons, true),
+            "up" => {
+                if self.mode != Mode::Idle {
+                    self.pointer_up(Some(&batch));
+                }
+                self.buttons = PenButtons::default();
+            }
+            _ => {}
         }
     }
 
@@ -783,7 +944,7 @@ impl App {
             Action::Grip => {
                 self.end_action();
                 self.mode = Mode::DragBar;
-                self.toolbar.dragging = Some((x, y));
+                self.toolbar.drag_to(x, y);
             }
             Action::Menu => self.menu.toggle(),
             Action::Pen => self.eraser_tool = false,
@@ -2200,6 +2361,7 @@ impl App {
                 tails: &wet_tails,
                 marks: &marks,
                 ui: &prims,
+                ui_scale: crate::ui::UI_SCALE,
                 dim,
             },
             if self.vsync {
@@ -2431,34 +2593,7 @@ pub unsafe extern "system" fn wndproc(
         WM_POINTERDOWN => {
             app.activity();
             if let Some(batch) = app.read(pointer_id, false) {
-                let (x, y) = app.last_screen;
-                if let Some(t) = app.toolbar.title_hit(x, y) {
-                    app.title_tap(t);
-                } else if let Some(h) = app.menu.hit(x, y) {
-                    if h != MenuHit::Panel {
-                        app.commit_folder_edit();
-                        // Pola LAN: dotkniecie gdzie indziej = rezygnacja (haslo
-                        // wpisane do polowy nie ma prawa zostac zatwierdzone).
-                        app.menu.clear_lan_edits();
-                    }
-                    app.menu_tap(h);
-                } else {
-                    if app.menu.open {
-                        // Dotkniecie poza panelem zamyka go i od razu dziala
-                        // jak zwykle - bez drugiego tapniecia.
-                        app.commit_folder_edit();
-                        app.menu.toggle();
-                    }
-                    if app.toolbar.pointer_inside(x, y) {
-                        app.toolbar_tap(x, y);
-                    } else {
-                        if app.toolbar.title_edit.is_some() {
-                            app.commit_title();
-                        }
-                        app.apply_buttons(&batch);
-                    }
-                }
-                app.render();
+                app.pointer_down(&batch);
             }
             LRESULT(0)
         }
@@ -2486,48 +2621,13 @@ pub unsafe extern "system" fn wndproc(
                                 pos = (s.x, s.y);
                             }
                         }
-                        let eraser_cursor = b.eraser || app.eraser_tool;
-                        let ui_changed = if app.menu.contains(pos.0, pos.1) {
-                            app.menu.hover(pos.0, pos.1)
-                        } else {
-                            let m = app.menu.open && app.menu.hover(-1.0, -1.0);
-                            let t = app.toolbar.hover(pos.0, pos.1);
-                            if t && app.toolbar.visible {
-                                app.arm_ui_timer();
-                            }
-                            m || t
-                        };
-                        let changed = ui_changed
-                            || b != app.buttons
-                            || !app.hover
-                            || (eraser_cursor && pos != app.last_screen);
-                        app.buttons = b;
-                        app.hover = true;
-                        app.last_screen = pos;
-                        app.activity_move(pos);
-                        app.share_cursor(pos.0, pos.1);
-                        if changed && !more_pending {
-                            app.render();
-                        }
+                        app.pointer_hover(pos, b, !more_pending);
                     }
                 }
                 _ => {
                     app.activity();
                     if let Some(batch) = app.read(pointer_id, true) {
-                        if !app.apply_buttons(&batch) {
-                            match app.mode {
-                                Mode::Draw => app.feed(&batch),
-                                Mode::Erase => app.erase_with(&batch),
-                                Mode::Pan => app.update_pan(&batch),
-                                Mode::DragBar => app.toolbar.dragging = Some(app.last_screen),
-                                Mode::Idle => {}
-                            }
-                            let (px, py) = app.last_screen;
-                            app.share_cursor(px, py);
-                        }
-                        if !more_pending {
-                            app.render();
-                        }
+                        app.pointer_move(&batch, !more_pending);
                     }
                 }
             }
@@ -2535,15 +2635,8 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_POINTERUP | WM_POINTERCAPTURECHANGED => {
             if app.mode != Mode::Idle {
-                if let Some(batch) = app.read(pointer_id, true) {
-                    match app.mode {
-                        Mode::Draw => app.feed(&batch),
-                        Mode::Erase => app.erase_with(&batch),
-                        _ => {}
-                    }
-                }
-                app.end_action();
-                app.render();
+                let batch = app.read(pointer_id, true);
+                app.pointer_up(batch.as_ref());
             }
             LRESULT(0)
         }
@@ -2678,6 +2771,21 @@ pub unsafe extern "system" fn wndproc(
         WM_HOTKEY => {
             if wparam.0 as i32 == HOTKEY_TOGGLE {
                 app.toggle_visible();
+            }
+            LRESULT(0)
+        }
+        WM_COPYDATA => {
+            if app.test_input {
+                // COPYDATASTRUCT: lpData = tekst UTF-8, cbData = dlugosc.
+                let cds = &*(lparam.0 as *const COPYDATASTRUCT);
+                let bytes =
+                    std::slice::from_raw_parts(cds.lpData as *const u8, cds.cbData as usize);
+                if let Ok(text) = std::str::from_utf8(bytes) {
+                    for line in text.lines() {
+                        app.test_input(line);
+                    }
+                }
+                return LRESULT(1);
             }
             LRESULT(0)
         }

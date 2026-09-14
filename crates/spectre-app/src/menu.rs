@@ -14,7 +14,7 @@ use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
 use crate::sync::{Mark, Status as SyncStatus};
-use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
+use crate::ui::{design, Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
 /// Naglowek panelu: avatar, nazwa, stan synchronizacji, przycisk sync.
@@ -218,8 +218,9 @@ impl Menu {
         }
     }
 
+    /// `w`, `h` - rozmiar okna w pikselach; wewnatrz jednostki projektowe (`ui::UI_SCALE`).
     pub fn layout(&mut self, w: f32, h: f32) {
-        self.view = (w, h);
+        self.view = design(w, h);
     }
 
     pub fn panel_rect(&self) -> Rect {
@@ -242,7 +243,13 @@ impl Menu {
         }
     }
 
+    /// Punkt (piksele okna) lezy na otwartym panelu.
     pub fn contains(&self, x: f32, y: f32) -> bool {
+        let (x, y) = design(x, y);
+        self.contains_at(x, y)
+    }
+
+    fn contains_at(&self, x: f32, y: f32) -> bool {
         self.open && self.panel_rect().contains(x, y)
     }
 
@@ -290,7 +297,12 @@ impl Menu {
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<MenuHit> {
-        if !self.contains(x, y) {
+        let (x, y) = design(x, y);
+        self.hit_at(x, y)
+    }
+
+    fn hit_at(&self, x: f32, y: f32) -> Option<MenuHit> {
+        if !self.contains_at(x, y) {
             return None;
         }
         let list = self.list_rect();
@@ -308,7 +320,8 @@ impl Menu {
 
     /// Ruch rysika. Zwraca `true`, gdy zmienilo sie podswietlenie.
     pub fn hover(&mut self, x: f32, y: f32) -> bool {
-        let hot = match self.hit(x, y) {
+        let (x, y) = design(x, y);
+        let hot = match self.hit_at(x, y) {
             Some(MenuHit::Panel) | None => None,
             h => h,
         };

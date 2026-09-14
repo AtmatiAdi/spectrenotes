@@ -15,6 +15,18 @@
 use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
 
+/// Skala calego UI (pasek, zakladki, menu). Wymiary ponizej i w `menu.rs` sa
+/// w **jednostkach projektowych**; renderer mnozy prymitywy przez te skale, a
+/// wejscie (rozmiar okna, rysik) jest przez nia dzielone na granicy modulu
+/// (`design`). Dzieki temu glify, czcionki i odstepy rosna razem.
+pub const UI_SCALE: f32 = 1.2;
+
+/// Piksele okna -> jednostki projektowe UI.
+#[inline]
+pub fn design(x: f32, y: f32) -> (f32, f32) {
+    (x / UI_SCALE, y / UI_SCALE)
+}
+
 /// Grubosc paska narzedzi w osi poprzecznej.
 pub const BAR_THICK: f32 = 56.0;
 /// Strefa przy krawedzi, ktora odslania pasek.
@@ -22,11 +34,12 @@ pub const EDGE_ZONE: f32 = 18.0;
 pub const ITEM_LEN: f32 = 44.0;
 pub const COLOR_LEN: f32 = 30.0;
 pub const GRIP_LEN: f32 = 22.0;
-/// Wysokosc zakladek nad canvasem.
-pub const TAB_H: f32 = 34.0;
-pub const WIN_BTN_W: f32 = 46.0;
+/// Wysokosc zakladek nad canvasem. Zakladki (tytul, przyciski okna) sa o
+/// polowe wieksze niz reszta UI: to w nie celuje sie najczesciej "w ciemno".
+pub const TAB_H: f32 = 42.0;
+pub const WIN_BTN_W: f32 = 58.0;
 /// Uchwyt do przesuwania okna z lewej strony zakladki tytulu.
-const TAB_GRIP_W: f32 = 22.0;
+const TAB_GRIP_W: f32 = 28.0;
 /// Pole tytulu w pasku u gory musi miec tyle miejsca, zeby w ogole sie pokazac.
 const TITLE_MIN_W: f32 = 90.0;
 /// Pole procentu zoomu (przycisk "dopasuj szerokosc").
@@ -167,8 +180,9 @@ pub struct Toolbar {
     pub title_edit: Option<String>,
     /// Elementy okna (zakladki / pola w pasku) sa - nie w pelnym ekranie.
     pub chrome: bool,
-    /// Trwa przeciaganie paska za uchwyt: aktualna pozycja rysika.
-    pub dragging: Option<(f32, f32)>,
+    /// Trwa przeciaganie paska za uchwyt: aktualna pozycja rysika (jednostki
+    /// projektowe, patrz `drag_to`).
+    dragging: Option<(f32, f32)>,
     view: (f32, f32),
     title_hot: Option<TitleAction>,
     /// Polozenie elementow okna z ostatniego `layout` (zakladki albo pasek).
@@ -214,7 +228,9 @@ impl Toolbar {
         self.chrome && !self.absorbs()
     }
 
+    /// `w`, `h` - rozmiar okna w pikselach (jak wszystkie wejscia z `app.rs`).
     pub fn layout(&mut self, w: f32, h: f32, palette_len: usize) {
+        let (w, h) = design(w, h);
         self.view = (w, h);
         // (akcja, odstep przed elementem, dlugosc w osi glownej)
         let mut order: Vec<(Action, f32, f32)> = vec![
@@ -497,8 +513,13 @@ impl Toolbar {
         self.chrome && (!self.absorbs() || self.visible)
     }
 
-    /// Element okna pod punktem.
+    /// Element okna pod punktem (piksele okna).
     pub fn title_hit(&self, x: f32, y: f32) -> Option<TitleAction> {
+        let (x, y) = design(x, y);
+        self.title_hit_at(x, y)
+    }
+
+    fn title_hit_at(&self, x: f32, y: f32) -> Option<TitleAction> {
         if !self.window_controls_shown() {
             return None;
         }
@@ -524,6 +545,7 @@ impl Toolbar {
     /// z kropkami (przy tytule i przy przyciskach okna) albo puste miejsce
     /// widocznego paska - w kazdym doku, bo pasek zastepuje pasek tytulowy.
     pub fn caption_hit(&self, x: f32, y: f32) -> bool {
+        let (x, y) = design(x, y);
         if !self.chrome {
             return false;
         }
@@ -534,8 +556,8 @@ impl Toolbar {
         }
         self.visible
             && self.bar_rect().contains(x, y)
-            && self.hit(x, y).is_none()
-            && self.title_hit(x, y).is_none()
+            && self.hit_at(x, y).is_none()
+            && self.title_hit_at(x, y).is_none()
     }
 
     /// Punkt lezy na ktorejs zakladce nad canvasem.
@@ -548,16 +570,17 @@ impl Toolbar {
 
     /// Ruch rysika (hover lub kontakt). Zwraca `true`, gdy UI zmienilo wyglad.
     pub fn hover(&mut self, x: f32, y: f32) -> bool {
+        let (x, y) = design(x, y);
         let was_visible = self.visible;
         if self.in_edge_zone(x, y) {
             self.visible = true;
         }
         let hot = if self.visible && self.bar_rect().contains(x, y) {
-            self.hit(x, y)
+            self.hit_at(x, y)
         } else {
             None
         };
-        let title_hot = self.title_hit(x, y);
+        let title_hot = self.title_hit_at(x, y);
         let changed = hot != self.hot || was_visible != self.visible || title_hot != self.title_hot;
         self.hot = hot;
         self.title_hot = title_hot;
@@ -566,11 +589,13 @@ impl Toolbar {
 
     /// Punkt nalezy do UI paska/zakladek - nie do canvasu.
     pub fn pointer_inside(&self, x: f32, y: f32) -> bool {
+        let (x, y) = design(x, y);
         (self.visible && self.bar_rect().contains(x, y)) || self.in_tabs(x, y)
     }
 
     /// Wolane, gdy uplynal czas bezczynnosci. Zwraca `true`, gdy pasek sie schowal.
     pub fn idle(&mut self, pointer: (f32, f32)) -> bool {
+        let pointer = design(pointer.0, pointer.1);
         if self.pinned {
             return false;
         }
@@ -588,6 +613,11 @@ impl Toolbar {
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<Action> {
+        let (x, y) = design(x, y);
+        self.hit_at(x, y)
+    }
+
+    fn hit_at(&self, x: f32, y: f32) -> Option<Action> {
         if !self.visible {
             return None;
         }
@@ -597,9 +627,15 @@ impl Toolbar {
             .map(|it| it.action)
     }
 
+    /// Poczatek albo ciag dalszy przeciagania paska: rysik jest w `(x, y)` (piksele okna).
+    pub fn drag_to(&mut self, x: f32, y: f32) {
+        self.dragging = Some(design(x, y));
+    }
+
     /// Koniec przeciagania: krawedz najblizsza rysikowi staje sie nowym dokiem.
     /// Zwraca `true`, gdy dok sie zmienil.
     pub fn drop_at(&mut self, x: f32, y: f32, palette_len: usize) -> bool {
+        let (x, y) = design(x, y);
         self.dragging = None;
         let best = self.nearest_dock(x, y);
         if best != self.dock {
@@ -692,7 +728,7 @@ impl Toolbar {
             } else {
                 FG_DIM
             },
-            font: UiFont::Center,
+            font: UiFont::Title,
         });
     }
 
@@ -730,7 +766,7 @@ impl Toolbar {
                 h: r.h,
                 text: glyph.to_string(),
                 color: FG,
-                font: UiFont::Center,
+                font: UiFont::Title,
             });
         }
     }
@@ -1044,5 +1080,60 @@ fn grip_dots(g: Rect, color: Rgba, out: &mut Vec<UiPrim>) {
 
 /// Szerokosc zakladki tytulu (i pola tytulu w pasku u gory) dla okna `w`.
 fn tab_width(w: f32) -> f32 {
-    (w * 0.35).clamp(160.0, 480.0)
+    (w * 0.35).clamp(200.0, 600.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Wejscie jest w pikselach okna, geometria w jednostkach projektowych:
+    /// uchwyty zakladek i puste miejsce paska musza trafiac po przeliczeniu.
+    #[test]
+    fn uchwyty_okna_trafiaja_w_pikselach_okna() {
+        let mut t = Toolbar::new(Dock::Left);
+        t.visible = true;
+        t.layout(1400.0, 1300.0, 6);
+        let grip_w = TAB_GRIP_W * UI_SCALE;
+        // Uchwyt przy przyciskach: tuz na lewo od trzech przyciskow.
+        let win_x = 1400.0 - WIN_BTN_W * 3.0 * UI_SCALE;
+        assert!(t.caption_hit(win_x - grip_w * 0.5, 25.0));
+        assert_eq!(t.title_hit(win_x + 5.0, 25.0), Some(TitleAction::Minimize));
+        assert_eq!(t.title_hit(1395.0, 25.0), Some(TitleAction::Close));
+        // Uchwyt zakladki tytulu: poczatek zakladki wysrodkowanej w oknie.
+        let tab_w = tab_width(1400.0 / UI_SCALE) * UI_SCALE;
+        let tab_x = (1400.0 - tab_w) * 0.5;
+        assert!(t.caption_hit(tab_x + grip_w * 0.5, 25.0));
+        assert_eq!(t.title_hit(700.0, 25.0), Some(TitleAction::EditTitle));
+        // Pod zakladka jest canvas.
+        assert!(!t.caption_hit(700.0, TAB_H * UI_SCALE + 2.0));
+        // Puste miejsce paska z lewej (pod elementami, nad klodka) przesuwa okno,
+        // element paska - nie.
+        assert!(t.caption_hit(33.0, 1000.0));
+        assert!(t.hit(33.0, 1000.0).is_none());
+        assert_eq!(t.hit(33.0, 70.0), Some(Action::Menu));
+        assert!(!t.caption_hit(33.0, 70.0));
+    }
+
+    /// Pasek u gory wchlania przyciski okna: musza byc w oknie, a nie za nim
+    /// (blad: uklad liczony w pikselach, nie w jednostkach projektowych).
+    #[test]
+    fn pasek_u_gory_trzyma_przyciski_okna_w_oknie() {
+        let mut t = Toolbar::new(Dock::Top);
+        t.visible = true;
+        t.layout(1400.0, 1300.0, 6);
+        assert_eq!(t.title_hit(1395.0, 30.0), Some(TitleAction::Close));
+        let win_x = 1400.0 - WIN_BTN_W * 3.0 * UI_SCALE;
+        assert_eq!(t.title_hit(win_x + 5.0, 30.0), Some(TitleAction::Minimize));
+        assert!(t.caption_hit(win_x - TAB_GRIP_W * UI_SCALE * 0.5, 30.0));
+        assert_eq!(
+            t.hit(win_x - (TAB_GRIP_W + 4.0 + ITEM_LEN * 0.5) * UI_SCALE, 30.0),
+            Some(Action::LockPc)
+        );
+        // Tytul: na srodku okna, gdy jest miejsce (szerokie okno).
+        t.layout(2880.0, 1000.0, 6);
+        assert_eq!(t.title_hit(1440.0, 30.0), Some(TitleAction::EditTitle));
+        let r = t.title_rect.unwrap();
+        assert!(((r.x + r.w * 0.5) * UI_SCALE - 1440.0).abs() < 2.0, "{r:?}");
+    }
 }

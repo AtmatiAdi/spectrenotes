@@ -194,6 +194,16 @@ HUD pokazuje to, co realnie decyduje o odczuciu:
 Bezwzględnej latencji pen-to-photon HUD nie zmierzy — to się robi kamerą 240 fps
 (telefon), licząc klatki między dotknięciem rysika a pojawieniem się piksela.
 
+### Testy GUI bez ruszania myszy
+
+Proces uruchomiony ze zmienną `SPECTRENOTES_TEST_INPUT=1` przyjmuje pióro jako
+tekst przez `WM_COPYDATA` (UTF-8, jedna komenda na linię): `down X Y [barrel|eraser]`,
+`move X Y`, `up`, `hover X Y` — współrzędne w pikselach okna. Próbki idą tą samą
+drogą co z `WM_POINTER` (pasek, menu, canvas), tylko bez dekodera. Klawisze można
+podać `PostMessage(WM_KEYDOWN)`, przesuwanie okna sprawdzić pytaniem `WM_NCHITTEST`
+(2 = `HTCAPTION`). Skrypt testowy nie zabiera więc kursora ani fokusu osobie, która
+w tym czasie pracuje. Bez tej zmiennej `WM_COPYDATA` jest ignorowane.
+
 ### Porównania, które warto zrobić od razu
 
 1. `S` włączony vs. wyłączony — czy wygładzanie faktycznie przeszkadza, czy tylko
