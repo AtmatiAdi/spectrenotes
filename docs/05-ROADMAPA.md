@@ -206,9 +206,10 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
 - [x] Kłódka komputera (`LockWorkStation`, jak `Win+L`) na samym końcu paska.
 - [x] Elementy paska kurczą się proporcjonalnie, gdy pasek jest krótszy niż one
       (900×700: wszystko widoczne, nic nie nachodzi na kłódkę).
-- [ ] Zgłoszenie „znikają przyciski przełączania między notatkami" — do
-      doprecyzowania z użytkownikiem (przy jednej notatce ▲▼ są tylko przygaszone;
-      po kompresji nic już nie wypada poza pasek).
+- [x] Przyciski ▲▼＋ (notatki) zdjęte z paska (2026-09-15) — nawigacja przez menu,
+      `PgUp/PgDn`, `Ctrl+N`.
+- [x] Tytuł w pasku u góry: szerokość i środek jak zakładka nad canvasem, bez
+      rozciągania na wolne miejsce; przy 2400 px środek napisu = środek okna.
 
 Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,

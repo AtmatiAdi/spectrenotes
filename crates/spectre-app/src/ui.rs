@@ -116,9 +116,6 @@ pub enum Action {
     WidthUp,
     Undo,
     Redo,
-    PrevNote,
-    NextNote,
-    NewNote,
     ZoomOut,
     ZoomIn,
     /// Procent zoomu jako przycisk: dopasuj szerokosc kolumny do okna.
@@ -147,8 +144,6 @@ pub struct UiState<'a> {
     pub width: f32,
     pub can_undo: bool,
     pub can_redo: bool,
-    pub note_idx: usize,
-    pub notes_len: usize,
     pub title: &'a str,
     pub zoom: f32,
     pub view_locked: bool,
@@ -236,9 +231,6 @@ impl Toolbar {
             (Action::WidthUp, 0.0, ITEM_LEN),
             (Action::Undo, 8.0, ITEM_LEN),
             (Action::Redo, 0.0, ITEM_LEN),
-            (Action::PrevNote, 8.0, ITEM_LEN),
-            (Action::NextNote, 0.0, ITEM_LEN),
-            (Action::NewNote, 0.0, ITEM_LEN),
             (Action::ZoomOut, 8.0, ITEM_LEN),
             (Action::ZoomIn, 0.0, ITEM_LEN),
             (Action::ZoomFit, 0.0, ZOOM_W),
@@ -335,11 +327,22 @@ impl Toolbar {
         // Elementy okna.
         match self.dock {
             Dock::Top if absorbs => {
-                // Reszta miejsca miedzy elementami a `LockPc` to tytul.
-                let left = along + 16.0;
-                let tw = lock_along - 12.0 - left;
+                // Tytul jak zakladka nad canvasem: ta sama szerokosc, srodek na
+                // srodku okna - nie rozciagniety na wolne miejsce paska. Gdy
+                // elementy albo prawa strona wchodza w to miejsce, zweza sie
+                // symetrycznie; gdy symetrycznie nie ma juz miejsca, laduje
+                // w wolnym pasie; gdy i tam brak - znika.
+                let free_l = along + 16.0;
+                let free_r = lock_along - 12.0;
+                let half = (w * 0.5 - free_l).min(free_r - w * 0.5);
+                let centred = tab_width(w).min(2.0 * half);
+                let (x, tw) = if centred >= TITLE_MIN_W {
+                    (((w - centred) * 0.5).round(), centred)
+                } else {
+                    (free_l, tab_width(w).min(free_r - free_l))
+                };
                 self.title_rect = (tw >= TITLE_MIN_W).then_some(Rect {
-                    x: left,
+                    x,
                     y: 10.0,
                     w: tw,
                     h: BAR_THICK - 20.0,
@@ -367,7 +370,7 @@ impl Toolbar {
             self.tab_grip = None;
             return;
         }
-        let tw = (w * 0.35).clamp(160.0, 480.0);
+        let tw = tab_width(w);
         let tx = ((w - tw) * 0.5).round();
         self.tab_grip = Some(Rect {
             x: tx,
@@ -802,8 +805,6 @@ impl Toolbar {
             let enabled = match it.action {
                 Action::Undo => s.can_undo,
                 Action::Redo => s.can_redo,
-                Action::PrevNote => s.note_idx > 0,
-                Action::NextNote => s.note_idx + 1 < s.notes_len,
                 _ => true,
             };
             let fg = if enabled { FG } else { FG_DIM };
@@ -1002,9 +1003,6 @@ impl Toolbar {
                     let glyph = match it.action {
                         Action::Undo => "↶",
                         Action::Redo => "↷",
-                        Action::PrevNote => "▲",
-                        Action::NextNote => "▼",
-                        Action::NewNote => "＋",
                         _ => "",
                     };
                     out.push(UiPrim::Text {
@@ -1042,4 +1040,9 @@ fn grip_dots(g: Rect, color: Rgba, out: &mut Vec<UiPrim>) {
             });
         }
     }
+}
+
+/// Szerokosc zakladki tytulu (i pola tytulu w pasku u gory) dla okna `w`.
+fn tab_width(w: f32) -> f32 {
+    (w * 0.35).clamp(160.0, 480.0)
 }
