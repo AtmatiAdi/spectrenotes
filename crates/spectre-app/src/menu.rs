@@ -14,7 +14,7 @@ use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
 use crate::sync::{Mark, Status as SyncStatus};
-use crate::ui::{design, Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
+use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
 /// Naglowek panelu: avatar, nazwa, stan synchronizacji, przycisk sync.
@@ -193,6 +193,8 @@ pub struct Menu {
     rows: Vec<(MenuHit, Rect)>,
     fixed_rows: usize,
     view: (f32, f32),
+    /// Skala DPI monitora (1.0 = 96 DPI) z ostatniego `layout`.
+    scale: f32,
     content_h: f32,
     /// Foldery w kolejnosci z ostatniego `build` - `MoveTo(i)` odnosi sie do niej.
     folder_names: Vec<String>,
@@ -214,27 +216,32 @@ impl Menu {
             fixed_rows: 0,
             view: (0.0, 0.0),
             content_h: 0.0,
+            scale: 1.0,
             folder_names: Vec::new(),
         }
     }
 
-    /// `w`, `h` - rozmiar okna w pikselach; wewnatrz jednostki projektowe (`ui::UI_SCALE`).
-    pub fn layout(&mut self, w: f32, h: f32) {
-        self.view = design(w, h);
+    /// `w`, `h` - rozmiar okna w pikselach, `scale` - DPI monitora / 96; wymiary
+    /// panelu sa liczone z niej na fizyczne piksele jak w `ui.rs`.
+    pub fn layout(&mut self, w: f32, h: f32, scale: f32) {
+        self.view = (w, h);
+        self.scale = scale;
     }
 
     pub fn panel_rect(&self) -> Rect {
+        let k = self.scale;
         Rect {
             x: 0.0,
             y: 0.0,
-            w: PANEL_W.min(self.view.0 - 24.0).max(120.0),
+            w: (PANEL_W * k).min(self.view.0 - 24.0 * k).max(120.0 * k),
             h: self.view.1,
         }
     }
 
     fn list_rect(&self) -> Rect {
+        let k = self.scale;
         let p = self.panel_rect();
-        let top = HEADER_H + TAB_H;
+        let top = (HEADER_H * k) + (TAB_H * k);
         Rect {
             x: p.x,
             y: p.y + top,
@@ -245,7 +252,6 @@ impl Menu {
 
     /// Punkt (piksele okna) lezy na otwartym panelu.
     pub fn contains(&self, x: f32, y: f32) -> bool {
-        let (x, y) = design(x, y);
         self.contains_at(x, y)
     }
 
@@ -286,8 +292,9 @@ impl Menu {
 
     /// Kolko nad panelem. Zwraca `true`, gdy trzeba przerysowac.
     pub fn wheel(&mut self, delta_notches: f32) -> bool {
+        let k = self.scale;
         let max = (self.content_h - self.list_rect().h).max(0.0);
-        let s = (self.scroll - delta_notches * WHEEL_STEP).clamp(0.0, max);
+        let s = (self.scroll - delta_notches * (WHEEL_STEP * k)).clamp(0.0, max);
         if (s - self.scroll).abs() > f32::EPSILON {
             self.scroll = s;
             true
@@ -297,7 +304,6 @@ impl Menu {
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<MenuHit> {
-        let (x, y) = design(x, y);
         self.hit_at(x, y)
     }
 
@@ -320,7 +326,6 @@ impl Menu {
 
     /// Ruch rysika. Zwraca `true`, gdy zmienilo sie podswietlenie.
     pub fn hover(&mut self, x: f32, y: f32) -> bool {
-        let (x, y) = design(x, y);
         let hot = match self.hit_at(x, y) {
             Some(MenuHit::Panel) | None => None,
             h => h,
@@ -333,6 +338,7 @@ impl Menu {
     // ----- rysowanie ---------------------------------------------------------
 
     pub fn build(&mut self, s: &MenuState, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         self.rows.clear();
         if !self.open {
             return;
@@ -363,19 +369,19 @@ impl Menu {
         for (i, t) in tabs.iter().enumerate() {
             let r = Rect {
                 x: p.x + tw * i as f32,
-                y: p.y + HEADER_H,
+                y: p.y + (HEADER_H * k),
                 w: tw,
-                h: TAB_H,
+                h: (TAB_H * k),
             };
             let active = *t == self.tab;
             if self.hot == Some(MenuHit::Tab(*t)) && !active {
                 out.push(UiPrim::Rect {
-                    x: r.x + 3.0,
-                    y: r.y + 4.0,
-                    w: r.w - 6.0,
-                    h: r.h - 8.0,
+                    x: r.x + 3.0 * k,
+                    y: r.y + 4.0 * k,
+                    w: r.w - 6.0 * k,
+                    h: r.h - 8.0 * k,
                     color: HOT,
-                    r: 6.0,
+                    r: 6.0 * k,
                 });
             }
             out.push(UiPrim::Text {
@@ -389,10 +395,10 @@ impl Menu {
             });
             if active {
                 out.push(UiPrim::Rect {
-                    x: r.x + 10.0,
-                    y: r.y + r.h - 3.0,
-                    w: r.w - 20.0,
-                    h: 2.0,
+                    x: r.x + 10.0 * k,
+                    y: r.y + r.h - 3.0 * k,
+                    w: r.w - 20.0 * k,
+                    h: 2.0 * k,
                     color: ACCENT,
                     r: 1.0,
                 });
@@ -401,7 +407,7 @@ impl Menu {
         }
         out.push(UiPrim::Rect {
             x: p.x,
-            y: p.y + HEADER_H + TAB_H - 1.0,
+            y: p.y + (HEADER_H * k) + (TAB_H * k) - 1.0,
             w: p.w,
             h: 1.0,
             color: LINE,
@@ -430,51 +436,53 @@ impl Menu {
         // Wskaznik przewiniecia.
         if content_h > list.h {
             let frac = list.h / content_h;
-            let bar_h = (list.h * frac).max(24.0);
+            let bar_h = (list.h * frac).max(24.0 * k);
             let bar_y = list.y + (list.h - bar_h) * (self.scroll / max);
             out.push(UiPrim::Rect {
-                x: list.x + list.w - 5.0,
+                x: list.x + list.w - 5.0 * k,
                 y: bar_y,
-                w: 3.0,
+                w: 3.0 * k,
                 h: bar_h,
                 color: FG_DIM,
-                r: 1.5,
+                r: 1.5 * k,
             });
         }
     }
 
     fn row(&mut self, hit: MenuHit, r: Rect, out: &mut Vec<UiPrim>, active: bool) {
+        let k = self.scale;
         if active || self.hot == Some(hit) {
             out.push(UiPrim::Rect {
-                x: r.x + 6.0,
-                y: r.y + 2.0,
-                w: r.w - 12.0,
-                h: r.h - 4.0,
+                x: r.x + 6.0 * k,
+                y: r.y + 2.0 * k,
+                w: r.w - 12.0 * k,
+                h: r.h - 4.0 * k,
                 color: if active { ACTIVE } else { HOT },
-                r: 6.0,
+                r: 6.0 * k,
             });
         }
         self.rows.push((hit, r));
     }
 
     fn note_row(&mut self, s: &MenuState, i: usize, list: Rect, y: f32, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         let n = &s.notes[i];
         let r = Rect {
             x: list.x,
             y,
             w: list.w,
-            h: ROW_H,
+            h: (ROW_H * k),
         };
         let active = i == s.note_idx;
         self.row(MenuHit::Note(i), r, out, active);
         if active {
             out.push(UiPrim::Rect {
-                x: r.x + 6.0,
-                y: r.y + 8.0,
-                w: 3.0,
-                h: r.h - 16.0,
+                x: r.x + 6.0 * k,
+                y: r.y + 8.0 * k,
+                w: 3.0 * k,
+                h: r.h - 16.0 * k,
                 color: ACCENT,
-                r: 1.5,
+                r: 1.5 * k,
             });
         }
         let (text, color) = if n.title.is_empty() {
@@ -483,18 +491,18 @@ impl Menu {
             (n.title.clone(), FG)
         };
         out.push(UiPrim::Text {
-            x: r.x + PAD + 8.0,
+            x: r.x + (PAD * k) + 8.0 * k,
             y: r.y,
-            w: r.w - PAD * 2.0 - 8.0 - DATE_W,
+            w: r.w - (PAD * k) * 2.0 * k - 8.0 * k - (DATE_W * k),
             h: r.h,
             text,
             color,
             font: UiFont::Ui,
         });
         out.push(UiPrim::Text {
-            x: r.x + r.w - PAD - DATE_W,
+            x: r.x + r.w - (PAD * k) - (DATE_W * k),
             y: r.y,
-            w: DATE_W,
+            w: (DATE_W * k),
             h: r.h,
             text: local_date(n.created_ms),
             color: FG_DIM,
@@ -513,6 +521,7 @@ impl Menu {
         y: f32,
         out: &mut Vec<UiPrim>,
     ) -> f32 {
+        let k = self.scale;
         let (name, label) = match folder {
             None => ("", "Notes"),
             Some((_, n)) => (n, n),
@@ -521,12 +530,12 @@ impl Menu {
             x: list.x,
             y,
             w: list.w,
-            h: HEAD_H,
+            h: (HEAD_H * k),
         };
         out.push(UiPrim::Text {
-            x: r.x + PAD,
+            x: r.x + (PAD * k),
             y: r.y,
-            w: r.w - PAD * 2.0 - 110.0,
+            w: r.w - (PAD * k) * 2.0 * k - 110.0 * k,
             h: r.h,
             text: format!("{label}  ·  {count}"),
             color: FG_DIM,
@@ -536,10 +545,10 @@ impl Menu {
         let here = cur_folder == Some(name);
         if !here && !s.notes.is_empty() {
             let br = Rect {
-                x: r.x + r.w - PAD - 104.0,
-                y: r.y + 4.0,
-                w: 104.0,
-                h: r.h - 8.0,
+                x: r.x + r.w - (PAD * k) - 104.0 * k,
+                y: r.y + 4.0 * k,
+                w: 104.0 * k,
+                h: r.h - 8.0 * k,
             };
             let hit = MenuHit::MoveTo(folder.map(|(i, _)| i));
             out.push(UiPrim::Outline {
@@ -549,7 +558,7 @@ impl Menu {
                 h: br.h,
                 color: if self.hot == Some(hit) { FG } else { LINE },
                 width: 1.0,
-                r: 6.0,
+                r: 6.0 * k,
             });
             out.push(UiPrim::Text {
                 x: br.x,
@@ -562,10 +571,11 @@ impl Menu {
             });
             self.rows.push((hit, br));
         }
-        HEAD_H
+        HEAD_H * k
     }
 
     fn build_notes(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
+        let k = self.scale;
         // Foldery: jawne + wynikajace z notatek, alfabetycznie.
         let mut folders: Vec<String> = s.folders.to_vec();
         for n in s.notes {
@@ -577,7 +587,7 @@ impl Menu {
         self.folder_names = folders;
         let folders = std::mem::take(&mut self.folder_names);
 
-        let mut y = list.y - self.scroll + 6.0;
+        let mut y = list.y - self.scroll + 6.0 * k;
         let root: Vec<usize> = (0..s.notes.len())
             .filter(|&i| s.notes[i].folder.is_empty())
             .rev()
@@ -585,10 +595,10 @@ impl Menu {
         y += self.folder_head(s, None, root.len(), list, y, out);
         for i in root {
             self.note_row(s, i, list, y, out);
-            y += ROW_H;
+            y += ROW_H * k;
         }
         for (fi, name) in folders.iter().enumerate() {
-            y += 8.0;
+            y += 8.0 * k;
             let ids: Vec<usize> = (0..s.notes.len())
                 .filter(|&i| s.notes[i].folder == *name)
                 .rev()
@@ -596,13 +606,13 @@ impl Menu {
             y += self.folder_head(s, Some((fi, name)), ids.len(), list, y, out);
             for i in ids {
                 self.note_row(s, i, list, y, out);
-                y += ROW_H;
+                y += ROW_H * k;
             }
         }
         self.folder_names = folders;
 
         // Akcje na koncu listy.
-        y += 12.0;
+        y += 12.0 * k;
         y += self.rule(list, y, out);
         for (hit, label) in [
             (MenuHit::NewNote, "+  New note"),
@@ -619,7 +629,7 @@ impl Menu {
 
         // Biezaca notatka w sieci (ADR 0008) - minimum GUI, docelowy uklad
         // do ustalenia w Etapie 6 1/2.
-        y += 12.0;
+        y += 12.0 * k;
         y += self.section(list, y, "This note on LAN", out);
         let label = match s.share {
             None => "Share on LAN: off".to_string(),
@@ -641,7 +651,7 @@ impl Menu {
         }
 
         // Cudze udostepnienia.
-        y += 12.0;
+        y += 12.0 * k;
         y += self.section(list, y, "Shared on LAN", out);
         if s.offers.is_empty() {
             y += self.line(list, y, "nobody nearby is sharing a note", FG_DIM, out);
@@ -672,19 +682,20 @@ impl Menu {
             };
             y += self.action_row(list, y, MenuHit::Offer(i), &text, color, out);
         }
-        y + 10.0 - (list.y - self.scroll)
+        y + 10.0 * k - (list.y - self.scroll)
     }
 
     fn rule(&self, list: Rect, y: f32, out: &mut Vec<UiPrim>) -> f32 {
+        let k = self.scale;
         out.push(UiPrim::Rect {
-            x: list.x + PAD,
+            x: list.x + (PAD * k),
             y,
-            w: list.w - PAD * 2.0,
+            w: list.w - (PAD * k) * 2.0 * k,
             h: 1.0,
             color: LINE,
             r: 0.0,
         });
-        8.0
+        8.0 * k
     }
 
     /// Wiersz-akcja na pelna szerokosc (podswietlany po najechaniu).
@@ -697,23 +708,24 @@ impl Menu {
         color: spectre_proto::Rgba,
         out: &mut Vec<UiPrim>,
     ) -> f32 {
+        let k = self.scale;
         let r = Rect {
             x: list.x,
             y,
             w: list.w,
-            h: ROW_H,
+            h: (ROW_H * k),
         };
         self.row(hit, r, out, false);
         out.push(UiPrim::Text {
-            x: r.x + PAD + 8.0,
+            x: r.x + (PAD * k) + 8.0 * k,
             y: r.y,
-            w: r.w - PAD * 2.0 - 8.0,
+            w: r.w - (PAD * k) * 2.0 * k - 8.0 * k,
             h: r.h,
             text: label.to_string(),
             color,
             font: UiFont::Ui,
         });
-        ROW_H
+        ROW_H * k
     }
 
     /// Pole tekstowe w wierszu listy (nazwa folderu, haslo, adres).
@@ -725,25 +737,26 @@ impl Menu {
         placeholder: &str,
         out: &mut Vec<UiPrim>,
     ) -> f32 {
+        let k = self.scale;
         let r = Rect {
             x: list.x,
             y,
             w: list.w,
-            h: ROW_H,
+            h: (ROW_H * k),
         };
         out.push(UiPrim::Outline {
-            x: r.x + PAD,
-            y: r.y + 4.0,
-            w: r.w - PAD * 2.0,
-            h: r.h - 8.0,
+            x: r.x + (PAD * k),
+            y: r.y + 4.0 * k,
+            w: r.w - (PAD * k) * 2.0 * k,
+            h: r.h - 8.0 * k,
             color: ACCENT,
             width: 1.0,
-            r: 6.0,
+            r: 6.0 * k,
         });
         out.push(UiPrim::Text {
-            x: r.x + PAD + 8.0,
+            x: r.x + (PAD * k) + 8.0 * k,
             y: r.y,
-            w: r.w - PAD * 2.0 - 16.0,
+            w: r.w - (PAD * k) * 2.0 * k - 16.0 * k,
             h: r.h,
             text: if buf.is_empty() {
                 placeholder.to_string()
@@ -754,11 +767,12 @@ impl Menu {
             font: UiFont::Ui,
         });
         self.rows.push((MenuHit::Panel, r));
-        ROW_H
+        ROW_H * k
     }
 
     fn build_settings(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
-        let mut y = list.y - self.scroll + 6.0;
+        let k = self.scale;
+        let mut y = list.y - self.scroll + 6.0 * k;
         let on_off = |b: bool| if b { "on" } else { "off" };
         let waves = match s.waves_idle_s {
             0 => "off".to_string(),
@@ -852,7 +866,7 @@ impl Menu {
         ];
         for (gi, (title, items)) in groups.into_iter().enumerate() {
             if gi > 0 {
-                y += 10.0;
+                y += 10.0 * k;
             }
             y += self.section(list, y, title, out);
             for (key, label, value) in items {
@@ -860,70 +874,71 @@ impl Menu {
                     x: list.x,
                     y,
                     w: list.w,
-                    h: ROW_H,
+                    h: (ROW_H * k),
                 };
                 self.row(MenuHit::Setting(key), r, out, false);
                 out.push(UiPrim::Text {
-                    x: r.x + PAD + 8.0,
+                    x: r.x + (PAD * k) + 8.0 * k,
                     y: r.y,
-                    w: r.w - PAD * 2.0 - 90.0,
+                    w: r.w - (PAD * k) * 2.0 * k - 90.0 * k,
                     h: r.h,
                     text: label.to_string(),
                     color: FG,
                     font: UiFont::Ui,
                 });
                 out.push(UiPrim::Text {
-                    x: r.x + r.w - PAD - 90.0,
+                    x: r.x + r.w - (PAD * k) - 90.0 * k,
                     y: r.y,
-                    w: 82.0,
+                    w: 82.0 * k,
                     h: r.h,
                     text: value,
                     color: ACCENT,
                     font: UiFont::Ui,
                 });
-                y += ROW_H;
+                y += ROW_H * k;
             }
         }
 
-        y += 10.0;
+        y += 10.0 * k;
         y += self.section(list, y, "This machine", out);
         for (label, value) in [("Space", s.space), ("GPU", s.gpu)] {
             out.push(UiPrim::Text {
-                x: list.x + PAD + 8.0,
+                x: list.x + (PAD * k) + 8.0 * k,
                 y,
-                w: list.w - PAD * 2.0,
-                h: 18.0,
+                w: list.w - (PAD * k) * 2.0 * k,
+                h: 18.0 * k,
                 text: label.to_string(),
                 color: FG_DIM,
                 font: UiFont::Ui,
             });
-            y += 18.0;
+            y += 18.0 * k;
             out.push(UiPrim::Text {
-                x: list.x + PAD + 8.0,
+                x: list.x + (PAD * k) + 8.0 * k,
                 y,
-                w: list.w - PAD * 2.0,
-                h: 20.0,
+                w: list.w - (PAD * k) * 2.0 * k,
+                h: 20.0 * k,
                 text: value.to_string(),
                 color: FG,
                 font: UiFont::Ui,
             });
-            y += 28.0;
+            y += 28.0 * k;
         }
-        y + 10.0 - (list.y - self.scroll)
+        y + 10.0 * k - (list.y - self.scroll)
     }
 
     /// Naglowek: avatar (z GitHuba albo inicjal), kto i czy zalogowany, ile
     /// minut temu byla synchronizacja, przycisk sync (albo "Zaloguj").
     fn build_header(&mut self, s: &MenuState, p: Rect, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         let st = s.sync;
         let logged = st.login.is_some();
-        let (ax, ay) = (p.x + PAD, p.y + (HEADER_H - AVATAR) * 0.5);
-        let (cx, cy) = (ax + AVATAR * 0.5, ay + AVATAR * 0.5);
+        let (ax, ay) = (p.x + (PAD * k), p.y + ((HEADER_H * k) - (AVATAR * k)) * 0.5);
+        let (cx, cy) = (ax + (AVATAR * k) * 0.5, ay + (AVATAR * k) * 0.5);
         // Placeholder pod avatarem: kolko z inicjalem. Avatar (jesli jest) je zakryje.
         out.push(UiPrim::Circle {
             x: cx,
             y: cy,
-            radius: AVATAR * 0.5,
+            radius: (AVATAR * k) * 0.5,
             color: if logged { ACTIVE } else { HOT },
         });
         let initial = st
@@ -937,8 +952,8 @@ impl Menu {
         out.push(UiPrim::Text {
             x: ax,
             y: ay,
-            w: AVATAR,
-            h: AVATAR,
+            w: (AVATAR * k),
+            h: (AVATAR * k),
             text: initial,
             color: if logged { FG } else { FG_DIM },
             font: UiFont::Big,
@@ -947,16 +962,16 @@ impl Menu {
             out.push(UiPrim::Avatar {
                 x: ax,
                 y: ay,
-                size: AVATAR,
+                size: (AVATAR * k),
             });
         }
 
         // Przycisk z prawej: sync (zalogowany) albo przejscie do Konta.
         let br = Rect {
-            x: p.x + p.w - PAD - SYNC_BTN,
-            y: p.y + (HEADER_H - SYNC_BTN) * 0.5,
-            w: SYNC_BTN,
-            h: SYNC_BTN,
+            x: p.x + p.w - (PAD * k) - (SYNC_BTN * k),
+            y: p.y + ((HEADER_H * k) - (SYNC_BTN * k)) * 0.5,
+            w: (SYNC_BTN * k),
+            h: (SYNC_BTN * k),
         };
         let hit = if logged {
             MenuHit::SyncNow
@@ -971,7 +986,7 @@ impl Menu {
             h: br.h,
             color: if hot { FG_DIM } else { LINE },
             width: 1.0,
-            r: SYNC_BTN * 0.5,
+            r: (SYNC_BTN * k) * 0.5,
         });
         out.push(UiPrim::Text {
             x: br.x,
@@ -985,8 +1000,8 @@ impl Menu {
         self.rows.push((hit, br));
 
         // Dwie linie tekstu miedzy avatarem i przyciskiem.
-        let tx = ax + AVATAR + 12.0;
-        let tw = br.x - 8.0 - tx;
+        let tx = ax + (AVATAR * k) + 12.0 * k;
+        let tw = br.x - 8.0 * k - tx;
         let (name, name_color) = match &st.login {
             Some(l) => (l.clone(), FG),
             None => ("not signed in".to_string(), FG),
@@ -1013,25 +1028,25 @@ impl Menu {
         };
         out.push(UiPrim::Text {
             x: tx,
-            y: p.y + HEADER_H * 0.5 - 22.0,
+            y: p.y + (HEADER_H * k) * 0.5 - 22.0 * k,
             w: tw,
-            h: 22.0,
+            h: 22.0 * k,
             text: name,
             color: name_color,
             font: UiFont::Ui,
         });
         out.push(UiPrim::Text {
             x: tx,
-            y: p.y + HEADER_H * 0.5,
+            y: p.y + (HEADER_H * k) * 0.5,
             w: tw,
-            h: 22.0,
+            h: 22.0 * k,
             text: info,
             color: info_color,
             font: UiFont::Ui,
         });
         out.push(UiPrim::Rect {
             x: p.x,
-            y: p.y + HEADER_H - 1.0,
+            y: p.y + (HEADER_H * k) - 1.0,
             w: p.w,
             h: 1.0,
             color: LINE,
@@ -1040,7 +1055,8 @@ impl Menu {
     }
 
     fn build_account(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
-        let mut y = list.y - self.scroll + 6.0;
+        let k = self.scale;
+        let mut y = list.y - self.scroll + 6.0 * k;
         y += self.section(list, y, "This computer", out);
         y += self.line(list, y, s.author, FG, out);
         y += self.line(
@@ -1050,7 +1066,7 @@ impl Menu {
             FG_DIM,
             out,
         );
-        y += 12.0;
+        y += 12.0 * k;
 
         y += self.section(list, y, "Local network (live)", out);
         y += self.line(list, y, s.live, FG, out);
@@ -1061,7 +1077,7 @@ impl Menu {
             FG_DIM,
             out,
         );
-        y += 6.0;
+        y += 6.0 * k;
         // Peerzy bez multicastu (Tailscale): adres wpisany recznie; dotkniecie usuwa.
         for (i, p) in s.peers.iter().enumerate() {
             let label = format!("{p}   (tap to remove)");
@@ -1079,7 +1095,7 @@ impl Menu {
                 out,
             );
         }
-        y += 12.0;
+        y += 12.0 * k;
 
         let st = s.sync;
         y += self.section(list, y, "GitHub", out);
@@ -1091,24 +1107,24 @@ impl Menu {
                     None => format!("repository {} - connecting...", st.repo_name),
                 };
                 y += self.line(list, y, &repo, FG_DIM, out);
-                y += 6.0;
+                y += 6.0 * k;
                 y += self.button(list, y, MenuHit::Logout, "Sign out", FG_DIM, out);
             }
             None => {
                 if let Some(code) = s.device_code {
                     y += self.line(list, y, "enter this code in the browser:", FG, out);
                     out.push(UiPrim::Text {
-                        x: list.x + PAD,
+                        x: list.x + (PAD * k),
                         y,
-                        w: list.w - PAD * 2.0,
-                        h: 44.0,
+                        w: list.w - (PAD * k) * 2.0 * k,
+                        h: 44.0 * k,
                         text: code.to_string(),
                         color: ACCENT,
                         font: UiFont::Big,
                     });
-                    y += 44.0;
+                    y += 44.0 * k;
                     y += self.line(list, y, "github.com/login/device", FG_DIM, out);
-                    y += 6.0;
+                    y += 6.0 * k;
                 } else {
                     y += self.line(list, y, "not signed in - notes stay local", FG_DIM, out);
                     y += self.line(
@@ -1118,7 +1134,7 @@ impl Menu {
                         FG_DIM,
                         out,
                     );
-                    y += 6.0;
+                    y += 6.0 * k;
                     if st.device_flow {
                         y += self.button(
                             list,
@@ -1133,10 +1149,10 @@ impl Menu {
                 // Token wklejony recznie: jedyna droga bez client_id, zapasowa z nim.
                 if let Some(buf) = self.token_edit.clone() {
                     let r = Rect {
-                        x: list.x + PAD,
-                        y: y + 2.0,
-                        w: list.w - PAD * 2.0,
-                        h: ROW_H - 4.0,
+                        x: list.x + (PAD * k),
+                        y: y + 2.0 * k,
+                        w: list.w - (PAD * k) * 2.0 * k,
+                        h: (ROW_H * k) - 4.0 * k,
                     };
                     out.push(UiPrim::Outline {
                         x: r.x,
@@ -1145,12 +1161,12 @@ impl Menu {
                         h: r.h,
                         color: ACCENT,
                         width: 1.0,
-                        r: 6.0,
+                        r: 6.0 * k,
                     });
                     out.push(UiPrim::Text {
-                        x: r.x + 8.0,
+                        x: r.x + 8.0 * k,
                         y: r.y,
-                        w: r.w - 16.0,
+                        w: r.w - 16.0 * k,
                         h: r.h,
                         text: if buf.is_empty() {
                             "token (PAT, repo scope): Ctrl+V, Enter".to_string()
@@ -1161,7 +1177,7 @@ impl Menu {
                         font: UiFont::Ui,
                     });
                     self.rows.push((MenuHit::Panel, r));
-                    y += ROW_H;
+                    y += ROW_H * k;
                 } else {
                     y += self.button(
                         list,
@@ -1174,7 +1190,7 @@ impl Menu {
                 }
             }
         }
-        y += 12.0;
+        y += 12.0 * k;
 
         y += self.section(list, y, "Sync", out);
         let b = &st.budget;
@@ -1252,9 +1268,9 @@ impl Menu {
             FG_DIM,
             out,
         );
-        y += 6.0;
+        y += 6.0 * k;
         y += self.button(list, y, MenuHit::SyncNow, "Sync now", FG, out);
-        y + 10.0 - (list.y - self.scroll)
+        y + 10.0 * k - (list.y - self.scroll)
     }
 
     /// Wiersz tekstu w zakladce; zwraca wysokosc.
@@ -1266,16 +1282,17 @@ impl Menu {
         color: spectre_proto::Rgba,
         out: &mut Vec<UiPrim>,
     ) -> f32 {
+        let k = self.scale;
         out.push(UiPrim::Text {
-            x: list.x + PAD + 8.0,
+            x: list.x + (PAD * k) + 8.0 * k,
             y,
-            w: list.w - PAD * 2.0 - 8.0,
-            h: 22.0,
+            w: list.w - (PAD * k) * 2.0 * k - 8.0 * k,
+            h: 22.0 * k,
             text: text.to_string(),
             color,
             font: UiFont::Ui,
         });
-        22.0
+        22.0 * k
     }
 
     /// Przycisk z obrysem; zwraca wysokosc lacznie z odstepem.
@@ -1288,11 +1305,12 @@ impl Menu {
         color: spectre_proto::Rgba,
         out: &mut Vec<UiPrim>,
     ) -> f32 {
+        let k = self.scale;
         let r = Rect {
-            x: list.x + PAD,
+            x: list.x + (PAD * k),
             y,
-            w: list.w - PAD * 2.0,
-            h: 36.0,
+            w: list.w - (PAD * k) * 2.0 * k,
+            h: 36.0 * k,
         };
         out.push(UiPrim::Outline {
             x: r.x,
@@ -1301,7 +1319,7 @@ impl Menu {
             h: r.h,
             color: if self.hot == Some(hit) { FG_DIM } else { LINE },
             width: 1.0,
-            r: 8.0,
+            r: 8.0 * k,
         });
         out.push(UiPrim::Text {
             x: r.x,
@@ -1313,20 +1331,21 @@ impl Menu {
             font: UiFont::Center,
         });
         self.rows.push((hit, r));
-        r.h + 6.0
+        r.h + 6.0 * k
     }
 
     fn section(&self, list: Rect, y: f32, title: &str, out: &mut Vec<UiPrim>) -> f32 {
+        let k = self.scale;
         out.push(UiPrim::Text {
-            x: list.x + PAD,
+            x: list.x + (PAD * k),
             y,
-            w: list.w - PAD * 2.0,
-            h: HEAD_H,
+            w: list.w - (PAD * k) * 2.0 * k,
+            h: (HEAD_H * k),
             text: title.to_string(),
             color: FG_DIM,
             font: UiFont::Ui,
         });
-        HEAD_H
+        HEAD_H * k
     }
 }
 

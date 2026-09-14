@@ -4,7 +4,7 @@ use std::mem::size_of;
 use spectre_core::{Bbox, Camera, Document, StrokeId};
 use spectre_ink::{InkConfig, Segment};
 use spectre_proto::Rgba;
-use windows::core::{Interface, Result, PCWSTR};
+use windows::core::{Interface, Result, HSTRING};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
@@ -120,6 +120,61 @@ pub enum UiPrim {
     Unclip,
 }
 
+/// Czcionki UI. Rozmiary sa w pikselach logicznych (96 DPI) i mnozone przez
+/// skale DPI (`Renderer::set_ui_scale`) - tekst jest rysowany w docelowym
+/// rozmiarze, bez skalowania rastra.
+struct TextFormats {
+    /// Consolas 14 (HUD, wartosci).
+    mono: IDWriteTextFormat,
+    /// Segoe UI 20, wysrodkowana (glify).
+    big: IDWriteTextFormat,
+    /// Segoe UI 15, wysrodkowana w obu osiach (przyciski).
+    center: IDWriteTextFormat,
+    /// Segoe UI 15, do lewej, wysrodkowana w pionie, bez zawijania (listy).
+    ui: IDWriteTextFormat,
+    /// Segoe UI 16,5, wysrodkowana, bez zawijania (tytul notatki, przyciski okna).
+    title: IDWriteTextFormat,
+}
+
+impl TextFormats {
+    unsafe fn new(dwrite: &IDWriteFactory, scale: f32) -> Result<Self> {
+        let make = |family: &str, size: f32| -> Result<IDWriteTextFormat> {
+            dwrite.CreateTextFormat(
+                &HSTRING::from(family),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size * scale,
+                &HSTRING::from("en-us"),
+            )
+        };
+        let mono = make("Consolas", 14.0)?;
+        let big = make("Segoe UI", 20.0)?;
+        big.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        big.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        let center = make("Segoe UI", 15.0)?;
+        center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        // Listy i etykiety: do lewej, wysrodkowane w pionie, bez zawijania
+        // (za dlugi tytul jest ucinany przez prostokat, nie lamany).
+        let ui = make("Segoe UI", 15.0)?;
+        ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        ui.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        let title = make("Segoe UI", 16.5)?;
+        title.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        title.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        title.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        Ok(Self {
+            mono,
+            big,
+            center,
+            ui,
+            title,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiFont {
     /// Consolas 14, do lewej, od gory (HUD, wartosci).
@@ -152,9 +207,6 @@ pub struct Overlay<'a> {
     /// Rysiki innych osob: (x, y) w pikselach ekranu, mala kropka.
     pub marks: &'a [(f32, f32)],
     pub ui: &'a [UiPrim],
-    /// Skala UI: prymitywy `ui` sa w jednostkach projektowych i przed rysowaniem
-    /// mnozone przez te liczbe (razem z czcionkami). `0` znaczy 1.
-    pub ui_scale: f32,
     /// Fale lokalnego przyciemnienia (Z7, po bezczynnosci), na samym wierzchu.
     pub dim: Option<&'a DimMask>,
 }
@@ -213,11 +265,10 @@ pub struct Renderer {
     /// Avatar zalogowanego uzytkownika (naglowek menu): pedzel bitmapowy i rozmiar zrodla.
     avatar: Option<(ID2D1BitmapBrush1, u32, u32)>,
     round: ID2D1StrokeStyle1,
-    text_fmt: IDWriteTextFormat,
-    text_fmt_big: IDWriteTextFormat,
-    text_fmt_center: IDWriteTextFormat,
-    text_fmt_ui: IDWriteTextFormat,
-    text_fmt_title: IDWriteTextFormat,
+    dwrite: IDWriteFactory,
+    /// Czcionki UI w fizycznych pikselach dla `ui_scale` (`set_ui_scale`).
+    fonts: TextFormats,
+    ui_scale: f32,
 
     /// Obrys per kreska zrealizowany do mesha (`geometry.rs`). Kreski sa
     /// niezmienne, wiec wpis dezaktualizuje sie tylko przy duzej zmianie zoomu
@@ -323,62 +374,7 @@ impl Renderer {
             )?;
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            let text_fmt = dwrite.CreateTextFormat(
-                w("Consolas"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                14.0,
-                w("en-us"),
-            )?;
-            let text_fmt_big = dwrite.CreateTextFormat(
-                w("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                20.0,
-                w("en-us"),
-            )?;
-            text_fmt_big.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-            text_fmt_big.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            let text_fmt_center = dwrite.CreateTextFormat(
-                w("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                15.0,
-                w("en-us"),
-            )?;
-            text_fmt_center.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-            text_fmt_center.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            // Listy i etykiety: do lewej, wysrodkowane w pionie, bez zawijania
-            // (za dlugi tytul jest ucinany przez prostokat, nie lamany).
-            let text_fmt_ui = dwrite.CreateTextFormat(
-                w("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                15.0,
-                w("en-us"),
-            )?;
-            text_fmt_ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            text_fmt_ui.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-            let text_fmt_title = dwrite.CreateTextFormat(
-                w("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                19.0,
-                w("en-us"),
-            )?;
-            text_fmt_title.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-            text_fmt_title.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-            text_fmt_title.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            let fonts = TextFormats::new(&dwrite, 1.0)?;
 
             let mut r = Self {
                 adapter_name,
@@ -400,17 +396,27 @@ impl Renderer {
                 dim_px: Vec::new(),
                 avatar: None,
                 round,
-                text_fmt,
-                text_fmt_big,
-                text_fmt_center,
-                text_fmt_ui,
-                text_fmt_title,
+                dwrite,
+                fonts,
+                ui_scale: 1.0,
                 geo_cache: HashMap::new(),
                 geo_cache_verts: 0,
                 seg_scratch: Vec::with_capacity(4096),
             };
             r.create_size_dependent()?;
             Ok(r)
+        }
+    }
+
+    /// Skala DPI dla UI (1.0 = 96 DPI): czcionki sa tworzone od nowa w
+    /// docelowym rozmiarze w pikselach. Tanie i rzadkie (start, zmiana monitora).
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        if (scale - self.ui_scale).abs() < 1e-3 || scale <= 0.0 {
+            return;
+        }
+        if let Ok(fonts) = unsafe { TextFormats::new(&self.dwrite, scale) } {
+            self.fonts = fonts;
+            self.ui_scale = scale;
         }
     }
 
@@ -869,7 +875,7 @@ impl Renderer {
                 };
                 self.ctx.DrawEllipse(&e, &self.cursor_brush, 1.0, None);
             }
-            self.draw_ui(overlay.ui, overlay.ui_scale)?;
+            self.draw_ui(overlay.ui)?;
             if let Some(text) = overlay.hud {
                 self.draw_hud(text);
             }
@@ -945,24 +951,9 @@ impl Renderer {
         Ok(())
     }
 
-    /// UI jest projektowane w jednostkach `1 / scale` piksela i rysowane pod
-    /// jedna transformacja skali - glify, czcionki i odstepy rosna razem.
-    unsafe fn draw_ui(&mut self, prims: &[UiPrim], scale: f32) -> Result<()> {
-        let s = if scale > 0.0 { scale } else { 1.0 };
-        self.ctx.SetTransform(&Matrix3x2 {
-            M11: s,
-            M12: 0.0,
-            M21: 0.0,
-            M22: s,
-            M31: 0.0,
-            M32: 0.0,
-        });
-        let res = self.draw_ui_prims(prims);
-        self.ctx.SetTransform(&Matrix3x2::identity());
-        res
-    }
-
-    unsafe fn draw_ui_prims(&mut self, prims: &[UiPrim]) -> Result<()> {
+    /// Prymitywy UI sa juz w fizycznych pikselach (uklad liczy je ze skali DPI);
+    /// zadnej transformacji - kazdy prostokat laduje tam, gdzie go policzono.
+    unsafe fn draw_ui(&mut self, prims: &[UiPrim]) -> Result<()> {
         let mut depth = 0u32;
         for p in prims {
             match p {
@@ -1034,11 +1025,11 @@ impl Renderer {
                 } => {
                     let brush = self.brush(*color)?;
                     let fmt = match font {
-                        UiFont::Mono => &self.text_fmt,
-                        UiFont::Ui => &self.text_fmt_ui,
-                        UiFont::Center => &self.text_fmt_center,
-                        UiFont::Big => &self.text_fmt_big,
-                        UiFont::Title => &self.text_fmt_title,
+                        UiFont::Mono => &self.fonts.mono,
+                        UiFont::Ui => &self.fonts.ui,
+                        UiFont::Center => &self.fonts.center,
+                        UiFont::Big => &self.fonts.big,
+                        UiFont::Title => &self.fonts.title,
                     };
                     let wide: Vec<u16> = text.encode_utf16().collect();
                     let rect = D2D_RECT_F {
@@ -1108,24 +1099,25 @@ impl Renderer {
     }
 
     unsafe fn draw_hud(&self, text: &str) {
+        let k = self.ui_scale;
         let lines = text.lines().count().max(1) as f32;
         let rect = D2D_RECT_F {
-            left: 16.0,
-            top: 16.0,
-            right: 16.0 + 640.0,
-            bottom: 16.0 + lines * 18.0 + 14.0,
+            left: 16.0 * k,
+            top: 16.0 * k,
+            right: (16.0 + 640.0) * k,
+            bottom: (16.0 + 14.0) * k + lines * 18.0 * k,
         };
         self.ctx.FillRectangle(&rect, &self.hud_bg);
         let wide: Vec<u16> = text.encode_utf16().collect();
         let inner = D2D_RECT_F {
-            left: rect.left + 10.0,
-            top: rect.top + 7.0,
-            right: rect.right - 10.0,
+            left: rect.left + 10.0 * k,
+            top: rect.top + 7.0 * k,
+            right: rect.right - 10.0 * k,
             bottom: rect.bottom,
         };
         self.ctx.DrawText(
             &wide,
-            &self.text_fmt,
+            &self.fonts.mono,
             &inner,
             &self.hud_fg,
             D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -1164,10 +1156,4 @@ fn pick_low_power_adapter(factory: &IDXGIFactory6) -> Result<(IDXGIAdapter1, Str
             return Ok((adapter, name));
         }
     }
-}
-
-fn w(s: &str) -> PCWSTR {
-    let mut v: Vec<u16> = s.encode_utf16().collect();
-    v.push(0);
-    PCWSTR(Box::leak(v.into_boxed_slice()).as_ptr())
 }

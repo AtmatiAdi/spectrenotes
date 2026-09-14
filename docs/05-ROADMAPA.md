@@ -210,10 +210,17 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       `PgUp/PgDn`, `Ctrl+N`.
 - [x] Tytuł w pasku u góry: szerokość i środek jak zakładka nad canvasem, bez
       rozciągania na wolne miejsce; przy 2400 px środek napisu = środek okna.
-- [x] Całe UI o 20 % większe (2026-09-15): jedna skala `ui::UI_SCALE` — geometria
-      i glify w jednostkach projektowych, renderer skaluje je transformacją,
-      wejście dzielone na granicy modułu. Zakładki (tytuł, przyciski okna) o 50 %
-      większe (`TAB_H` 42, `WIN_BTN_W` 58, czcionka 19 w jednostkach projektowych).
+- [x] UI skaluje się do DPI Windows (2026-09-15): wymiary w `ui.rs`/`menu.rs` są
+      w pikselach logicznych (96 DPI), a `layout` liczy z nich fizyczne piksele
+      raz, mnożąc przez skalę monitora (`window::dpi_scale`, `WM_DPICHANGED`
+      przelicza po przeniesieniu okna). Nic nie jest skalowane w trakcie
+      rysowania — każdy prostokąt i glif ma policzone piksele (wydajność,
+      ostrość), czcionki DWrite tworzone w docelowym rozmiarze. Canvas z tym nie
+      ma nic wspólnego (kreski w swoich jednostkach). Grubość paska = pasek zadań
+      Windows (`BAR_THICK` 48 log.), panele tytułu/kontrolek o ~10 % mniejsze niż
+      w pierwszym podejściu (`TAB_H` 36, `WIN_BTN_W` 50). Przyciski okna znów w
+      prawym górnym rogu (błąd: układ w pikselach zamiast logicznych wypychał je
+      do ~3/4 szerokości).
 - [x] Wejście testowe bez prawdziwej myszy: `SPECTRENOTES_TEST_INPUT=1` +
       `WM_COPYDATA` z tekstem `down X Y [barrel|eraser]` / `move X Y` / `up` /
       `hover X Y`; skrypt testu nie rusza kursora ani fokusu użytkownika.

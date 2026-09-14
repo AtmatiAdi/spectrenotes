@@ -216,6 +216,17 @@ pub fn trim_working_set() {
 // klienta, a WM_NCHITTEST mowi systemowi, gdzie jest uchwyt do przesuwania
 // i gdzie krawedzie do zmiany rozmiaru. Ramke i przyciski rysuje aplikacja.
 
+/// Skala DPI monitora, na ktorym jest okno: 1.0 = 96 DPI, 1.25 = 125 %.
+/// UI aplikacji liczy z niej fizyczne piksele (jak Windows swoj pasek zadan).
+pub fn dpi_scale(hwnd: HWND) -> f32 {
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        1.0
+    } else {
+        dpi as f32 / 96.0
+    }
+}
+
 /// Grubosc niewidzialnej ramki do zmiany rozmiaru, z uwzglednieniem DPI.
 pub fn frame_thickness(hwnd: HWND) -> i32 {
     unsafe {

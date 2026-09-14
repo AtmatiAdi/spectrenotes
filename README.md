@@ -194,6 +194,17 @@ HUD pokazuje to, co realnie decyduje o odczuciu:
 Bezwzględnej latencji pen-to-photon HUD nie zmierzy — to się robi kamerą 240 fps
 (telefon), licząc klatki między dotknięciem rysika a pojawieniem się piksela.
 
+### DPI i piksele
+
+Całe UI aplikacji (pasek, zakładki, menu) jest liczone w **pikselach logicznych**
+(96 DPI) i przeliczane na fizyczne raz, przy układzie, przez skalę DPI monitora
+(`window::dpi_scale`) — tak jak Windows liczy swój pasek zadań. Nic nie jest
+skalowane w trakcie rysowania: każdy prostokąt, glif i czcionka DWrite ma
+policzony docelowy rozmiar (ostrość i brak kosztu skalowania rastra). Po
+przeniesieniu okna na monitor o innym DPI `WM_DPICHANGED` przelicza układ i
+odtwarza czcionki. **Canvas jest osobny** — kreski żyją we własnych jednostkach,
+zoom to sprawa kamery, nie DPI.
+
 ### Testy GUI bez ruszania myszy
 
 Proces uruchomiony ze zmienną `SPECTRENOTES_TEST_INPUT=1` przyjmuje pióro jako

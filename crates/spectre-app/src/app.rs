@@ -312,7 +312,7 @@ impl App {
         refresh_entry(&space, &mut notes[note_idx], &doc);
 
         let (w, h) = window::client_size(hwnd);
-        let renderer = Renderer::new(hwnd, w, h)
+        let mut renderer = Renderer::new(hwnd, w, h)
             .map_err(|e| std::io::Error::other(format!("renderer: {e}")))?;
         let tray = Tray::add(hwnd, "SpectreNotes")
             .map_err(|e| std::io::Error::other(format!("tray: {e}")))?;
@@ -341,12 +341,14 @@ impl App {
         let waves_on = config.get("waves_on") != Some("0");
         let waves_laptop_only = config.get("waves_laptop_only") == Some("1");
         let view_locked = config.get("view_lock") != Some("0");
+        let ui_scale = window::dpi_scale(hwnd);
+        renderer.set_ui_scale(ui_scale);
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
         toolbar.visible = toolbar_pin;
-        toolbar.layout(w as f32, h as f32, PALETTE.len());
+        toolbar.layout(w as f32, h as f32, ui_scale, PALETTE.len());
         let mut menu = Menu::new();
-        menu.layout(w as f32, h as f32);
+        menu.layout(w as f32, h as f32, ui_scale);
         let data_dir = Config::path()
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -1063,8 +1065,7 @@ impl App {
                     Dock::Bottom => Dock::Left,
                 };
                 self.toolbar.dock = next;
-                let (w, h) = self.renderer.size();
-                self.toolbar.layout(w as f32, h as f32, PALETTE.len());
+                self.relayout();
                 self.config.set("dock", next.name());
                 self.config.save();
             }
@@ -1174,10 +1175,16 @@ impl App {
         self.relayout();
     }
 
+    /// Uklad UI w fizycznych pikselach: rozmiar okna i DPI monitora, na ktorym
+    /// okno teraz jest (po przeniesieniu na inny monitor Windows przysyla
+    /// `WM_DPICHANGED`).
     fn relayout(&mut self) {
         let (w, h) = self.renderer.size();
-        self.toolbar.layout(w as f32, h as f32, PALETTE.len());
-        self.menu.layout(w as f32, h as f32);
+        let ui_scale = window::dpi_scale(self.hwnd);
+        self.renderer.set_ui_scale(ui_scale);
+        self.toolbar
+            .layout(w as f32, h as f32, ui_scale, PALETTE.len());
+        self.menu.layout(w as f32, h as f32, ui_scale);
     }
 
     fn commit_folder_edit(&mut self) {
@@ -2351,7 +2358,7 @@ impl App {
         };
         let tail = std::mem::take(&mut self.tail_buf);
         let color = PALETTE[self.color_idx];
-        let _ = self.renderer.present(
+        let presented = self.renderer.present(
             &tail,
             color,
             &self.cam,
@@ -2361,7 +2368,6 @@ impl App {
                 tails: &wet_tails,
                 marks: &marks,
                 ui: &prims,
-                ui_scale: crate::ui::UI_SCALE,
                 dim,
             },
             if self.vsync {
@@ -2372,6 +2378,9 @@ impl App {
                 PresentMode::Immediate
             },
         );
+        if let Err(e) = presented {
+            eprintln!("present: {e}");
+        }
         self.tail_buf = tail;
         self.ui_prims = prims;
         self.wet_tails = wet_tails;
@@ -2877,9 +2886,13 @@ pub unsafe extern "system" fn wndproc(
             app.render();
             LRESULT(0)
         }
+        // Inny monitor / inne DPI: UI liczy piksele od nowa (pasek, zakladki,
+        // czcionki), canvas zostaje jak byl.
         WM_DISPLAYCHANGE | WM_DPICHANGED => {
             app.pen.invalidate();
             app.partner_soon();
+            app.relayout();
+            app.render();
             LRESULT(0)
         }
         WM_PAINT => {

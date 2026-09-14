@@ -15,38 +15,39 @@
 use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
 
-/// Skala calego UI (pasek, zakladki, menu). Wymiary ponizej i w `menu.rs` sa
-/// w **jednostkach projektowych**; renderer mnozy prymitywy przez te skale, a
-/// wejscie (rozmiar okna, rysik) jest przez nia dzielone na granicy modulu
-/// (`design`). Dzieki temu glify, czcionki i odstepy rosna razem.
-pub const UI_SCALE: f32 = 1.2;
+// Wymiary ponizej (i w `menu.rs`) sa w **pikselach logicznych** (96 DPI), jak
+// w Windows. Uklad liczy z nich fizyczne piksele raz, przy `layout`, mnozac
+// przez skale DPI monitora (`Toolbar::scale`, 1,25 przy 125 %) - nic nie jest
+// skalowane w trakcie rysowania, kazdy prostokat i glif ma policzone piksele.
+// Canvas z tym nie ma nic wspolnego: kreski zyja w swoich jednostkach.
 
-/// Piksele okna -> jednostki projektowe UI.
+/// Piksele logiczne -> fizyczne dla danej skali DPI, zaokraglone do calych.
 #[inline]
-pub fn design(x: f32, y: f32) -> (f32, f32) {
-    (x / UI_SCALE, y / UI_SCALE)
+pub fn px(v: f32, scale: f32) -> f32 {
+    (v * scale).round()
 }
 
-/// Grubosc paska narzedzi w osi poprzecznej.
-pub const BAR_THICK: f32 = 56.0;
+/// Grubosc paska narzedzi w osi poprzecznej: tyle, co pasek zadan Windows
+/// (48 px logicznych) - pasek u gory ma byc jego odpowiednikiem.
+pub const BAR_THICK: f32 = 48.0;
 /// Strefa przy krawedzi, ktora odslania pasek.
-pub const EDGE_ZONE: f32 = 18.0;
-pub const ITEM_LEN: f32 = 44.0;
-pub const COLOR_LEN: f32 = 30.0;
-pub const GRIP_LEN: f32 = 22.0;
-/// Wysokosc zakladek nad canvasem. Zakladki (tytul, przyciski okna) sa o
-/// polowe wieksze niz reszta UI: to w nie celuje sie najczesciej "w ciemno".
-pub const TAB_H: f32 = 42.0;
-pub const WIN_BTN_W: f32 = 58.0;
+pub const EDGE_ZONE: f32 = 16.0;
+pub const ITEM_LEN: f32 = 38.0;
+pub const COLOR_LEN: f32 = 26.0;
+pub const GRIP_LEN: f32 = 19.0;
+/// Wysokosc zakladek nad canvasem. Zakladki (tytul, przyciski okna) sa
+/// wieksze niz elementy paska: to w nie celuje sie najczesciej "w ciemno".
+pub const TAB_H: f32 = 36.0;
+pub const WIN_BTN_W: f32 = 50.0;
 /// Uchwyt do przesuwania okna z lewej strony zakladki tytulu.
-const TAB_GRIP_W: f32 = 28.0;
+const TAB_GRIP_W: f32 = 24.0;
 /// Pole tytulu w pasku u gory musi miec tyle miejsca, zeby w ogole sie pokazac.
-const TITLE_MIN_W: f32 = 90.0;
+const TITLE_MIN_W: f32 = 78.0;
 /// Pole procentu zoomu (przycisk "dopasuj szerokosc").
-const ZOOM_W: f32 = 56.0;
+const ZOOM_W: f32 = 48.0;
 /// Elementy paska, gdy nie mieszcza sie na jego dlugosci, kurcza sie
 /// proporcjonalnie - ale nie ponizej tej dlugosci.
-const ITEM_MIN_LEN: f32 = 26.0;
+const ITEM_MIN_LEN: f32 = 22.0;
 
 /// Tlo paska i panelu menu - nieprzezroczyste: tresc pod panelem przebijala
 /// przez liste i utrudniala czytanie.
@@ -184,6 +185,9 @@ pub struct Toolbar {
     /// projektowe, patrz `drag_to`).
     dragging: Option<(f32, f32)>,
     view: (f32, f32),
+    /// Skala DPI monitora (1.0 = 96 DPI). Wszystkie prostokaty sa w pikselach
+    /// fizycznych, policzonych z niej w `layout`.
+    scale: f32,
     title_hot: Option<TitleAction>,
     /// Polozenie elementow okna z ostatniego `layout` (zakladki albo pasek).
     title_rect: Option<Rect>,
@@ -209,6 +213,7 @@ impl Toolbar {
             chrome: true,
             dragging: None,
             view: (0.0, 0.0),
+            scale: 1.0,
             title_hot: None,
             title_rect: None,
             tab_grip: None,
@@ -228,29 +233,36 @@ impl Toolbar {
         self.chrome && !self.absorbs()
     }
 
-    /// `w`, `h` - rozmiar okna w pikselach (jak wszystkie wejscia z `app.rs`).
-    pub fn layout(&mut self, w: f32, h: f32, palette_len: usize) {
-        let (w, h) = design(w, h);
+    /// `w`, `h` - rozmiar okna w pikselach, `scale` - DPI monitora / 96.
+    pub fn layout(&mut self, w: f32, h: f32, scale: f32, palette_len: usize) {
         self.view = (w, h);
-        // (akcja, odstep przed elementem, dlugosc w osi glownej)
+        self.scale = scale;
+        let px = |v: f32| px(v, scale);
+        let bar = px(BAR_THICK);
+        let item = px(ITEM_LEN);
+        // (akcja, odstep przed elementem, dlugosc w osi glownej) - w pikselach.
         let mut order: Vec<(Action, f32, f32)> = vec![
-            (Action::Grip, 0.0, GRIP_LEN),
-            (Action::Menu, 4.0, ITEM_LEN),
-            (Action::Pen, 8.0, ITEM_LEN),
-            (Action::Eraser, 0.0, ITEM_LEN),
+            (Action::Grip, 0.0, px(GRIP_LEN)),
+            (Action::Menu, px(4.0), item),
+            (Action::Pen, px(8.0), item),
+            (Action::Eraser, 0.0, item),
         ];
         for i in 0..palette_len {
-            order.push((Action::Color(i), if i == 0 { 8.0 } else { 0.0 }, COLOR_LEN));
+            order.push((
+                Action::Color(i),
+                if i == 0 { px(8.0) } else { 0.0 },
+                px(COLOR_LEN),
+            ));
         }
         order.extend([
-            (Action::WidthDown, 14.0, ITEM_LEN),
-            (Action::WidthUp, 0.0, ITEM_LEN),
-            (Action::Undo, 8.0, ITEM_LEN),
-            (Action::Redo, 0.0, ITEM_LEN),
-            (Action::ZoomOut, 8.0, ITEM_LEN),
-            (Action::ZoomIn, 0.0, ITEM_LEN),
-            (Action::ZoomFit, 0.0, ZOOM_W),
-            (Action::ViewLock, 0.0, ITEM_LEN),
+            (Action::WidthDown, px(14.0), item),
+            (Action::WidthUp, 0.0, item),
+            (Action::Undo, px(8.0), item),
+            (Action::Redo, 0.0, item),
+            (Action::ZoomOut, px(8.0), item),
+            (Action::ZoomIn, 0.0, item),
+            (Action::ZoomFit, 0.0, px(ZOOM_W)),
+            (Action::ViewLock, 0.0, item),
         ]);
 
         let horizontal = self.dock.horizontal();
@@ -259,66 +271,71 @@ impl Toolbar {
         // za nimi kotwica `LockPc`; w innych dokach `LockPc` siedzi na samym
         // koncu paska.
         if absorbs {
+            let btn = px(WIN_BTN_W);
             let mut x = w;
             for i in [2usize, 1, 0] {
-                x -= WIN_BTN_W;
+                x -= btn;
                 self.win_btns[i] = Rect {
                     x,
                     y: 0.0,
-                    w: WIN_BTN_W,
-                    h: BAR_THICK,
+                    w: btn,
+                    h: bar,
                 };
             }
-            x -= TAB_GRIP_W;
+            x -= px(TAB_GRIP_W);
             self.win_grip = Some(Rect {
                 x,
                 y: 0.0,
-                w: TAB_GRIP_W,
-                h: BAR_THICK,
+                w: px(TAB_GRIP_W),
+                h: bar,
             });
         }
         let end = match self.dock {
-            Dock::Top if absorbs => self.win_grip.map_or(w, |g| g.x) - 4.0,
-            Dock::Top | Dock::Bottom => w - 6.0,
-            Dock::Left | Dock::Right => h - 6.0,
+            Dock::Top if absorbs => self.win_grip.map_or(w, |g| g.x) - px(4.0),
+            Dock::Top | Dock::Bottom => w - px(6.0),
+            Dock::Left | Dock::Right => h - px(6.0),
         };
-        let lock_along = end - ITEM_LEN;
+        let lock_along = end - item;
 
         // Poczatek osi glownej i polozenie w osi poprzecznej. Pasek z prawej
         // zaczyna sie pod zakladka z przyciskami okna, zeby na nia nie wchodzic.
         let (start, cross) = match self.dock {
-            Dock::Left => (10.0, 0.0),
+            Dock::Left => (px(10.0), 0.0),
             Dock::Right => (
-                if self.tabs_shown() { TAB_H + 8.0 } else { 10.0 },
-                w - BAR_THICK,
+                if self.tabs_shown() {
+                    px(TAB_H + 8.0)
+                } else {
+                    px(10.0)
+                },
+                w - bar,
             ),
-            Dock::Top => (10.0, 0.0),
-            Dock::Bottom => (10.0, h - BAR_THICK),
+            Dock::Top => (px(10.0), 0.0),
+            Dock::Bottom => (px(10.0), h - bar),
         };
         // Gdy pasek jest krotszy niz elementy, kurczymy odstepy i elementy
         // proporcjonalnie - nic nie wypada poza okno ani pod `LockPc`.
         let needed: f32 = order.iter().map(|(_, g, l)| g + l).sum();
-        let room = lock_along - 8.0 - start;
-        let scale = if needed > room && needed > 0.0 {
+        let room = lock_along - px(8.0) - start;
+        let squeeze = if needed > room && needed > 0.0 {
             (room / needed).max(ITEM_MIN_LEN / ITEM_LEN)
         } else {
             1.0
         };
-        // Wspolny wspolczynnik dla odstepow i elementow - kolory (30) kurcza
-        // sie w tej samej proporcji co przyciski (44), wiec suma sie zgadza.
+        // Wspolny wspolczynnik dla odstepow i elementow - kolory kurcza sie
+        // w tej samej proporcji co przyciski, wiec suma sie zgadza.
         let place = |along: f32, len: f32| {
             if horizontal {
                 Rect {
                     x: along,
                     y: cross,
                     w: len,
-                    h: BAR_THICK,
+                    h: bar,
                 }
             } else {
                 Rect {
                     x: cross,
                     y: along,
-                    w: BAR_THICK,
+                    w: bar,
                     h: len,
                 }
             }
@@ -326,15 +343,15 @@ impl Toolbar {
         self.items.clear();
         let mut along = start;
         for (action, gap, len) in order {
-            along += gap * scale;
-            let len = len * scale;
+            along += (gap * squeeze).round();
+            let len = (len * squeeze).round();
             self.items.push(Item {
                 action,
                 rect: place(along, len),
             });
             along += len;
         }
-        self.lock_pc = place(lock_along, ITEM_LEN);
+        self.lock_pc = place(lock_along, item);
         self.items.push(Item {
             action: Action::LockPc,
             rect: self.lock_pc,
@@ -348,20 +365,22 @@ impl Toolbar {
                 // elementy albo prawa strona wchodza w to miejsce, zweza sie
                 // symetrycznie; gdy symetrycznie nie ma juz miejsca, laduje
                 // w wolnym pasie; gdy i tam brak - znika.
-                let free_l = along + 16.0;
-                let free_r = lock_along - 12.0;
+                let free_l = along + px(16.0);
+                let free_r = lock_along - px(12.0);
                 let half = (w * 0.5 - free_l).min(free_r - w * 0.5);
-                let centred = tab_width(w).min(2.0 * half);
-                let (x, tw) = if centred >= TITLE_MIN_W {
+                let tab_w = self.tab_width();
+                let centred = tab_w.min(2.0 * half);
+                let min_w = px(TITLE_MIN_W);
+                let (x, tw) = if centred >= min_w {
                     (((w - centred) * 0.5).round(), centred)
                 } else {
-                    (free_l, tab_width(w).min(free_r - free_l))
+                    (free_l, tab_w.min(free_r - free_l))
                 };
-                self.title_rect = (tw >= TITLE_MIN_W).then_some(Rect {
+                self.title_rect = (tw >= min_w).then_some(Rect {
                     x,
-                    y: 10.0,
+                    y: px(10.0),
                     w: tw,
-                    h: BAR_THICK - 20.0,
+                    h: bar - px(20.0),
                 });
                 self.tab_grip = None;
             }
@@ -371,8 +390,20 @@ impl Toolbar {
                 self.title_rect = None;
                 self.tab_grip = None;
             }
-            Dock::Bottom | Dock::Left | Dock::Right => self.layout_tabs(),
+            _ => self.layout_tabs(),
         }
+    }
+
+    /// Piksele logiczne -> fizyczne w skali z ostatniego `layout`.
+    #[inline]
+    fn px(&self, v: f32) -> f32 {
+        px(v, self.scale)
+    }
+
+    /// Szerokosc zakladki tytulu (i pola tytulu w pasku u gory): ulamek
+    /// szerokosci okna, w granicach - w pikselach.
+    fn tab_width(&self) -> f32 {
+        (self.view.0 * 0.35).clamp(self.px(160.0), self.px(480.0))
     }
 
     /// Zakladki nad canvasem: tytul posrodku (z uchwytem), przyciski w prawym
@@ -386,62 +417,64 @@ impl Toolbar {
             self.tab_grip = None;
             return;
         }
-        let tw = tab_width(w);
+        let (tab_h, grip, btn) = (self.px(TAB_H), self.px(TAB_GRIP_W), self.px(WIN_BTN_W));
+        let tw = self.tab_width();
         let tx = ((w - tw) * 0.5).round();
         self.tab_grip = Some(Rect {
             x: tx,
             y: 0.0,
-            w: TAB_GRIP_W,
-            h: TAB_H,
+            w: grip,
+            h: tab_h,
         });
         self.title_rect = Some(Rect {
-            x: tx + TAB_GRIP_W,
+            x: tx + grip,
             y: 0.0,
-            w: tw - TAB_GRIP_W - 8.0,
-            h: TAB_H,
+            w: tw - grip - self.px(8.0),
+            h: tab_h,
         });
         for (i, k) in [3.0f32, 2.0, 1.0].iter().enumerate() {
             self.win_btns[i] = Rect {
-                x: w - WIN_BTN_W * k,
+                x: w - btn * k,
                 y: 0.0,
-                w: WIN_BTN_W,
-                h: TAB_H,
+                w: btn,
+                h: tab_h,
             };
         }
         self.win_grip = Some(Rect {
-            x: w - WIN_BTN_W * 3.0 - TAB_GRIP_W,
+            x: w - btn * 3.0 - grip,
             y: 0.0,
-            w: TAB_GRIP_W,
-            h: TAB_H,
+            w: grip,
+            h: tab_h,
         });
     }
 
     fn dock_rect(&self, dock: Dock) -> Rect {
         let (w, h) = self.view;
+        let bar = self.px(BAR_THICK);
         match dock {
             Dock::Left => Rect {
                 x: 0.0,
                 y: 0.0,
-                w: BAR_THICK,
+                w: bar,
                 h,
             },
             Dock::Right => Rect {
-                x: w - BAR_THICK,
+                x: w - bar,
                 y: 0.0,
-                w: BAR_THICK,
+                w: bar,
                 h,
             },
             Dock::Top => Rect {
                 x: 0.0,
                 y: 0.0,
                 w,
-                h: BAR_THICK,
+                h: bar,
             },
             Dock::Bottom => Rect {
                 x: 0.0,
-                y: h - BAR_THICK,
+                y: h - bar,
                 w,
-                h: BAR_THICK,
+                h: bar,
             },
         }
     }
@@ -452,11 +485,12 @@ impl Toolbar {
 
     fn in_edge_zone(&self, x: f32, y: f32) -> bool {
         let (w, h) = self.view;
+        let edge = self.px(EDGE_ZONE);
         match self.dock {
-            Dock::Left => x < EDGE_ZONE,
-            Dock::Right => x > w - EDGE_ZONE,
-            Dock::Top => y < EDGE_ZONE,
-            Dock::Bottom => y > h - EDGE_ZONE,
+            Dock::Left => x < edge,
+            Dock::Right => x > w - edge,
+            Dock::Top => y < edge,
+            Dock::Bottom => y > h - edge,
         }
     }
 
@@ -488,8 +522,8 @@ impl Toolbar {
         Some(Rect {
             x: g.x,
             y: 0.0,
-            w: t.x + t.w + 8.0 - g.x,
-            h: TAB_H,
+            w: t.x + t.w + self.px(8.0) - g.x,
+            h: self.px(TAB_H),
         })
     }
 
@@ -503,8 +537,8 @@ impl Toolbar {
         Some(Rect {
             x: first.x - grip,
             y: 0.0,
-            w: WIN_BTN_W * 3.0 + grip,
-            h: TAB_H,
+            w: first.w * 3.0 + grip,
+            h: self.px(TAB_H),
         })
     }
 
@@ -515,7 +549,6 @@ impl Toolbar {
 
     /// Element okna pod punktem (piksele okna).
     pub fn title_hit(&self, x: f32, y: f32) -> Option<TitleAction> {
-        let (x, y) = design(x, y);
         self.title_hit_at(x, y)
     }
 
@@ -545,7 +578,6 @@ impl Toolbar {
     /// z kropkami (przy tytule i przy przyciskach okna) albo puste miejsce
     /// widocznego paska - w kazdym doku, bo pasek zastepuje pasek tytulowy.
     pub fn caption_hit(&self, x: f32, y: f32) -> bool {
-        let (x, y) = design(x, y);
         if !self.chrome {
             return false;
         }
@@ -570,7 +602,6 @@ impl Toolbar {
 
     /// Ruch rysika (hover lub kontakt). Zwraca `true`, gdy UI zmienilo wyglad.
     pub fn hover(&mut self, x: f32, y: f32) -> bool {
-        let (x, y) = design(x, y);
         let was_visible = self.visible;
         if self.in_edge_zone(x, y) {
             self.visible = true;
@@ -589,13 +620,11 @@ impl Toolbar {
 
     /// Punkt nalezy do UI paska/zakladek - nie do canvasu.
     pub fn pointer_inside(&self, x: f32, y: f32) -> bool {
-        let (x, y) = design(x, y);
         (self.visible && self.bar_rect().contains(x, y)) || self.in_tabs(x, y)
     }
 
     /// Wolane, gdy uplynal czas bezczynnosci. Zwraca `true`, gdy pasek sie schowal.
     pub fn idle(&mut self, pointer: (f32, f32)) -> bool {
-        let pointer = design(pointer.0, pointer.1);
         if self.pinned {
             return false;
         }
@@ -613,7 +642,6 @@ impl Toolbar {
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Option<Action> {
-        let (x, y) = design(x, y);
         self.hit_at(x, y)
     }
 
@@ -629,19 +657,18 @@ impl Toolbar {
 
     /// Poczatek albo ciag dalszy przeciagania paska: rysik jest w `(x, y)` (piksele okna).
     pub fn drag_to(&mut self, x: f32, y: f32) {
-        self.dragging = Some(design(x, y));
+        self.dragging = Some((x, y));
     }
 
     /// Koniec przeciagania: krawedz najblizsza rysikowi staje sie nowym dokiem.
     /// Zwraca `true`, gdy dok sie zmienil.
     pub fn drop_at(&mut self, x: f32, y: f32, palette_len: usize) -> bool {
-        let (x, y) = design(x, y);
         self.dragging = None;
         let best = self.nearest_dock(x, y);
         if best != self.dock {
             self.dock = best;
             let (w, h) = self.view;
-            self.layout(w, h, palette_len);
+            self.layout(w, h, self.scale, palette_len);
             true
         } else {
             false
@@ -666,6 +693,7 @@ impl Toolbar {
 
     /// Zakladki nad canvasem: tlo z zaokraglonym dolem, jak wywieszki.
     fn build_tabs(&self, s: &UiState, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         for r in [self.title_tab_rect(), self.win_tab_rect()]
             .into_iter()
             .flatten()
@@ -673,21 +701,22 @@ impl Toolbar {
             // Zaokraglenie tylko u dolu: prostokat wysuniety ponad okno.
             out.push(UiPrim::Rect {
                 x: r.x,
-                y: r.y - 10.0,
+                y: r.y - 10.0 * k,
                 w: r.w,
-                h: r.h + 10.0,
+                h: r.h + 10.0 * k,
                 color: BG_TAB,
-                r: 10.0,
+                r: 10.0 * k,
             });
         }
         for g in [self.tab_grip, self.win_grip].into_iter().flatten() {
-            grip_dots(g, FG_DIM, out);
+            grip_dots(g, FG_DIM, k, out);
         }
         self.build_title(s, out);
         self.build_win_buttons(s, out);
     }
 
     fn build_title(&self, s: &UiState, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         let Some(tr) = self.title_rect else {
             return;
         };
@@ -700,21 +729,21 @@ impl Toolbar {
         if editing {
             out.push(UiPrim::Outline {
                 x: tr.x,
-                y: tr.y + 4.0,
+                y: tr.y + 4.0 * k,
                 w: tr.w,
-                h: tr.h - 8.0,
+                h: tr.h - 8.0 * k,
                 color: ACCENT,
                 width: 1.0,
-                r: 6.0,
+                r: 6.0 * k,
             });
         } else if self.title_hot == Some(TitleAction::EditTitle) {
             out.push(UiPrim::Rect {
                 x: tr.x,
-                y: tr.y + 4.0,
+                y: tr.y + 4.0 * k,
                 w: tr.w,
-                h: tr.h - 8.0,
+                h: tr.h - 8.0 * k,
                 color: HOT,
-                r: 6.0,
+                r: 6.0 * k,
             });
         }
         out.push(UiPrim::Text {
@@ -733,6 +762,7 @@ impl Toolbar {
     }
 
     fn build_win_buttons(&self, s: &UiState, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         for (i, (a, glyph)) in [
             (TitleAction::Minimize, "—"),
             (TitleAction::Maximize, if s.maximized { "❐" } else { "☐" }),
@@ -747,16 +777,16 @@ impl Toolbar {
             }
             if self.title_hot == Some(a) {
                 out.push(UiPrim::Rect {
-                    x: r.x + 4.0,
-                    y: r.y + 4.0,
-                    w: r.w - 8.0,
-                    h: r.h - 8.0,
+                    x: r.x + 4.0 * k,
+                    y: r.y + 4.0 * k,
+                    w: r.w - 8.0 * k,
+                    h: r.h - 8.0 * k,
                     color: if a == TitleAction::Close {
                         CLOSE_HOT
                     } else {
                         HOT
                     },
-                    r: 6.0,
+                    r: 6.0 * k,
                 });
             }
             out.push(UiPrim::Text {
@@ -772,26 +802,28 @@ impl Toolbar {
     }
 
     fn build_drag_ghost(&self, x: f32, y: f32, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         // Podglad: obrys w miejscu doku, ktory zostalby wybrany po puszczeniu.
         let r = self.dock_rect(self.nearest_dock(x, y));
         out.push(UiPrim::Outline {
-            x: r.x + 1.0,
-            y: r.y + 1.0,
-            w: r.w - 2.0,
-            h: r.h - 2.0,
+            x: r.x + 1.0 * k,
+            y: r.y + 1.0 * k,
+            w: r.w - 2.0 * k,
+            h: r.h - 2.0 * k,
             color: ACCENT,
-            width: 1.5,
-            r: 4.0,
+            width: 1.5 * k,
+            r: 4.0 * k,
         });
         out.push(UiPrim::Circle {
             x,
             y,
-            radius: 6.0,
+            radius: 6.0 * k,
             color: ACCENT,
         });
     }
 
     fn build_toolbar(&self, s: &UiState, out: &mut Vec<UiPrim>) {
+        let k = self.scale;
         let bar = self.bar_rect();
         out.push(UiPrim::Rect {
             x: bar.x,
@@ -830,12 +862,12 @@ impl Toolbar {
             };
             if (hot || active) && it.action != Action::Grip {
                 out.push(UiPrim::Rect {
-                    x: r.x + 4.0,
-                    y: r.y + 2.0,
-                    w: r.w - 8.0,
-                    h: r.h - 4.0,
+                    x: r.x + 4.0 * k,
+                    y: r.y + 2.0 * k,
+                    w: r.w - 8.0 * k,
+                    h: r.h - 4.0 * k,
                     color: if active { ACTIVE } else { HOT },
-                    r: 8.0,
+                    r: 8.0 * k,
                 });
             }
             let enabled = match it.action {
@@ -849,64 +881,64 @@ impl Toolbar {
                     // Uchwyt: 2x3 kropki, obrocone wraz z orientacja.
                     let (cx, cy) = (r.cx(), r.cy());
                     for i in -1..=1 {
-                        for j in [-3.5, 3.5] {
+                        for j in [-3.5 * k, 3.5 * k] {
                             let (dx, dy) = if self.dock.horizontal() {
-                                (j, i as f32 * 6.0)
+                                (j, i as f32 * 6.0 * k)
                             } else {
-                                (i as f32 * 6.0, j)
+                                (i as f32 * 6.0 * k, j)
                             };
                             out.push(UiPrim::Circle {
                                 x: cx + dx,
                                 y: cy + dy,
-                                radius: 1.6,
+                                radius: 1.6 * k,
                                 color: if hot { FG } else { FG_DIM },
                             });
                         }
                     }
                 }
                 Action::Menu => {
-                    for k in -1..=1 {
+                    for line in -1..=1 {
                         out.push(UiPrim::Rect {
-                            x: r.cx() - 9.0,
-                            y: r.cy() + k as f32 * 5.5 - 0.75,
-                            w: 18.0,
-                            h: 1.5,
+                            x: r.cx() - 9.0 * k,
+                            y: r.cy() + line as f32 * 5.5 * k - 0.75 * k,
+                            w: 18.0 * k,
+                            h: 1.5 * k,
                             color: fg,
-                            r: 0.75,
+                            r: 0.75 * k,
                         });
                     }
                 }
                 Action::Pen => out.push(UiPrim::Circle {
                     x: r.cx(),
                     y: r.cy(),
-                    radius: 4.0 + s.width * 0.6,
+                    radius: 4.0 * k + s.width * 0.6 * k,
                     color: s.palette[s.color_idx],
                 }),
                 Action::Eraser => out.push(UiPrim::Outline {
-                    x: r.cx() - 11.0,
-                    y: r.cy() - 8.0,
-                    w: 22.0,
-                    h: 16.0,
+                    x: r.cx() - 11.0 * k,
+                    y: r.cy() - 8.0 * k,
+                    w: 22.0 * k,
+                    h: 16.0 * k,
                     color: fg,
-                    width: 1.5,
-                    r: 4.0,
+                    width: 1.5 * k,
+                    r: 4.0 * k,
                 }),
                 Action::Color(i) => {
                     out.push(UiPrim::Circle {
                         x: r.cx(),
                         y: r.cy(),
-                        radius: 9.0,
+                        radius: 9.0 * k,
                         color: s.palette[i],
                     });
                     if i == s.color_idx {
                         out.push(UiPrim::Outline {
-                            x: r.cx() - 13.0,
-                            y: r.cy() - 13.0,
-                            w: 26.0,
-                            h: 26.0,
+                            x: r.cx() - 13.0 * k,
+                            y: r.cy() - 13.0 * k,
+                            w: 26.0 * k,
+                            h: 26.0 * k,
                             color: FG,
-                            width: 1.5,
-                            r: 13.0,
+                            width: 1.5 * k,
+                            r: 13.0 * k,
                         });
                     }
                 }
@@ -921,40 +953,40 @@ impl Toolbar {
                 }),
                 Action::ZoomOut | Action::ZoomIn => {
                     // Lupa: okrag, raczka w prawym dolnym rogu, w srodku - albo +.
-                    let (cx, cy) = (r.cx() - 2.0, r.cy() - 2.0);
+                    let (cx, cy) = (r.cx() - 2.0 * k, r.cy() - 2.0 * k);
                     out.push(UiPrim::Outline {
-                        x: cx - 8.0,
-                        y: cy - 8.0,
-                        w: 16.0,
-                        h: 16.0,
+                        x: cx - 8.0 * k,
+                        y: cy - 8.0 * k,
+                        w: 16.0 * k,
+                        h: 16.0 * k,
                         color: fg,
-                        width: 1.5,
-                        r: 8.0,
+                        width: 1.5 * k,
+                        r: 8.0 * k,
                     });
                     out.push(UiPrim::Rect {
-                        x: cx + 6.5,
-                        y: cy + 6.5,
-                        w: 6.0,
-                        h: 2.0,
+                        x: cx + 6.5 * k,
+                        y: cy + 6.5 * k,
+                        w: 6.0 * k,
+                        h: 2.0 * k,
                         color: fg,
-                        r: 1.0,
+                        r: 1.0 * k,
                     });
                     out.push(UiPrim::Rect {
-                        x: cx - 4.0,
-                        y: cy - 0.75,
-                        w: 8.0,
-                        h: 1.5,
+                        x: cx - 4.0 * k,
+                        y: cy - 0.75 * k,
+                        w: 8.0 * k,
+                        h: 1.5 * k,
                         color: fg,
-                        r: 0.75,
+                        r: 0.75 * k,
                     });
                     if it.action == Action::ZoomIn {
                         out.push(UiPrim::Rect {
-                            x: cx - 0.75,
-                            y: cy - 4.0,
-                            w: 1.5,
-                            h: 8.0,
+                            x: cx - 0.75 * k,
+                            y: cy - 4.0 * k,
+                            w: 1.5 * k,
+                            h: 8.0 * k,
                             color: fg,
-                            r: 0.75,
+                            r: 0.75 * k,
                         });
                     }
                 }
@@ -972,27 +1004,27 @@ impl Toolbar {
                     // Odblokowany: kartka ze strzalka w obie strony.
                     let (cx, cy) = (r.cx(), r.cy());
                     out.push(UiPrim::Outline {
-                        x: cx - 8.0,
-                        y: cy - 10.0,
-                        w: 16.0,
-                        h: 20.0,
+                        x: cx - 8.0 * k,
+                        y: cy - 10.0 * k,
+                        w: 16.0 * k,
+                        h: 20.0 * k,
                         color: fg,
-                        width: 1.5,
-                        r: 2.0,
+                        width: 1.5 * k,
+                        r: 2.0 * k,
                     });
                     if s.view_locked {
                         out.push(UiPrim::Circle {
                             x: cx,
                             y: cy,
-                            radius: 2.2,
+                            radius: 2.2 * k,
                             color: fg,
                         });
                     } else {
                         out.push(UiPrim::Text {
-                            x: cx - 14.0,
-                            y: cy - 9.0,
-                            w: 28.0,
-                            h: 18.0,
+                            x: cx - 14.0 * k,
+                            y: cy - 9.0 * k,
+                            w: 28.0 * k,
+                            h: 18.0 * k,
                             text: "↔".to_string(),
                             color: fg,
                             font: UiFont::Center,
@@ -1003,26 +1035,26 @@ impl Toolbar {
                     // Klodka: palak (obrys z zaokraglona gora), korpus, dziurka.
                     let (cx, cy) = (r.cx(), r.cy());
                     out.push(UiPrim::Outline {
-                        x: cx - 6.0,
-                        y: cy - 12.0,
-                        w: 12.0,
-                        h: 14.0,
+                        x: cx - 6.0 * k,
+                        y: cy - 12.0 * k,
+                        w: 12.0 * k,
+                        h: 14.0 * k,
                         color: fg,
-                        width: 1.5,
-                        r: 6.0,
+                        width: 1.5 * k,
+                        r: 6.0 * k,
                     });
                     out.push(UiPrim::Rect {
-                        x: cx - 9.0,
-                        y: cy - 3.0,
-                        w: 18.0,
-                        h: 13.0,
+                        x: cx - 9.0 * k,
+                        y: cy - 3.0 * k,
+                        w: 18.0 * k,
+                        h: 13.0 * k,
                         color: fg,
-                        r: 2.0,
+                        r: 2.0 * k,
                     });
                     out.push(UiPrim::Circle {
                         x: cx,
-                        y: cy + 3.0,
-                        radius: 1.8,
+                        y: cy + 3.0 * k,
+                        radius: 1.8 * k,
                         color: BG,
                     });
                 }
@@ -1057,83 +1089,95 @@ impl Toolbar {
         if self.absorbs() && self.chrome {
             self.build_title(s, out);
             if let Some(g) = self.win_grip {
-                grip_dots(g, FG_DIM, out);
+                grip_dots(g, FG_DIM, k, out);
             }
             self.build_win_buttons(s, out);
         }
     }
 }
 
-/// Uchwyt do przesuwania okna: 2x3 kropki w srodku prostokata.
-fn grip_dots(g: Rect, color: Rgba, out: &mut Vec<UiPrim>) {
+/// Uchwyt do przesuwania okna: 2x3 kropki w srodku prostokata (`k` = skala DPI).
+fn grip_dots(g: Rect, color: Rgba, k: f32, out: &mut Vec<UiPrim>) {
     for i in -1..=1 {
-        for j in [-3.0, 3.0] {
+        for j in [-3.0 * k, 3.0 * k] {
             out.push(UiPrim::Circle {
                 x: g.cx() + j,
-                y: g.cy() + i as f32 * 5.5,
-                radius: 1.4,
+                y: g.cy() + i as f32 * 5.5 * k,
+                radius: 1.4 * k,
                 color,
             });
         }
     }
 }
 
-/// Szerokosc zakladki tytulu (i pola tytulu w pasku u gory) dla okna `w`.
-fn tab_width(w: f32) -> f32 {
-    (w * 0.35).clamp(200.0, 600.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Wejscie jest w pikselach okna, geometria w jednostkach projektowych:
-    /// uchwyty zakladek i puste miejsce paska musza trafiac po przeliczeniu.
+    const S: f32 = 1.25;
+
+    /// Uklad jest w pikselach fizycznych policzonych ze skali DPI: uchwyty
+    /// zakladek, przyciski okna i puste miejsce paska musza trafiac tam, gdzie
+    /// sa narysowane.
     #[test]
     fn uchwyty_okna_trafiaja_w_pikselach_okna() {
         let mut t = Toolbar::new(Dock::Left);
         t.visible = true;
-        t.layout(1400.0, 1300.0, 6);
-        let grip_w = TAB_GRIP_W * UI_SCALE;
+        t.layout(1400.0, 1300.0, S, 6);
+        assert_eq!(
+            t.bar_rect().w,
+            60.0,
+            "pasek = pasek zadan (48 log.) przy 125 %"
+        );
+        let grip_w = px(TAB_GRIP_W, S);
         // Uchwyt przy przyciskach: tuz na lewo od trzech przyciskow.
-        let win_x = 1400.0 - WIN_BTN_W * 3.0 * UI_SCALE;
+        let win_x = 1400.0 - px(WIN_BTN_W, S) * 3.0;
         assert!(t.caption_hit(win_x - grip_w * 0.5, 25.0));
         assert_eq!(t.title_hit(win_x + 5.0, 25.0), Some(TitleAction::Minimize));
         assert_eq!(t.title_hit(1395.0, 25.0), Some(TitleAction::Close));
         // Uchwyt zakladki tytulu: poczatek zakladki wysrodkowanej w oknie.
-        let tab_w = tab_width(1400.0 / UI_SCALE) * UI_SCALE;
+        let tab_w = t.tab_width();
+        assert_eq!(tab_w, 490.0, "35 % z 1400");
         let tab_x = (1400.0 - tab_w) * 0.5;
         assert!(t.caption_hit(tab_x + grip_w * 0.5, 25.0));
         assert_eq!(t.title_hit(700.0, 25.0), Some(TitleAction::EditTitle));
         // Pod zakladka jest canvas.
-        assert!(!t.caption_hit(700.0, TAB_H * UI_SCALE + 2.0));
+        assert!(!t.caption_hit(700.0, px(TAB_H, S) + 2.0));
         // Puste miejsce paska z lewej (pod elementami, nad klodka) przesuwa okno,
         // element paska - nie.
-        assert!(t.caption_hit(33.0, 1000.0));
-        assert!(t.hit(33.0, 1000.0).is_none());
-        assert_eq!(t.hit(33.0, 70.0), Some(Action::Menu));
-        assert!(!t.caption_hit(33.0, 70.0));
+        assert!(t.caption_hit(30.0, 1000.0));
+        assert!(t.hit(30.0, 1000.0).is_none());
+        assert_eq!(t.hit(30.0, 60.0), Some(Action::Menu));
+        assert!(!t.caption_hit(30.0, 60.0));
     }
 
-    /// Pasek u gory wchlania przyciski okna: musza byc w oknie, a nie za nim
-    /// (blad: uklad liczony w pikselach, nie w jednostkach projektowych).
+    /// Pasek u gory wchlania przyciski okna: musza byc w oknie, a nie za nim.
     #[test]
     fn pasek_u_gory_trzyma_przyciski_okna_w_oknie() {
         let mut t = Toolbar::new(Dock::Top);
         t.visible = true;
-        t.layout(1400.0, 1300.0, 6);
+        t.layout(1400.0, 1300.0, S, 6);
         assert_eq!(t.title_hit(1395.0, 30.0), Some(TitleAction::Close));
-        let win_x = 1400.0 - WIN_BTN_W * 3.0 * UI_SCALE;
+        let win_x = 1400.0 - px(WIN_BTN_W, S) * 3.0;
         assert_eq!(t.title_hit(win_x + 5.0, 30.0), Some(TitleAction::Minimize));
-        assert!(t.caption_hit(win_x - TAB_GRIP_W * UI_SCALE * 0.5, 30.0));
-        assert_eq!(
-            t.hit(win_x - (TAB_GRIP_W + 4.0 + ITEM_LEN * 0.5) * UI_SCALE, 30.0),
-            Some(Action::LockPc)
-        );
+        assert!(t.caption_hit(win_x - px(TAB_GRIP_W, S) * 0.5, 30.0));
+        let lock_cx = win_x - px(TAB_GRIP_W, S) - px(4.0, S) - px(ITEM_LEN, S) * 0.5;
+        assert_eq!(t.hit(lock_cx, 30.0), Some(Action::LockPc));
         // Tytul: na srodku okna, gdy jest miejsce (szerokie okno).
-        t.layout(2880.0, 1000.0, 6);
+        t.layout(2880.0, 1000.0, S, 6);
         assert_eq!(t.title_hit(1440.0, 30.0), Some(TitleAction::EditTitle));
         let r = t.title_rect.unwrap();
-        assert!(((r.x + r.w * 0.5) * UI_SCALE - 1440.0).abs() < 2.0, "{r:?}");
+        assert!((r.x + r.w * 0.5 - 1440.0).abs() < 2.0, "{r:?}");
+    }
+
+    /// Skala DPI zmienia tylko UI: dwa razy wiekszy DPI = dwa razy grubszy pasek.
+    #[test]
+    fn skala_dpi_liczy_piksele_fizyczne() {
+        let mut t = Toolbar::new(Dock::Left);
+        t.layout(1000.0, 1000.0, 1.0, 6);
+        let one = t.bar_rect().w;
+        t.layout(1000.0, 1000.0, 2.0, 6);
+        assert_eq!(t.bar_rect().w, one * 2.0);
+        assert_eq!(t.bar_rect().w, 96.0);
     }
 }
