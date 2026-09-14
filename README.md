@@ -69,7 +69,8 @@ peer w LAN.
 *Notatki*: lista w folderach, od najnowszej, z datą utworzenia;
 tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,
 na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę,
-`Enter`). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
+`Enter`), pod spodem *This note on LAN* (udostępnij, hasło) i *Shared on LAN* (cudze
+udostępnienia). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
 zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
 *Ustawienia* pogrupowane funkcjonalnie: *Wyświetlanie* (vsync, tearing, pełny ekran,
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
@@ -95,17 +96,22 @@ logowania: tylko lokalna historia. Ruchu do GitHuba pilnuje budżet (odstępy, l
 godzinowe i dobowe z predykcją); odmowa serwera (`429`, „too many requests") wstrzymuje
 sync na 10 min – 2 h z ostrzeżeniem w Konto i HUD, commity idą dalej lokalnie.
 
-**Rysowanie na żywo w LAN (Etap 6).** Dwa urządzenia w tej samej sieci ze space'em
-o tej samej nazwie (domyślnie `default`) **znajdują się same** (multicast, bez
-internetu) i łączą po TCP; kreska drugiej osoby pojawia się **w trakcie rysowania**,
-jej rysik jako kropka, a nowe notatki i tytuły natychmiast — niezależnie od GitHuba.
-Cudze operacje lądują w plikach `via-*.ops` w katalogu autora, więc git dalej nie
-ma jak się skonfliktować, a instancja bez logowania ma kopię przez zalogowaną (ADR 0007).
+**Rysowanie na żywo w sieci (Etap 6).** Urządzenia w tej samej sieci **znajdują się
+same** (multicast, bez internetu) i łączą po TCP; przez Tailscale — adres `host:port`
+wpisany w *Konto → Sieć lokalna*. **Sieć widzi tylko to, co udostępnisz** (ADR 0008):
+w menu *Notatki → This note on LAN* włączasz udostępnienie bieżącej notatki i opcjonalnie
+ustawiasz hasło; u innych pojawia się ona w sekcji *Shared on LAN* (z kłódką, gdy
+chroniona) — dotknięcie otwiera (pyta o hasło), ponowne zamyka, kopia zostaje.
+Otwarta notatka płynie w obie strony: kreska drugiej osoby pojawia się **w trakcie
+rysowania**, jej rysik jako kropka, tytuł natychmiast — niezależnie od GitHuba.
+Hasło nie idzie siecią (dowód SHA-256 z kluczem pochodnym i nonce'ami), ale treść
+płynie jawnym TCP — poufność daje LAN albo Tailscale. Cudze operacje lądują w plikach
+`via-*.ops` w katalogu autora, więc git dalej nie ma jak się skonfliktować (ADR 0007).
 Stan w Konto (*Sieć lokalna*) i w HUD-zie (peerzy, opóźnienie mokrej kreski);
-wyłączenie w *Ustawienia → Sieć lokalna*. **Windows Firewall zapyta o zgodę przy
-pierwszym uruchomieniu** — bez niej działa tylko między instancjami na tej samej
-maszynie. Test na jednej maszynie: druga instancja z innym `COMPUTERNAME` i `APPDATA`
-oraz własnym katalogiem space'u o tej samej nazwie.
+wyłączenie w *Ustawienia → Sieć lokalna*. Zerwane połączenie wykrywane w ~12 s
+(heartbeat). **Windows Firewall zapyta o zgodę przy pierwszym uruchomieniu** — bez
+niej działa tylko między instancjami na tej samej maszynie. Test na jednej maszynie:
+druga instancja z innym `COMPUTERNAME` i `APPDATA` oraz własnym katalogiem space'u.
 
 | Sterowanie | Działanie |
 |---|---|
@@ -185,7 +191,7 @@ crates/
   spectre-proto      format .ops: varint, CRC32, kodowanie probek, odzysk po awarii  [dziala]
   spectre-core       op-log CRDT, zegar Lamporta, undo/redo, hit-test, kamera      [dziala]
   spectre-ink        probki -> krzywa nacisku -> interpolacja -> geometria         [dziala]
-  spectre-sync       store + git (libgit2, ADR 0006) + budzet ruchu + live w LAN (TCP, ADR 0007)  [dziala]
+  spectre-sync       store + git (libgit2, ADR 0006) + budzet ruchu + live (TCP, ADR 0007; udostepnianie per notatka, ADR 0008)  [dziala]
   spectre-render     Direct2D na DXGI flip-model, przewijanie przyrostowe          [dziala]
   spectre-shell-win  okno Win32, WM_POINTER, DPI, feedback piora, pelny ekran      [dziala]
   spectre-app        binarka `spectrenotes`                                       [dziala]

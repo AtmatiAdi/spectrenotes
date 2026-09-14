@@ -22,8 +22,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::amoled::Waves;
 use crate::config::Config;
+use crate::lan::LanConfig;
 use crate::live::{LiveWorker, WM_LIVE};
-use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, Setting};
+use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 
@@ -203,6 +204,10 @@ pub struct App {
     reload_pending: bool,
     /// Live (Etap 6): peerzy w LAN, mokre kreski innych, ich rysiki.
     live: LiveWorker,
+    /// Co udostepniam / otwieram w sieci (ADR 0008) - `lan-<space>.txt`.
+    lan: LanConfig,
+    /// Cudze notatki, ktore peer potwierdzil (`Opened ok`): notatka -> instancja.
+    lan_open: HashMap<String, u64>,
     remote_wet: HashMap<AuthorId, RemoteWet>,
     peer_cursors: HashMap<AuthorId, (f32, f32)>,
     /// Numer paczki probek biezacej kreski (0 = poczatek) - do `LiveJob::Wet`.
@@ -326,7 +331,32 @@ impl App {
             .to_string();
         let sync = SyncWorker::start(hwnd, space.root(), &author, &data_dir, &client_id);
         let live_enabled = config.get("live") != Some("0");
-        let live = LiveWorker::start(hwnd, space.root(), &author, live_enabled);
+        let mut live = LiveWorker::start(hwnd, space.root(), &author, live_enabled);
+        let space_name = space
+            .root()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let lan = LanConfig::load(&data_dir, &space_name);
+        for (note, key) in &lan.shares {
+            let title = notes
+                .iter()
+                .find(|e| &e.id == note)
+                .map(|e| e.title.clone())
+                .unwrap_or_default();
+            live.send(LiveJob::Share {
+                note: note.clone(),
+                title,
+                key: *key,
+            });
+        }
+        for (note, key) in &lan.opened {
+            live.send(LiveJob::Open {
+                note: note.clone(),
+                key: *key,
+            });
+        }
+        live.send(LiveJob::Peers(lan.peer_addrs()));
         let mut cam = Camera::default();
         cam.fit_width(w as f32);
 
@@ -383,6 +413,8 @@ impl App {
             sync_booted: false,
             reload_pending: false,
             live,
+            lan,
+            lan_open: HashMap::new(),
             remote_wet: HashMap::new(),
             peer_cursors: HashMap::new(),
             wet_seq: 0,
@@ -780,6 +812,21 @@ impl App {
                     let _ = SetFocus(Some(self.hwnd));
                 }
             }
+            MenuHit::ShareToggle => self.toggle_share(),
+            MenuHit::SharePassword => {
+                self.menu.share_edit = Some(String::new());
+                unsafe {
+                    let _ = SetFocus(Some(self.hwnd));
+                }
+            }
+            MenuHit::Offer(i) => self.offer_tap(i),
+            MenuHit::AddPeer => {
+                self.menu.peer_edit = Some(String::new());
+                unsafe {
+                    let _ = SetFocus(Some(self.hwnd));
+                }
+            }
+            MenuHit::Peer(i) => self.remove_peer(i),
         }
     }
 
@@ -957,6 +1004,11 @@ impl App {
                 let op = self.doc.set_meta("title", &buf);
                 self.persist(&[op]);
                 self.sync_entry();
+                // Udostepniona: peerzy widza tytul na swojej liscie.
+                let note = self.notes[self.note_idx].id.clone();
+                if self.lan.shares.contains_key(&note) {
+                    self.send_share(&note);
+                }
             }
         }
     }
@@ -1301,9 +1353,9 @@ impl App {
                     repaint = true;
                 }
                 LiveEvent::Peer {
+                    instance,
                     author_dir,
                     connected,
-                    ..
                 } => {
                     self.status = if connected {
                         format!("LAN: {author_dir} joined")
@@ -1316,6 +1368,41 @@ impl App {
                             self.dirty = Dirty::Full;
                         }
                         self.peer_cursors.remove(&gone);
+                        self.lan_open.retain(|_, inst| *inst != instance);
+                    }
+                    repaint = true;
+                }
+                LiveEvent::Shared { .. } => repaint = true,
+                LiveEvent::Opened {
+                    instance,
+                    author_dir,
+                    note,
+                    ok,
+                } => {
+                    let title = self
+                        .live
+                        .offers
+                        .iter()
+                        .find(|o| o.note == note && o.instance == instance)
+                        .map(|o| {
+                            if o.title.is_empty() {
+                                "untitled".to_string()
+                            } else {
+                                o.title.clone()
+                            }
+                        })
+                        .unwrap_or_else(|| note.clone());
+                    if ok {
+                        self.lan_open.insert(note, instance);
+                        self.status = format!("LAN: opened \"{title}\" from {author_dir}");
+                    } else {
+                        // Zle haslo (albo cofniete udostepnienie): nie ponawiac
+                        // z tym samym kluczem - uzytkownik wpisze je jeszcze raz.
+                        self.lan.opened.remove(&note);
+                        self.lan.save();
+                        self.live.send(LiveJob::Close(note));
+                        self.status =
+                            format!("LAN: {author_dir} refused \"{title}\" - wrong password?");
                     }
                     repaint = true;
                 }
@@ -1338,13 +1425,16 @@ impl App {
         }
     }
 
-    /// Aktywne pole tekstowe: tytul, nazwa folderu albo adres zdalnego.
+    /// Aktywne pole tekstowe: tytul, nazwa folderu, token, hasla, adres peera.
     fn active_edit(&mut self) -> Option<&mut String> {
         self.toolbar
             .title_edit
             .as_mut()
             .or(self.menu.folder_edit.as_mut())
             .or(self.menu.token_edit.as_mut())
+            .or(self.menu.share_edit.as_mut())
+            .or(self.menu.open_edit.as_mut().map(|(_, b)| b))
+            .or(self.menu.peer_edit.as_mut())
     }
 
     /// Klawisz w polu tekstowym. `true` = zjedzony.
@@ -1357,6 +1447,12 @@ impl App {
                 self.commit_title();
             } else if self.menu.folder_edit.is_some() {
                 self.commit_folder_edit();
+            } else if self.menu.share_edit.is_some() {
+                self.commit_share_edit();
+            } else if self.menu.open_edit.is_some() {
+                self.commit_open_edit();
+            } else if self.menu.peer_edit.is_some() {
+                self.commit_peer_edit();
             } else {
                 self.commit_token_edit();
             }
@@ -1364,6 +1460,7 @@ impl App {
             self.toolbar.title_edit = None;
             self.menu.folder_edit = None;
             self.menu.token_edit = None;
+            self.menu.clear_lan_edits();
         } else if vk == VK_BACK {
             if let Some(b) = self.active_edit() {
                 b.pop();
@@ -1393,6 +1490,160 @@ impl App {
             }
             self.sync.last = "checking token...".to_string();
             self.sync.send(SyncJob::SetToken(token));
+        }
+    }
+
+    // ----- siec: udostepnianie notatek (ADR 0008) --------------------------
+
+    /// Lista cudzych udostepnien do menu, w kolejnosci `MenuHit::Offer(i)`.
+    fn offer_views(&self) -> Vec<OfferView> {
+        self.live
+            .offers
+            .iter()
+            .map(|o| OfferView {
+                title: o.title.clone(),
+                author_dir: o.author_dir.clone(),
+                protected: o.protected,
+                state: if self.lan_open.get(&o.note) == Some(&o.instance) {
+                    OfferState::Open
+                } else if self.lan.opened.contains_key(&o.note) {
+                    OfferState::Pending
+                } else {
+                    OfferState::Closed
+                },
+            })
+            .collect()
+    }
+
+    /// Udostepnij / cofnij biezaca notatke (bez zmiany hasla).
+    fn toggle_share(&mut self) {
+        let note = self.notes[self.note_idx].id.clone();
+        if self.lan.shares.remove(&note).is_some() {
+            self.live.send(LiveJob::Unshare(note));
+            self.status = "LAN: note is no longer shared".to_string();
+        } else {
+            self.lan.shares.insert(note.clone(), None);
+            self.send_share(&note);
+            self.status = "LAN: note shared without a password".to_string();
+        }
+        self.menu.share_edit = None;
+        self.lan.save();
+    }
+
+    /// `Job::Share` z aktualnym tytulem i kluczem z `lan`.
+    fn send_share(&mut self, note: &str) {
+        let Some(key) = self.lan.shares.get(note).copied() else {
+            return;
+        };
+        let title = self
+            .notes
+            .iter()
+            .find(|e| e.id == note)
+            .map(|e| e.title.clone())
+            .unwrap_or_default();
+        self.live.send(LiveJob::Share {
+            note: note.to_string(),
+            title,
+            key,
+        });
+    }
+
+    /// Enter w polu hasla udostepnienia: puste = bez hasla.
+    fn commit_share_edit(&mut self) {
+        if let Some(pw) = self.menu.share_edit.take() {
+            let note = self.notes[self.note_idx].id.clone();
+            if !self.lan.shares.contains_key(&note) {
+                return;
+            }
+            let key = if pw.is_empty() {
+                None
+            } else {
+                Some(spectre_sync::live::share::key_from_password(&pw))
+            };
+            self.lan.shares.insert(note.clone(), key);
+            self.lan.save();
+            self.send_share(&note);
+            self.status = if key.is_some() {
+                "LAN: password set - peers must open the note again".to_string()
+            } else {
+                "LAN: password removed".to_string()
+            };
+        }
+    }
+
+    /// Dotkniecie cudzej notatki: otworz (z haslem, gdy chroniona) albo zamknij.
+    fn offer_tap(&mut self, i: usize) {
+        let Some(o) = self.live.offers.get(i).cloned() else {
+            return;
+        };
+        if self.lan.opened.contains_key(&o.note) {
+            self.lan.opened.remove(&o.note);
+            self.lan_open.remove(&o.note);
+            self.lan.save();
+            self.live.send(LiveJob::Close(o.note));
+            self.status = "LAN: note closed (your copy stays)".to_string();
+            return;
+        }
+        if o.protected {
+            self.menu.open_edit = Some((i, String::new()));
+            unsafe {
+                let _ = SetFocus(Some(self.hwnd));
+            }
+            return;
+        }
+        self.open_offer(&o.note, None);
+    }
+
+    fn open_offer(&mut self, note: &str, key: Option<spectre_sync::live::share::Key>) {
+        self.lan.opened.insert(note.to_string(), key);
+        self.lan.save();
+        self.live.send(LiveJob::Open {
+            note: note.to_string(),
+            key,
+        });
+        self.status = "LAN: opening...".to_string();
+    }
+
+    /// Enter w polu hasla do cudzej notatki.
+    fn commit_open_edit(&mut self) {
+        if let Some((i, pw)) = self.menu.open_edit.take() {
+            let Some(o) = self.live.offers.get(i).cloned() else {
+                return;
+            };
+            let key = spectre_sync::live::share::key_from_password(&pw);
+            self.open_offer(&o.note, Some(key));
+        }
+    }
+
+    /// Enter w polu adresu peera: `host:port`; nazwa hosta tez (DNS / Tailscale).
+    fn commit_peer_edit(&mut self) {
+        if let Some(addr) = self.menu.peer_edit.take() {
+            let addr = addr.trim().to_string();
+            if addr.is_empty() || self.lan.peers.contains(&addr) {
+                return;
+            }
+            use std::net::ToSocketAddrs;
+            if addr
+                .to_socket_addrs()
+                .map(|mut a| a.next())
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                self.status = format!("LAN: cannot resolve {addr} (need host:port)");
+                return;
+            }
+            self.lan.peers.push(addr);
+            self.lan.save();
+            self.live.send(LiveJob::Peers(self.lan.peer_addrs()));
+        }
+    }
+
+    fn remove_peer(&mut self, i: usize) {
+        if i < self.lan.peers.len() {
+            self.lan.peers.remove(i);
+            self.lan.save();
+            self.live.send(LiveJob::Peers(self.lan.peer_addrs()));
         }
     }
 
@@ -1756,6 +2007,9 @@ impl App {
         if self.menu.open && self.waves.is_none() {
             let author = self.author.dir_name();
             let live_line = self.live.status_line();
+            let offers = self.offer_views();
+            let current = &self.notes[self.note_idx].id;
+            let share = self.lan.shares.get(current).map(|k| k.is_some());
             // Pola wprost (nie metoda na `self`): `build` bierze &mut menu, stan czyta reszte.
             let ms = MenuState {
                 notes: &self.notes,
@@ -1786,6 +2040,9 @@ impl App {
                 device_code: self.sync.device_code.as_deref(),
                 live: &live_line,
                 live_enabled: self.live.enabled,
+                share,
+                offers: &offers,
+                peers: &self.lan.peers,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -2045,8 +2302,11 @@ pub unsafe extern "system" fn wndproc(
                 if let Some(t) = app.toolbar.title_hit(x, y) {
                     app.title_tap(t);
                 } else if let Some(h) = app.menu.hit(x, y) {
-                    if app.menu.folder_edit.is_some() && h != MenuHit::Panel {
+                    if h != MenuHit::Panel {
                         app.commit_folder_edit();
+                        // Pola LAN: dotkniecie gdzie indziej = rezygnacja (haslo
+                        // wpisane do polowy nie ma prawa zostac zatwierdzone).
+                        app.menu.clear_lan_edits();
                     }
                     app.menu_tap(h);
                 } else {

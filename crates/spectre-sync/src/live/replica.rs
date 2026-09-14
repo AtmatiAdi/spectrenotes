@@ -90,8 +90,18 @@ impl Replica {
     }
 
     pub fn summary(&self) -> Vec<Have> {
+        self.summary_of(|_| true)
+    }
+
+    /// Stan jednej notatki (wszyscy autorzy) - do `Summary` po otwarciu.
+    pub fn summary_note(&self, note: &str) -> Vec<Have> {
+        self.summary_of(|n| n == note)
+    }
+
+    fn summary_of(&self, keep: impl Fn(&str) -> bool) -> Vec<Have> {
         self.known
             .iter()
+            .filter(|((note, _), _)| keep(note))
             .map(|((note, dir), (author, last))| Have {
                 note: note.clone(),
                 author_dir: dir.clone(),

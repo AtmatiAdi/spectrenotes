@@ -94,16 +94,25 @@ Przy 240 Hz to około 1 MB na godzinę nieprzerwanego rysowania.
 - **Transport**: TCP z `TCP_NODELAY` (`std::net`), ramki = te same rekordy, co
   w pliku `.ops`. QUIC odłożony: w LAN TCP daje ~0,1 ms, a przez Tailscale jedzie
   w tunelu WireGuard; `quinn` to tokio + rustls w binarce bez powodu.
-- **LAN**: własny beacon multicast `239.255.94.94:47941` co 2 s (nazwa space'u,
-  autor, port TCP, id instancji); łączy instancja o mniejszym id. Działa bez
+- **LAN**: własny beacon multicast `239.255.94.94:47941` co 2 s (`SPCTLV2`: autor,
+  port TCP, id instancji); łączy instancja o mniejszym id. Działa bez
   internetu. Rozgłaszanie tylko przy widocznym oknie (Z2).
-- **Zdalnie**: adres Tailscale peera (`Job::Connect`) — Tailscale daje szyfrowanie
-  i tożsamość, więc nie budujemy własnego PKI.
+- **Zdalnie**: adres `host:port` peera wpisany w *Konto* (Tailscale) — węzeł łączy
+  się sam i ponawia co 10 s; Tailscale daje szyfrowanie i tożsamość, więc nie
+  budujemy własnego PKI.
+- **Co płynie (ADR 0008)**: samo połączenie nic nie replikuje. Po `Hello` każda
+  strona wysyła `Shared` (co udostępnia: id, tytuł, czy z hasłem). Notatka płynie
+  na połączeniu dopiero po `Open` → `Opened(ok)`; dowód hasła to SHA-256 z klucza
+  pochodnego, id notatki i dwóch nonce'ów z `Hello` — hasło nie idzie siecią.
+  `Summary`, `Ops`, `Wet`, `Cursor` dotyczą wyłącznie notatek otwartych na tym
+  połączeniu. Udostępnienia i otwarte notatki tej maszyny: `lan-<space>.txt`
+  w danych aplikacji (nie w space, nie w gicie).
+- **Heartbeat**: po 5 s ciszy `Ping`, brak `Pong` do 12 s = zerwane połączenie.
 - **Mokra kreska**: paczka próbek na każdy komunikat pióra (~4 ms), z kolorem
   i grubością; odbiorca rysuje ją tym samym `StrokeBuilder`, co własną. Obecność
   (rysik peera) tym samym strumieniem.
-- **Dołączenie w trakcie**: wymiana `Summary` — (notatka, autor) → ostatni lamport —
-  i dosłanie różnicy. Ta sama ścieżka co po merge'u gita.
+- **Dołączenie w trakcie**: po otwarciu notatki wymiana `Summary` tej notatki —
+  (autor) → ostatni lamport — i dosłanie różnicy. Ta sama ścieżka co po merge'u gita.
 - **Zdalne operacje na dysku**: `ops/<autor>/via-<ja>-000001.ops` — plik, który
   pisze tylko ta maszyna; niezmiennik „jeden plik = jeden pisarz" zostaje.
   Odczyt deduplikuje po `(autor, lamport)`.

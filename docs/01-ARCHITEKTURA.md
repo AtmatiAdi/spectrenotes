@@ -23,7 +23,7 @@ crates/
   spectre-core      # model dokumentu, op-log CRDT, undo, geometria, kamera
   spectre-ink       # próbkowanie, krzywe nacisku, interpolacja, teselacja wstęgi
   spectre-render    # Direct2D na DXGI flip-model (ADR 0005), warstwa mokra/sucha, AMOLED
-  spectre-sync      # git (libgit2, ADR 0006) + budzet ruchu + live P2P (TCP + multicast w LAN, ADR 0007)
+  spectre-sync      # git (libgit2, ADR 0006) + budzet ruchu + live P2P (TCP + multicast, ADR 0007; udostepnianie per notatka z haslem, ADR 0008)
   spectre-proto     # format on-disk i wire (jedno źródło prawdy dla obu)
   spectre-shell-win # okno Win32, WM_POINTER, tray, global hotkey, DXGI/DPI
   spectre-app       # binarka: spina wszystko, konfiguracja, updater
@@ -61,7 +61,8 @@ To jest cała przenośność, o którą chodzi w Z-platformy: port = napisanie n
 │  co N s / na idle: git      │  (libgit2, sekundy - nigdy nie blokuje renderu)
 └─────────────────────────────┘
            │
-┌──────────▼─ Live thread ────┐  TCP do peerów w LAN (ADR 0007)
+┌──────────▼─ Live thread ────┐  TCP do peerów (LAN / Tailscale); płyną tylko udostępnione
+│                             │  i otwarte notatki (ADR 0007, 0008)
 │  op-log → peers             │  mokra kreska co komunikat pióra,
 │  peers → via-*.ops → okno   │  zdalne operacje na dysk i do dokumentu
 └─────────────────────────────┘

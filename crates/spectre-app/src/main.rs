@@ -19,6 +19,7 @@ mod app;
 mod bench;
 mod config;
 mod github;
+mod lan;
 mod live;
 mod menu;
 mod sync;

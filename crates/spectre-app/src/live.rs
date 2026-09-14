@@ -22,6 +22,16 @@ pub struct Peer {
     pub since: Instant,
 }
 
+/// Notatka udostepniana przez peera (z jego `Shared`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offer {
+    pub instance: u64,
+    pub author_dir: String,
+    pub note: String,
+    pub title: String,
+    pub protected: bool,
+}
+
 pub struct LiveWorker {
     node: Option<Node>,
     pub enabled: bool,
@@ -36,6 +46,8 @@ pub struct LiveWorker {
     /// Ostatnia wymiana trwalych operacji z peerem (wyslane przy polaczeniu
     /// albo odebrane) - do licznika "peer ... ago" w menu.
     pub last_ops: Option<Mark>,
+    /// Co peerzy udostepniaja - lista "Shared on LAN" w menu.
+    pub offers: Vec<Offer>,
     pub error: String,
 }
 
@@ -59,6 +71,7 @@ impl LiveWorker {
             wet_in: 0,
             ops_in: 0,
             last_ops: None,
+            offers: Vec::new(),
             error: String::new(),
         };
         if !enabled {
@@ -112,8 +125,27 @@ impl LiveWorker {
                             author_dir: author_dir.clone(),
                             since: Instant::now(),
                         });
+                    } else {
+                        self.offers.retain(|o| o.instance != *instance);
                     }
                 }
+                Event::Shared {
+                    instance,
+                    author_dir,
+                    notes,
+                } => {
+                    self.offers.retain(|o| o.instance != *instance);
+                    for n in notes {
+                        self.offers.push(Offer {
+                            instance: *instance,
+                            author_dir: author_dir.clone(),
+                            note: n.note.clone(),
+                            title: n.title.clone(),
+                            protected: n.protected,
+                        });
+                    }
+                }
+                Event::Opened { .. } => {}
                 Event::Wet { latency_us, .. } => {
                     self.wet_in += 1;
                     self.lat_last_us = *latency_us;

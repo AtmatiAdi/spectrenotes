@@ -162,10 +162,21 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       kreska widoczna u drugiej strony w trakcie (zrzuty co 150 ms). Dwie fizyczne
       maszyny w LAN — do potwierdzenia na sprzęcie (Windows Firewall musi przepuścić
       `spectrenotes.exe`; prompt przy pierwszym starcie)
-- [ ] Peer przez Tailscale bez multicastu: adres w ustawieniach (`Job::Connect` jest)
-- [ ] Zabezpieczenie space'u w sieci (hasło/parowanie) — dziś granicą zaufania jest LAN
+- [x] **Udostępnianie per notatka, z hasłem lub bez (ADR 0008)** — protokół v2:
+      połączenie nic nie replikuje, po `Hello` lista `Shared`, notatka płynie dopiero
+      po `Open` → `Opened(ok)`; dowód hasła SHA-256 (klucz pochodny + nonce'y z `Hello`),
+      hasło nie idzie siecią ani na dysk. Nazwa space'u bez znaczenia. Minimum GUI:
+      *Notatki → This note on LAN* (udostępnij, hasło) i *Shared on LAN* (cudze, kłódka,
+      otwórz/zamknij). `lan-<space>.txt` w danych aplikacji. Zweryfikowane dwiema
+      instancjami: złe hasło odrzucone, dobre otwiera, kreska A u B w trakcie
+- [x] Peer przez Tailscale bez multicastu: adresy `host:port` w *Konto → Sieć lokalna*,
+      węzeł łączy się sam i ponawia co 10 s (`Job::Peers`); deduplikacja po instancji
+- [x] Heartbeat: `Ping` po 5 s ciszy, zerwane po 12 s (test z milczącym klientem)
+- [ ] Szyfrowanie treści bez Tailscale (dziś: hasło chroni przed otwarciem, nie przed
+      podsłuchem — jawny TCP w LAN)
 - [ ] Przycinanie `via-*`, gdy plik autora w gicie już to pokrywa (razem ze snapshotami)
-- [ ] Heartbeat / wykrywanie zerwanego połączenia szybciej niż timeout TCP
+- [ ] GUI udostępniania docelowo (Etap 6½): kto ma notatkę otwartą, lista peerów,
+      udostępnianie z listy notatek (nie tylko bieżącej), nazwy zamiast `user@computer`
 
 ## Etap 6½ — Określenie wymagań i zmiany GUI  ☐ DO SPISANIA Z UŻYTKOWNIKIEM
 

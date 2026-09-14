@@ -14,3 +14,5 @@ git2 = { version = "0.21", default-features = false, features = ["https", "vendo
 # Multicast do wykrywania peerow w LAN: dwie instancje na jednej maszynie musza
 # dzielic port (SO_REUSEADDR), a std tego nie wystawia. Malutki, bez zaleznosci.
 socket2 = "0.6"
+# Haslo udostepnionej notatki: klucz pochodny i dowod challenge-response (ADR 0008).
+sha2 = "0.10"

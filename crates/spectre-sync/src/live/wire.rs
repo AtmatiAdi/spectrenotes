@@ -5,14 +5,22 @@
 //! `Msg::Ops` sa **doslownie tymi samymi bajtami**, ktore laduja w pliku
 //! (rekordy `REC_OP` jeden za drugim): odbiorca dopisuje je do swojego pliku
 //! bez przekodowywania.
+//!
+//! Przebieg sesji (ADR 0008): `Hello` w obie strony, potem kazdy wysyla
+//! `Shared` (co udostepnia). Kto chce notatke peera, wysyla `Open` z dowodem
+//! hasla; po `Opened(ok)` obie strony wymieniaja `Summary` tej jednej notatki
+//! i dosylaja `Ops`. Wszystko ponizej `Open` (`Summary`, `Ops`, `Wet`,
+//! `Cursor`) dotyczy wylacznie notatek otwartych na tym polaczeniu.
 
 use spectre_proto::codec::{decode_str, decode_stroke, encode_str, encode_stroke};
 use spectre_proto::record::{read_record, write_record, RecordError};
 use spectre_proto::varint::{put_u64, Reader};
 use spectre_proto::{AuthorId, StrokeData};
 
+use crate::live::share::Proof;
+
 /// Wersja protokolu live. Rozne wersje nie rozmawiaja ze soba.
-pub const PROTO_VERSION: u16 = 1;
+pub const PROTO_VERSION: u16 = 2;
 
 /// Typy ramek. Wartosci sa czescia protokolu.
 const T_HELLO: u8 = 10;
@@ -21,6 +29,12 @@ const T_OPS: u8 = 12;
 const T_WET: u8 = 13;
 const T_CURSOR: u8 = 14;
 const T_BYE: u8 = 15;
+const T_SHARED: u8 = 16;
+const T_OPEN: u8 = 17;
+const T_OPENED: u8 = 18;
+const T_CLOSE: u8 = 19;
+const T_PING: u8 = 20;
+const T_PONG: u8 = 21;
 
 /// Co jeden peer wie o jednym autorze w jednej notatce: ostatni lamport
 /// w jego plikach. Operacje autora sa w jego plikach w kolejnosci rosnacej
@@ -34,18 +48,49 @@ pub struct Have {
     pub last: u64,
 }
 
+/// Notatka, ktora peer udostepnia: do listy "Shared on LAN" u odbiorcy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedNote {
+    pub note: String,
+    pub title: String,
+    pub protected: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Msg {
-    /// Pierwsza ramka po polaczeniu w obie strony.
+    /// Pierwsza ramka po polaczeniu w obie strony. `nonce` wchodzi do dowodu
+    /// hasla przy `Open` (swiezy na kazde polaczenie).
     Hello {
         version: u16,
-        space: String,
         author_dir: String,
         author: AuthorId,
         instance: u64,
+        nonce: u64,
     },
-    /// "Tyle mam" - odbiorca odsyla `Ops` ze wszystkim, czego nadawcy brakuje.
-    Summary(Vec<Have>),
+    /// Pelna lista tego, co nadawca udostepnia; wysylana po `Hello` i po
+    /// kazdej zmianie.
+    Shared(Vec<SharedNote>),
+    /// Prosba o notatke z listy peera. `proof` = `share::proof(...)`; dla
+    /// notatki bez hasla same zera (nadawca nie musi nic wiedziec).
+    Open {
+        note: String,
+        proof: Proof,
+    },
+    Opened {
+        note: String,
+        ok: bool,
+    },
+    /// Koniec sesji tej notatki na tym polaczeniu (cofniete udostepnienie
+    /// albo zamkniecie u otwierajacego).
+    Close {
+        note: String,
+    },
+    /// "Tyle mam w tej notatce" (po otwarciu) - odbiorca odsyla `Ops` ze
+    /// wszystkim, czego nadawcy brakuje. Pusta lista = nie mam nic.
+    Summary {
+        note: String,
+        haves: Vec<Have>,
+    },
     /// Operacje jednego autora w jednej notatce, rosnaco po lamporcie,
     /// jako gotowe rekordy `.ops`.
     Ops {
@@ -71,6 +116,9 @@ pub enum Msg {
         x: f32,
         y: f32,
     },
+    /// Heartbeat: po ciszy nadawca pyta, odbiorca odpowiada `Pong`.
+    Ping,
+    Pong,
     Bye,
 }
 
@@ -81,21 +129,45 @@ impl Msg {
         let kind = match self {
             Msg::Hello {
                 version,
-                space,
                 author_dir,
                 author,
                 instance,
+                nonce,
             } => {
                 p.extend_from_slice(&version.to_le_bytes());
-                encode_str(space, &mut p);
                 encode_str(author_dir, &mut p);
                 put_u64(&mut p, author.0);
                 put_u64(&mut p, *instance);
+                put_u64(&mut p, *nonce);
                 T_HELLO
             }
-            Msg::Summary(list) => {
+            Msg::Shared(list) => {
                 put_u64(&mut p, list.len() as u64);
-                for h in list {
+                for s in list {
+                    encode_str(&s.note, &mut p);
+                    encode_str(&s.title, &mut p);
+                    p.push(s.protected as u8);
+                }
+                T_SHARED
+            }
+            Msg::Open { note, proof } => {
+                encode_str(note, &mut p);
+                p.extend_from_slice(proof);
+                T_OPEN
+            }
+            Msg::Opened { note, ok } => {
+                encode_str(note, &mut p);
+                p.push(*ok as u8);
+                T_OPENED
+            }
+            Msg::Close { note } => {
+                encode_str(note, &mut p);
+                T_CLOSE
+            }
+            Msg::Summary { note, haves } => {
+                encode_str(note, &mut p);
+                put_u64(&mut p, haves.len() as u64);
+                for h in haves {
                     encode_str(&h.note, &mut p);
                     encode_str(&h.author_dir, &mut p);
                     put_u64(&mut p, h.author.0);
@@ -136,6 +208,8 @@ impl Msg {
                 p.extend_from_slice(&y.to_le_bytes());
                 T_CURSOR
             }
+            Msg::Ping => T_PING,
+            Msg::Pong => T_PONG,
             Msg::Bye => T_BYE,
         };
         let mut out = Vec::with_capacity(p.len() + 9);
@@ -148,12 +222,36 @@ impl Msg {
         let m = match kind {
             T_HELLO => Msg::Hello {
                 version: r.u16_le().ok()?,
-                space: decode_str(&mut r).ok()?,
                 author_dir: decode_str(&mut r).ok()?,
                 author: AuthorId(r.u64().ok()?),
                 instance: r.u64().ok()?,
+                nonce: r.u64().ok()?,
+            },
+            T_SHARED => {
+                let n = r.usize().ok()?;
+                let mut list = Vec::with_capacity(n.min(4096));
+                for _ in 0..n {
+                    list.push(SharedNote {
+                        note: decode_str(&mut r).ok()?,
+                        title: decode_str(&mut r).ok()?,
+                        protected: r.u8().ok()? != 0,
+                    });
+                }
+                Msg::Shared(list)
+            }
+            T_OPEN => Msg::Open {
+                note: decode_str(&mut r).ok()?,
+                proof: r.bytes(32).ok()?.try_into().ok()?,
+            },
+            T_OPENED => Msg::Opened {
+                note: decode_str(&mut r).ok()?,
+                ok: r.u8().ok()? != 0,
+            },
+            T_CLOSE => Msg::Close {
+                note: decode_str(&mut r).ok()?,
             },
             T_SUMMARY => {
+                let note = decode_str(&mut r).ok()?;
                 let n = r.usize().ok()?;
                 let mut list = Vec::with_capacity(n.min(4096));
                 for _ in 0..n {
@@ -164,7 +262,7 @@ impl Msg {
                         last: r.u64().ok()?,
                     });
                 }
-                Msg::Summary(list)
+                Msg::Summary { note, haves: list }
             }
             T_OPS => Msg::Ops {
                 note: decode_str(&mut r).ok()?,
@@ -187,6 +285,8 @@ impl Msg {
                 x: r.f32_le().ok()?,
                 y: r.f32_le().ok()?,
             },
+            T_PING => Msg::Ping,
+            T_PONG => Msg::Pong,
             T_BYE => Msg::Bye,
             _ => return None,
         };
@@ -227,17 +327,43 @@ mod tests {
         vec![
             Msg::Hello {
                 version: PROTO_VERSION,
-                space: "default".into(),
                 author_dir: "adi@laptop".into(),
                 author: AuthorId(7),
                 instance: 42,
+                nonce: 0xdead_beef,
             },
-            Msg::Summary(vec![Have {
+            Msg::Shared(vec![
+                SharedNote {
+                    note: "01J8".into(),
+                    title: "Plan".into(),
+                    protected: true,
+                },
+                SharedNote {
+                    note: "01J9".into(),
+                    title: String::new(),
+                    protected: false,
+                },
+            ]),
+            Msg::Open {
                 note: "01J8".into(),
-                author_dir: "kuba@surface".into(),
-                author: AuthorId(9),
-                last: 12,
-            }]),
+                proof: [7u8; 32],
+            },
+            Msg::Opened {
+                note: "01J8".into(),
+                ok: true,
+            },
+            Msg::Close {
+                note: "01J8".into(),
+            },
+            Msg::Summary {
+                note: "01J8".into(),
+                haves: vec![Have {
+                    note: "01J8".into(),
+                    author_dir: "kuba@surface".into(),
+                    author: AuthorId(9),
+                    last: 12,
+                }],
+            },
             Msg::Ops {
                 note: "01J8".into(),
                 author_dir: "adi@laptop".into(),
@@ -267,6 +393,8 @@ mod tests {
                 x: 1.5,
                 y: -2.0,
             },
+            Msg::Ping,
+            Msg::Pong,
             Msg::Bye,
         ]
     }

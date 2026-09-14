@@ -81,6 +81,15 @@ pub enum MenuHit {
     SyncNow,
     /// Zaczyna wklejanie tokenu GitHub (PAT).
     PasteToken,
+    /// Biezaca notatka: udostepnij w sieci / cofnij.
+    ShareToggle,
+    /// Biezaca notatka: ustaw albo zdejmij haslo udostepnienia.
+    SharePassword,
+    /// Cudza udostepniona notatka (indeks w `MenuState::offers`): otworz / zamknij.
+    Offer(usize),
+    /// Staly adres peera: dodaj (pole tekstowe) / usun (indeks).
+    AddPeer,
+    Peer(usize),
     /// Tlo panelu - zjada dotkniecie, nic nie robi.
     Panel,
 }
@@ -135,6 +144,30 @@ pub struct MenuState<'a> {
     /// Stan warstwy live: peerzy w LAN (jedna linia).
     pub live: &'a str,
     pub live_enabled: bool,
+    /// Biezaca notatka w sieci: `None` = nieudostepniona, `Some(z haslem?)`.
+    pub share: Option<bool>,
+    /// Cudze udostepnione notatki (ADR 0008), w kolejnosci `MenuHit::Offer(i)`.
+    pub offers: &'a [OfferView],
+    /// Stale adresy peerow (Tailscale), w kolejnosci `MenuHit::Peer(i)`.
+    pub peers: &'a [String],
+}
+
+/// Jedna cudza notatka na liscie "Shared on LAN".
+pub struct OfferView {
+    pub title: String,
+    pub author_dir: String,
+    pub protected: bool,
+    pub state: OfferState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfferState {
+    /// Nie prosilismy o nia.
+    Closed,
+    /// Chcemy ja - czekamy na peera / haslo sprawdzane.
+    Pending,
+    /// Otwarta: plynie w obie strony.
+    Open,
 }
 
 /// Wiersz ustawienia: (klucz, etykieta, wartosc do wyswietlenia).
@@ -147,6 +180,12 @@ pub struct Menu {
     pub folder_edit: Option<String>,
     /// Wklejany token GitHub (Konto, gdy nie ma Device Flow).
     pub token_edit: Option<String>,
+    /// Haslo udostepnienia biezacej notatki (puste = bez hasla).
+    pub share_edit: Option<String>,
+    /// Haslo do cudzej notatki: (indeks oferty, bufor).
+    pub open_edit: Option<(usize, String)>,
+    /// Nowy staly adres peera.
+    pub peer_edit: Option<String>,
     scroll: f32,
     hot: Option<MenuHit>,
     /// Elementy z ostatniego `build` - juz po przewinieciu, w pikselach ekranu.
@@ -166,6 +205,9 @@ impl Menu {
             tab: Tab::Notes,
             folder_edit: None,
             token_edit: None,
+            share_edit: None,
+            open_edit: None,
+            peer_edit: None,
             scroll: 0.0,
             hot: None,
             rows: Vec::new(),
@@ -210,6 +252,7 @@ impl Menu {
         if !self.open {
             self.folder_edit = None;
             self.token_edit = None;
+            self.clear_lan_edits();
         }
     }
 
@@ -219,7 +262,14 @@ impl Menu {
             self.scroll = 0.0;
             self.folder_edit = None;
             self.token_edit = None;
+            self.clear_lan_edits();
         }
+    }
+
+    pub fn clear_lan_edits(&mut self) {
+        self.share_edit = None;
+        self.open_edit = None;
+        self.peer_edit = None;
     }
 
     /// Nazwa folderu dla `MoveTo(Some(i))` z ostatniego rysowania.
@@ -540,6 +590,79 @@ impl Menu {
 
         // Akcje na koncu listy.
         y += 12.0;
+        y += self.rule(list, y, out);
+        for (hit, label) in [
+            (MenuHit::NewNote, "+  New note"),
+            (MenuHit::NewFolder, "+  New folder"),
+        ] {
+            if hit == MenuHit::NewFolder {
+                if let Some(buf) = self.folder_edit.clone() {
+                    y += self.edit_row(list, y, &buf, "folder name, Enter", out);
+                    continue;
+                }
+            }
+            y += self.action_row(list, y, hit, label, FG, out);
+        }
+
+        // Biezaca notatka w sieci (ADR 0008) - minimum GUI, docelowy uklad
+        // do ustalenia w Etapie 6 1/2.
+        y += 12.0;
+        y += self.section(list, y, "This note on LAN", out);
+        let label = match s.share {
+            None => "Share on LAN: off".to_string(),
+            Some(false) => "Share on LAN: on, no password".to_string(),
+            Some(true) => "Share on LAN: on, password set".to_string(),
+        };
+        y += self.action_row(list, y, MenuHit::ShareToggle, &label, FG, out);
+        if s.share.is_some() {
+            if let Some(buf) = self.share_edit.clone() {
+                y += self.edit_row(list, y, &buf, "password, Enter (empty = none)", out);
+            } else {
+                let label = if s.share == Some(true) {
+                    "Change or remove password..."
+                } else {
+                    "Set a password..."
+                };
+                y += self.action_row(list, y, MenuHit::SharePassword, label, FG, out);
+            }
+        }
+
+        // Cudze udostepnienia.
+        y += 12.0;
+        y += self.section(list, y, "Shared on LAN", out);
+        if s.offers.is_empty() {
+            y += self.line(list, y, "nobody nearby is sharing a note", FG_DIM, out);
+        }
+        for (i, o) in s.offers.iter().enumerate() {
+            if let Some((idx, buf)) = self.open_edit.clone() {
+                if idx == i {
+                    y += self.edit_row(list, y, &buf, "password, Enter", out);
+                    continue;
+                }
+            }
+            let title = if o.title.is_empty() {
+                "untitled"
+            } else {
+                o.title.as_str()
+            };
+            let state = match o.state {
+                OfferState::Closed => "",
+                OfferState::Pending => "  ·  opening...",
+                OfferState::Open => "  ·  open",
+            };
+            let lock = if o.protected { "  🔒" } else { "" };
+            let text = format!("{title}{lock}  —  {}{state}", o.author_dir);
+            let color = if o.state == OfferState::Open {
+                FG
+            } else {
+                FG_DIM
+            };
+            y += self.action_row(list, y, MenuHit::Offer(i), &text, color, out);
+        }
+        y + 10.0 - (list.y - self.scroll)
+    }
+
+    fn rule(&self, list: Rect, y: f32, out: &mut Vec<UiPrim>) -> f32 {
         out.push(UiPrim::Rect {
             x: list.x + PAD,
             y,
@@ -548,59 +671,77 @@ impl Menu {
             color: LINE,
             r: 0.0,
         });
-        y += 8.0;
-        for (hit, label) in [
-            (MenuHit::NewNote, "+  New note"),
-            (MenuHit::NewFolder, "+  New folder"),
-        ] {
-            let r = Rect {
-                x: list.x,
-                y,
-                w: list.w,
-                h: ROW_H,
-            };
-            if hit == MenuHit::NewFolder {
-                if let Some(buf) = self.folder_edit.clone() {
-                    out.push(UiPrim::Outline {
-                        x: r.x + PAD,
-                        y: r.y + 4.0,
-                        w: r.w - PAD * 2.0,
-                        h: r.h - 8.0,
-                        color: ACCENT,
-                        width: 1.0,
-                        r: 6.0,
-                    });
-                    out.push(UiPrim::Text {
-                        x: r.x + PAD + 8.0,
-                        y: r.y,
-                        w: r.w - PAD * 2.0 - 16.0,
-                        h: r.h,
-                        text: if buf.is_empty() {
-                            "folder name, Enter".to_string()
-                        } else {
-                            format!("{buf}|")
-                        },
-                        color: if buf.is_empty() { FG_DIM } else { FG },
-                        font: UiFont::Ui,
-                    });
-                    self.rows.push((MenuHit::Panel, r));
-                    y += ROW_H;
-                    continue;
-                }
-            }
-            self.row(hit, r, out, false);
-            out.push(UiPrim::Text {
-                x: r.x + PAD + 8.0,
-                y: r.y,
-                w: r.w - PAD * 2.0,
-                h: r.h,
-                text: label.to_string(),
-                color: FG,
-                font: UiFont::Ui,
-            });
-            y += ROW_H;
-        }
-        y + 10.0 - (list.y - self.scroll)
+        8.0
+    }
+
+    /// Wiersz-akcja na pelna szerokosc (podswietlany po najechaniu).
+    fn action_row(
+        &mut self,
+        list: Rect,
+        y: f32,
+        hit: MenuHit,
+        label: &str,
+        color: spectre_proto::Rgba,
+        out: &mut Vec<UiPrim>,
+    ) -> f32 {
+        let r = Rect {
+            x: list.x,
+            y,
+            w: list.w,
+            h: ROW_H,
+        };
+        self.row(hit, r, out, false);
+        out.push(UiPrim::Text {
+            x: r.x + PAD + 8.0,
+            y: r.y,
+            w: r.w - PAD * 2.0 - 8.0,
+            h: r.h,
+            text: label.to_string(),
+            color,
+            font: UiFont::Ui,
+        });
+        ROW_H
+    }
+
+    /// Pole tekstowe w wierszu listy (nazwa folderu, haslo, adres).
+    fn edit_row(
+        &mut self,
+        list: Rect,
+        y: f32,
+        buf: &str,
+        placeholder: &str,
+        out: &mut Vec<UiPrim>,
+    ) -> f32 {
+        let r = Rect {
+            x: list.x,
+            y,
+            w: list.w,
+            h: ROW_H,
+        };
+        out.push(UiPrim::Outline {
+            x: r.x + PAD,
+            y: r.y + 4.0,
+            w: r.w - PAD * 2.0,
+            h: r.h - 8.0,
+            color: ACCENT,
+            width: 1.0,
+            r: 6.0,
+        });
+        out.push(UiPrim::Text {
+            x: r.x + PAD + 8.0,
+            y: r.y,
+            w: r.w - PAD * 2.0 - 16.0,
+            h: r.h,
+            text: if buf.is_empty() {
+                placeholder.to_string()
+            } else {
+                format!("{buf}|")
+            },
+            color: if buf.is_empty() { FG_DIM } else { FG },
+            font: UiFont::Ui,
+        });
+        self.rows.push((MenuHit::Panel, r));
+        ROW_H
     }
 
     fn build_settings(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
@@ -903,10 +1044,28 @@ impl Menu {
         y += self.line(
             list,
             y,
-            "same space on another device here = shared drawing",
+            "notes you share appear on other devices here",
             FG_DIM,
             out,
         );
+        y += 6.0;
+        // Peerzy bez multicastu (Tailscale): adres wpisany recznie; dotkniecie usuwa.
+        for (i, p) in s.peers.iter().enumerate() {
+            let label = format!("{p}   (tap to remove)");
+            y += self.action_row(list, y, MenuHit::Peer(i), &label, FG, out);
+        }
+        if let Some(buf) = self.peer_edit.clone() {
+            y += self.edit_row(list, y, &buf, "host:port (Tailscale), Enter", out);
+        } else {
+            y += self.action_row(
+                list,
+                y,
+                MenuHit::AddPeer,
+                "+  Add peer address (Tailscale)",
+                FG,
+                out,
+            );
+        }
         y += 12.0;
 
         let st = s.sync;
