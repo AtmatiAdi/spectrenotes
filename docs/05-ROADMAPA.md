@@ -223,8 +223,28 @@ gdzie są. Format to zip z XML i binarnymi stroke'ami, więc jest wykonalny,
 ale to praca na osobny etap i nie ma powodu robić jej przed działającą aplikacją.
 
 Dalej: zakreślacz i lasso (`StrokeTransform` + LWW), wstawianie obrazków
-(content-addressed store, pytanie o Git LFS), OCR, eksport PDF, port na Androida
-(tablet + S Pen), szyfrowanie at-rest, tryb prezentacji.
+(content-addressed store, pytanie o Git LFS), OCR, eksport PDF, szyfrowanie
+at-rest, tryb prezentacji.
+
+**Opcjonalnie: port na Androida (Samsung, S Pen).** Tylko Android — Apple odpada
+(decyzja właściciela: konto deweloperskie, App Store, build na macOS). Stan
+wyjściowy jest dobry: `spectre-proto`, `spectre-core`, `spectre-ink` i prawie cały
+`spectre-sync` (git, budżet, live TCP, udostępnianie z hasłem) nie mają zależności
+od Windows — to ~6,5 tys. linii rdzenia, które kompilują się na `aarch64-linux-android`
+bez zmian (wyjątek: backend TLS libgit2 — na Androidzie inna feature flaga zamiast
+WinHTTP). Do napisania na platformę: renderer (Vulkan/Skia zamiast Direct2D),
+wejście S Pen (`MotionEvent` z naciskiem, tiltem i `getHistorical*` — odpowiednik
+`GetPointerPenInfoHistory`), powłoka (Kotlin, FFI przez `uniffi`), z celem niskiej
+latencji (`SurfaceView`, front-buffered rendering Samsunga). Ochrona AMOLED zbędna
+(system ma własną). Kolejność, gdyby to ruszyło:
+1. Przy okazji Etapu 6½ wyciągnąć z `spectre-app` przenośną logikę (menu, toolbar,
+   kamera, stan aplikacji — dziś posplataną z `HWND`, `PostMessage`, timerami,
+   `GetLocalTime`) do crate'u `spectre-ui` bez `windows::`; w `spectre-app` zostaje
+   sam Win32. Tanie, porządkuje kod niezależnie od portu.
+2. Rdzeń + `spectre-ui` jako biblioteka `.so` z bindingami `uniffi`.
+3. Powłoka Android: renderer, S Pen, okno; pomiar latencji jak w Etapie 0.
+Nie zaczynać przed domknięciem v1 na Windows i decyzjami GUI z 6½ — port skopiuje
+każdą decyzję, która jeszcze nie zapadła.
 
 ## Otwarte problemy
 
