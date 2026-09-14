@@ -44,8 +44,11 @@ dołączają konsolę).
 AMOLED na panel laptopa): gdy SpectreNotes jest widoczne na panelu i ma włączoną własną
 ochronę, co 10 s prosi Spectre o wstrzymanie nakładki (dzierżawa 30 s przez komunikat
 `Spectre.ShieldHold`). Spectre po wygaśnięciu dzierżawy wraca do ochrony sam — zamknięty
-czy zawieszony SpectreNotes nigdy nie zostawia panelu bez ochrony. Stan w HUD-zie
-(`Spectre: shield held`).
+czy zawieszony SpectreNotes nigdy nie zostawia panelu bez ochrony. HUD (`H`) mówi, co
+naprawdę poszło i dlaczego (`Spectre: shield held off, last ping 3 s ago` / `not holding -
+window on \\.\DISPLAY2, not the laptop panel` / `Spectre not running`), a przejścia tego
+stanu lądują w `%APPDATA%\SpectreNotes\partner.log`; Spectre loguje każde zakrycie
+i odkrycie panelu z powodem i stanem dzierżawy (`%APPDATA%\Spectre\spectre.log`).
 
 **Okno nie ma systemowej ramki ani paska tytułowego** — canvas zaczyna się od samej
 góry. Nad nim wiszą dwie małe **zakładki**: tytuł notatki na środku (tap, wpisz,

@@ -1337,6 +1337,15 @@ pub fn local_date(ms: u64) -> String {
     format!("{:04}-{:02}-{:02}", local.wYear, local.wMonth, local.wDay)
 }
 
+/// `RRRR-MM-DD HH:MM:SS` teraz - do plikow logu.
+pub fn local_stamp_now() -> String {
+    let l = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        l.wYear, l.wMonth, l.wDay, l.wHour, l.wMinute, l.wSecond
+    )
+}
+
 /// Lokalna godzina `HH:MM` teraz - do komunikatow "wyslano 12:04".
 pub fn local_time_now() -> String {
     let local = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };

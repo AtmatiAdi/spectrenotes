@@ -71,6 +71,14 @@ zależność nie zachodzi.
    ochrony. Bez gniazd, bez zapory. Zweryfikowane: okno na panelu → log Spectre
    „held by partner", panel widoczny; `Esc` → „partner released the hold", po 40 s
    panel czarny. Po stronie Spectre: `docs/BEHAVIOR.md` S10, D-11.
+   **Diagnostyka** (po zgłoszeniu „Spectre zaciemnia panel, choć notatka na nim jest"):
+   HUD pokazuje stan z tego samego miejsca, z którego idzie prośba — `shield held off,
+   last ping N s ago`, albo *dlaczego* nie prosimy (okno schowane / zminimalizowane /
+   ochrona wyłączona / okno na `\\.\DISPLAYn`, nie na panelu / Spectre nie działa /
+   `PostMessage` odmówił). Przejścia i spóźnione pingi (ping później niż 30 s po
+   poprzednim = dzierżawa w międzyczasie wygasła) trafiają do
+   `%APPDATA%\SpectreNotes\partner.log`; Spectre loguje każde zakrycie/odkrycie panelu
+   z powodem, trybem i stanem dzierżawy. Dwa logi obok siebie mówią, kto zawinił.
 
 ## Antyaliasing a subpiksele
 

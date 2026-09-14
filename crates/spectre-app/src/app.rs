@@ -6,6 +6,7 @@ use spectre_core::hittest::stroke_hit;
 use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
 use spectre_render::{Overlay, PresentMode, Renderer, UiPrim, WetTail};
+use spectre_shell_win::shield::HoldError;
 use spectre_shell_win::tray::{self, Tray, HOTKEY_TOGGLE, WM_TRAY};
 use spectre_shell_win::window::{self, Fullscreen};
 use spectre_shell_win::{PenBatch, PenButtons, PenDecoder};
@@ -72,6 +73,21 @@ const HOVER_ACTIVITY_PX: f32 = 12.0;
 const CURSOR_SHARE_MS: u128 = 40;
 const ZOOM_MIN: f32 = 0.25;
 const ZOOM_MAX: f32 = 4.0;
+
+/// Stan dzierzawy ochrony u Spectre - to, co `partner_tick` zdecydowal
+/// ostatnio. HUD i `partner.log` czytaja z tego samego miejsca, wiec nie
+/// moga sie rozjechac z tym, co naprawde poszlo do Spectre.
+#[derive(Clone, PartialEq, Eq)]
+enum PartnerState {
+    /// Przed pierwszym tykiem.
+    Unknown,
+    /// Prosba doszla do okna Spectre; nakladka ma byc schowana.
+    Held,
+    /// Nie prosimy - i dlaczego (okno schowane, nie na panelu, fale wylaczone).
+    Idle(String),
+    /// Chcielismy prosic, ale sie nie dalo (Spectre nie dziala, `PostMessage`).
+    Failed(HoldError),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -174,11 +190,13 @@ pub struct App {
     waves_laptop_only: bool,
     /// Wpis autostartu w rejestrze (stan odczytany na starcie i po zmianie).
     autostart: bool,
-    /// Spectre (osobna aplikacja chroniaca panel): czy trzymamy jej ochrone
-    /// wstrzymana i kiedy poszedl ostatni udany ping.
+    /// Spectre (osobna aplikacja chroniaca panel): co ostatnio zdecydowal
+    /// `partner_tick` (jedna prawda dla HUD i logu) i kiedy poszedl ostatni
+    /// udany ping. `partner.log` w danych aplikacji zapisuje przejscia.
     shield: spectre_shell_win::shield::ShieldPartner,
-    shield_held: bool,
+    partner: PartnerState,
     shield_ping: Option<Instant>,
+    partner_log: std::path::PathBuf,
     /// Ostatni zapis operacji na dysk - do licznika w menu.
     saved: Option<Mark>,
     /// Timer sekundowy menu jest uzbrojony.
@@ -398,8 +416,9 @@ impl App {
             waves_laptop_only,
             autostart: spectre_shell_win::autostart::is_enabled(),
             shield: spectre_shell_win::shield::ShieldPartner::new(),
-            shield_held: false,
+            partner: PartnerState::Unknown,
             shield_ping: None,
+            partner_log: data_dir.join("partner.log"),
             saved: None,
             menu_clock: false,
             waves_idle_s,
@@ -1678,24 +1697,92 @@ impl App {
     /// Co 10 s: gdy notatka jest widoczna na panelu laptopa i nasza ochrona
     /// jest wlaczona, prosimy Spectre o wstrzymanie jego czarnej nakladki
     /// (30 s dzierzawy). W przeciwnym razie zwalniamy - Spectre chroni sam.
+    /// Kazda decyzja z powodem trafia do `partner` (HUD) i przy zmianie do logu.
     fn partner_tick(&mut self) {
         let minimized = unsafe { IsIconic(self.hwnd).as_bool() };
-        let want = !self.hidden
-            && !minimized
-            && self.waves_on
-            && spectre_shell_win::display::on_internal_display(self.hwnd);
-        if want {
-            self.shield_held = self.shield.hold(PARTNER_HOLD_MS);
-            if self.shield_held {
-                self.shield_ping = Some(Instant::now());
+        let idle = if self.hidden {
+            Some("window hidden".to_string())
+        } else if minimized {
+            Some("window minimized".to_string())
+        } else if !self.waves_on {
+            Some("AMOLED protection off in settings".to_string())
+        } else {
+            match spectre_shell_win::display::window_display(self.hwnd) {
+                Some((device, false)) => Some(format!("window on {device}, not the laptop panel")),
+                _ => None,
             }
-        } else if self.shield_held {
-            self.shield.release();
-            self.shield_held = false;
-        }
+        };
+        let next = match idle {
+            Some(why) => {
+                if self.shield_held() {
+                    let _ = self.shield.release();
+                }
+                PartnerState::Idle(why)
+            }
+            None => match self.shield.hold(PARTNER_HOLD_MS) {
+                Ok(()) => {
+                    // Ping pozniej niz dzierzawa = Spectre mial prawo zakryc panel
+                    // w miedzyczasie. To jest ta sytuacja, ktorej szukamy w logu.
+                    if let Some(prev) = self.shield_ping {
+                        let gap = prev.elapsed().as_secs();
+                        if gap * 1000 > u64::from(PARTNER_HOLD_MS) {
+                            self.partner_log(&format!(
+                                "ping {gap} s after the previous one - the {} s lease lapsed in between",
+                                PARTNER_HOLD_MS / 1000
+                            ));
+                        }
+                    }
+                    self.shield_ping = Some(Instant::now());
+                    PartnerState::Held
+                }
+                Err(e) => PartnerState::Failed(e),
+            },
+        };
+        self.set_partner(next);
         // Ten sam timer sluzy za "ocen za chwile" (`partner_soon`) - tu wraca do okresu.
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_PARTNER, PARTNER_PING_MS, None);
+        }
+    }
+
+    fn shield_held(&self) -> bool {
+        self.partner == PartnerState::Held
+    }
+
+    fn set_partner(&mut self, next: PartnerState) {
+        if next == self.partner {
+            return;
+        }
+        let line = match &next {
+            PartnerState::Held => format!(
+                "holding Spectre's shield off ({} s lease, ping every {} s)",
+                PARTNER_HOLD_MS / 1000,
+                PARTNER_PING_MS / 1000
+            ),
+            PartnerState::Idle(why) => format!("not holding: {why}"),
+            PartnerState::Failed(e) => format!("hold failed: {e}"),
+            PartnerState::Unknown => String::new(),
+        };
+        self.partner_log(&line);
+        self.partner = next;
+    }
+
+    /// `partner.log`: jedna linia z data i godzina. Tylko przejscia stanu i
+    /// spoznione pingi, wiec plik rosnie o kilka linii dziennie; powyzej
+    /// 256 KB zaczyna od nowa.
+    fn partner_log(&self, line: &str) {
+        use std::io::Write;
+        let fresh = std::fs::metadata(&self.partner_log)
+            .map(|m| m.len() > 256 * 1024)
+            .unwrap_or(false);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(!fresh)
+            .write(true)
+            .truncate(fresh)
+            .open(&self.partner_log);
+        if let Ok(mut f) = file {
+            let _ = writeln!(f, "{}  {line}", menu::local_stamp_now());
         }
     }
 
@@ -1738,21 +1825,27 @@ impl App {
         }
     }
 
-    fn release_partner(&mut self) {
+    /// Okno znika (tray, zamkniecie): zwalniamy od razu, nie czekamy na
+    /// wygasniecie dzierzawy.
+    fn release_partner(&mut self, why: &str) {
         unsafe {
             let _ = KillTimer(Some(self.hwnd), TIMER_PARTNER);
         }
-        if self.shield_held {
-            self.shield.release();
-            self.shield_held = false;
+        if self.shield_held() {
+            let _ = self.shield.release();
         }
+        self.set_partner(PartnerState::Idle(why.to_string()));
     }
 
     fn partner_hud(&self) -> String {
-        match (self.shield_held, self.shield_ping) {
-            (true, Some(t)) => format!("Spectre: shield held ({} s ago)", t.elapsed().as_secs()),
-            (false, Some(_)) => "Spectre: released".to_string(),
-            _ => "Spectre: not running".to_string(),
+        match &self.partner {
+            PartnerState::Unknown => "Spectre: not checked yet".to_string(),
+            PartnerState::Held => format!(
+                "Spectre: shield held off, last ping {} s ago",
+                self.shield_ping.map_or(0, |t| t.elapsed().as_secs())
+            ),
+            PartnerState::Idle(why) => format!("Spectre: not holding - {why}"),
+            PartnerState::Failed(e) => format!("Spectre: {e}"),
         }
     }
 
@@ -1890,7 +1983,7 @@ impl App {
         self.save_placement();
         self.hidden = true;
         self.kill_amoled_timers();
-        self.release_partner();
+        self.release_partner("window hidden");
         self.live.send(LiveJob::Visible(false));
         self.hide_cursor_from_peers();
         unsafe {
@@ -2659,7 +2752,7 @@ pub unsafe extern "system" fn wndproc(
                 app.save_placement();
                 app.commit_title();
                 app.sync_now();
-                app.release_partner();
+                app.release_partner("exiting");
                 drop(app);
             }
             PostQuitMessage(0);

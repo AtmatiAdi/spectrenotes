@@ -13,6 +13,8 @@
 //! ochrony. Bez gniazd i bez zapory - zwykly `PostMessage` miedzy procesami
 //! tego samego uzytkownika.
 
+use std::fmt;
+
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, RegisterWindowMessageW};
@@ -21,6 +23,27 @@ use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, Registe
 const OVERLAY_CLASS: &str = "SpectreShield";
 /// Nazwa komunikatu - ta sama po obu stronach.
 const HOLD_MESSAGE: &str = "Spectre.ShieldHold";
+
+/// Dlaczego prosba nie doszla - HUD i log maja to powiedziec wprost, nie "false".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HoldError {
+    /// Brak okna nakladki: Spectre nie dziala (albo ma wylaczona ochrone AMOLED).
+    NotRunning,
+    /// `RegisterWindowMessage` nie dalo identyfikatora - nie ma czym mowic.
+    NoMessage,
+    /// Okno jest, ale `PostMessage` odmowil (np. pelna kolejka, UIPI).
+    PostFailed(String),
+}
+
+impl fmt::Display for HoldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HoldError::NotRunning => write!(f, "Spectre not running (no shield window)"),
+            HoldError::NoMessage => write!(f, "hold message not registered"),
+            HoldError::PostFailed(e) => write!(f, "post to Spectre failed: {e}"),
+        }
+    }
+}
 
 pub struct ShieldPartner {
     msg: u32,
@@ -37,27 +60,25 @@ impl ShieldPartner {
     }
 
     /// Prosi Spectre o wstrzymanie ochrony na `ms` milisekund (0 = zwolnij).
-    /// Zwraca `false`, gdy Spectre nie dziala (brak okna nakladki).
-    pub fn hold(&self, ms: u32) -> bool {
+    pub fn hold(&self, ms: u32) -> Result<(), HoldError> {
         if self.msg == 0 {
-            return false;
+            return Err(HoldError::NoMessage);
         }
         let class: Vec<u16> = OVERLAY_CLASS
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
         unsafe {
-            let Ok(hwnd) = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) else {
-                return false;
+            let hwnd = match FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) {
+                Ok(h) if !h.0.is_null() => h,
+                _ => return Err(HoldError::NotRunning),
             };
-            if hwnd.0.is_null() {
-                return false;
-            }
-            PostMessageW(Some(hwnd), self.msg, WPARAM(ms as usize), LPARAM(0)).is_ok()
+            PostMessageW(Some(hwnd), self.msg, WPARAM(ms as usize), LPARAM(0))
+                .map_err(|e| HoldError::PostFailed(e.message()))
         }
     }
 
-    pub fn release(&self) -> bool {
+    pub fn release(&self) -> Result<(), HoldError> {
         self.hold(0)
     }
 }

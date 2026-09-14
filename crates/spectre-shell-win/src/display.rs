@@ -70,6 +70,12 @@ fn wide_to_string(w: &[u16]) -> String {
 /// zglasza zadnego panelu wbudowanego (komputer stacjonarny), za "glowny"
 /// uchodzi monitor podstawowy - tam zwykle stoi jedyny ekran.
 pub fn on_internal_display(hwnd: HWND) -> bool {
+    window_display(hwnd).is_none_or(|(_, internal)| internal)
+}
+
+/// Monitor okna: nazwa GDI (`\\.\DISPLAYn`) i czy to panel wbudowany.
+/// `None`, gdy system nie umie powiedziec (okno bez monitora).
+pub fn window_display(hwnd: HWND) -> Option<(String, bool)> {
     let mut mi = MONITORINFOEXW::default();
     mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
     let ok = unsafe {
@@ -77,15 +83,17 @@ pub fn on_internal_display(hwnd: HWND) -> bool {
         GetMonitorInfoW(mon, &mut mi.monitorInfo).as_bool()
     };
     if !ok {
-        return true;
+        return None;
     }
     let device = wide_to_string(&mi.szDevice);
     let internal = internal_displays();
-    if internal.is_empty() {
+    let is_internal = if internal.is_empty() {
         // MONITORINFOF_PRIMARY
-        return mi.monitorInfo.dwFlags & 1 != 0;
-    }
-    internal.iter().any(|d| d.eq_ignore_ascii_case(&device))
+        mi.monitorInfo.dwFlags & 1 != 0
+    } else {
+        internal.iter().any(|d| d.eq_ignore_ascii_case(&device))
+    };
+    Some((device, is_internal))
 }
 
 #[cfg(test)]
