@@ -53,15 +53,28 @@ i odkrycie panelu z powodem i stanem dzierżawy (`%APPDATA%\Spectre\spectre.log`
 **Okno nie ma systemowej ramki ani paska tytułowego** — canvas zaczyna się od samej
 góry. Nad nim wiszą dwie małe **zakładki**: tytuł notatki na środku (tap, wpisz,
 `Enter`; z lewej uchwyt do przesuwania okna) i przyciski minimalizuj / maksymalizuj /
-zamknij (= ukryj do tray) w prawym rogu. Gdy pasek narzędzi jest zadokowany u góry,
-**wchłania** oba pola — tytuł i przyciski stają się jego elementami i znikają razem
-z nim. Dwuklik na uchwycie maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
+zamknij (= ukryj do tray) w prawym rogu — z takim samym uchwytem ⠿ po lewej stronie
+przycisków. Gdy pasek narzędzi jest zadokowany u góry, **wchłania** oba pola — tytuł,
+uchwyt i przyciski stają się jego elementami i znikają razem z nim. **Puste miejsce
+paska narzędzi (w każdym doku) też przesuwa okno** — pasek zastępuje pasek tytułowy.
+Dwuklik na uchwycie maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
 
 **Pasek narzędzi** wyjeżdża, gdy rysik zbliży się do krawędzi, przy której jest
 zadokowany, i chowa się po 2,5 s bezczynności (Z7). **Jest dokowalny**: złap za
 uchwyt (kropki na początku paska) i upuść przy dowolnej krawędzi — góra/dół
-przełącza go w orientację poziomą. Dok i położenie okna zapisują się
+przełącza go w orientację poziomą. Kolejno: menu, pióro, gumka, kolory, grubość
+(co 0,1 px), cofnij/ponów, notatki ▲▼＋, lupa −/+, procent zoomu (tap = dopasuj
+szerokość), **kłódka widoku**, a na samym końcu **kłódka komputera** (jak `Win+L`).
+Gdy pasek jest krótszy niż elementy, elementy kurczą się proporcjonalnie — nic nie
+wypada poza okno. Dok i położenie okna zapisują się
 w `%APPDATA%\SpectreNotes\config.txt` (jawny `klucz=wartość`).
+
+**Widok zablokowany / odblokowany** (kłódka widoku na pasku, `view_lock` w config):
+zablokowany — kolumna notatki zawsze wyśrodkowana (jej środek to bezwzględny środek
+notatki), zoom wolno, przesuwanie w poziomie nie; zablokowanie wraca do dopasowanej
+szerokości. Odblokowany — canvas nieskończony w osi X, przewijanie w bok bez granic
+(dawniej granicą była kolumna poszerzona o treść poza nią, co pozwalało „odblokować"
+scroll w bok rysując po oddaleniu — stąd ta kłódka).
 
 **Menu** (☰ na pasku narzędzi albo `M`) to panel z trzema zakładkami. U góry stały
 **nagłówek konta**: zdjęcie profilowe z GitHuba (albo inicjał, gdy niezalogowany),
@@ -119,14 +132,14 @@ druga instancja z innym `COMPUTERNAME` i `APPDATA` oraz własnym katalogiem spac
 | Sterowanie | Działanie |
 |---|---|
 | pióro | rysowanie |
-| rysik przy krawędzi doku | pasek: uchwyt, pióro, gumka, kolory, grubość, undo/redo, notatki |
+| rysik przy krawędzi doku | pasek: uchwyt, menu, pióro, gumka, kolory, grubość, undo/redo, notatki, lupa, procent, kłódka widoku, kłódka komputera |
 | `Ctrl+kółko`, `0` | zoom wokół kursora, powrót do „dopasuj szerokość" (kolumna 2880 jednostek) |
 | **przycisk gumki (trzymany)** | gumka kresek — usuwa całe kreski, które dotknie |
-| **przycisk boczny (trzymany)** | przewijanie (także w poziomie, gdy kolumna jest szersza niż okno) |
+| **przycisk boczny (trzymany)** | przewijanie (w poziomie tylko przy odblokowanym widoku) |
 | kółko myszy, `Home` | przewijanie, powrót na górę |
 | `1`–`6` | kolor (paleta pod AMOLED) |
 | `E` | gumka z klawiatury |
-| `[` `]` | grubość |
+| `[` `]` | grubość (co 0,1 px) |
 | `Ctrl+Z` / `Ctrl+Y` | cofnij / ponów (cofnięcie wymazania odtwarza kreskę) |
 | `M` | menu: notatki w folderach, ustawienia, konto |
 | `PgUp` / `PgDn` | poprzednia / następna notatka |

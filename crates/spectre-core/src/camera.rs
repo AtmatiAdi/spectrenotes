@@ -9,8 +9,9 @@
 //! `screen = (canvas - (scroll_x, scroll_y)) * zoom + pixel_shift`
 //!
 //! Kolumna ma `COLUMN_W` jednostek. Przy zoomie "dopasuj szerokosc" zajmuje
-//! cala szerokosc okna; przy mniejszym jest wysrodkowana (`scroll_x` ujemne),
-//! przy wiekszym mozna ja przesuwac w poziomie w granicach tresci.
+//! cala szerokosc okna. Os X ma dwa tryby (klodka widoku w aplikacji):
+//! **zablokowany** - kolumna zawsze wysrodkowana (`center_column`), **odblokowany** -
+//! przesuniecie bez ograniczen (`scroll_x_free`), canvas w bok jest nieskonczony.
 
 use crate::document::Bbox;
 
@@ -91,6 +92,20 @@ impl Camera {
         self.scroll_y = (clamped * self.zoom).round() / self.zoom;
     }
 
+    /// Widok **zablokowany**: srodek kolumny na srodku okna - jedyna
+    /// dopuszczalna pozycja X, niezaleznie od zoomu i od tresci poza kolumna.
+    /// To jest "bezwzgledny srodek" notatki.
+    pub fn center_column(&mut self, view_w: f32) {
+        let view = view_w / self.zoom;
+        self.scroll_x = ((COLUMN_W - view) * 0.5 * self.zoom).round() / self.zoom;
+    }
+
+    /// Widok **odblokowany**: canvas w osi X jest nieskonczony, przesuniecie
+    /// bez ograniczen (kwantowane do piksela jak `scroll_to`).
+    pub fn scroll_x_free(&mut self, x: f32) {
+        self.scroll_x = (x * self.zoom).round() / self.zoom;
+    }
+
     /// Przesuniecie w poziomie z ograniczeniem do kolumny (poszerzonej o tresc,
     /// ktora wyszla poza nia - wszystko ma byc osiagalne). Gdy kolumna miesci sie
     /// w oknie, jedyna dopuszczalna wartosc to wysrodkowanie.
@@ -152,5 +167,23 @@ mod tests {
         };
         c.scroll_x_to(-50.0, 1440.0, Some(content));
         assert_eq!(c.scroll_x, -50.0);
+    }
+
+    #[test]
+    fn widok_zablokowany_centruje_kolumne_odblokowany_nie_ogranicza() {
+        let mut c = Camera::default();
+        // Zoom 0.5, okno 1440 px = 2880 jednostek = cala kolumna: brak marginesu.
+        c.zoom = 0.5;
+        c.center_column(1440.0);
+        assert_eq!(c.scroll_x, 0.0);
+        // Zoom 1.0: okno pokazuje polowe kolumny, srodek kolumny na srodku okna.
+        c.zoom = 1.0;
+        c.center_column(1440.0);
+        assert_eq!(c.scroll_x, 720.0);
+        // Odblokowany: dowolna wartosc, takze daleko poza kolumna.
+        c.scroll_x_free(-9000.0);
+        assert_eq!(c.scroll_x, -9000.0);
+        c.scroll_x_free(12345.4);
+        assert_eq!(c.scroll_x, 12345.0);
     }
 }

@@ -194,6 +194,21 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       `on GitHub`, `with LAN peer` (`sync::Mark` = Instant + unix s). Zweryfikowane
       zrzutami: 0:00 → 0:03 po 3 s, ta sama godzina; dwie instancje — wiersz peera
       wypełnia się po wymianie operacji
+- [x] **Pasek jako pasek tytułowy** (2026-09-15): puste miejsce paska w każdym doku
+      przesuwa okno (`HTCAPTION`); drugi uchwyt ⠿ przy przyciskach okna.
+- [x] **Kłódka widoku**: zablokowany = kolumna wyśrodkowana (bezwzględny środek
+      notatki), zoom wolno, scroll w bok nie; odblokowany = canvas nieskończony
+      w osi X. Naprawia „odblokowanie" scrolla w bok przez rysowanie po oddaleniu.
+      Zweryfikowane: ta sama kropka po przeciągnięciu zostaje (locked) / przesuwa
+      się o 200 px (unlocked).
+- [x] Lupa −/+ na pasku (zoom wokół środka okna), procent = dopasuj szerokość.
+- [x] Grubość pióra co 0,1 px (pasek i `[` `]`).
+- [x] Kłódka komputera (`LockWorkStation`, jak `Win+L`) na samym końcu paska.
+- [x] Elementy paska kurczą się proporcjonalnie, gdy pasek jest krótszy niż one
+      (900×700: wszystko widoczne, nic nie nachodzi na kłódkę).
+- [ ] Zgłoszenie „znikają przyciski przełączania między notatkami" — do
+      doprecyzowania z użytkownikiem (przy jednej notatce ▲▼ są tylko przygaszone;
+      po kompresji nic już nie wypada poza pasek).
 
 Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,

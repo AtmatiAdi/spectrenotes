@@ -164,6 +164,9 @@ pub struct App {
     pan_start: ((f32, f32), (f32, f32)),
     /// Zoom "dopasuj szerokosc" aktywny - podaza za rozmiarem okna.
     fit_zoom: bool,
+    /// Widok zablokowany: kolumna wysrodkowana, bez przesuwania w poziomie
+    /// (zoom nadal wolno). Odblokowany: canvas nieskonczony w osi X.
+    view_locked: bool,
 
     dirty: Dirty,
     show_hud: bool,
@@ -332,6 +335,7 @@ impl App {
             .min(3600);
         let waves_on = config.get("waves_on") != Some("0");
         let waves_laptop_only = config.get("waves_laptop_only") == Some("1");
+        let view_locked = config.get("view_lock") != Some("0");
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
         toolbar.visible = toolbar_pin;
@@ -401,6 +405,7 @@ impl App {
             last_erase_canvas: None,
             pan_start: ((0.0, 0.0), (0.0, 0.0)),
             fit_zoom: true,
+            view_locked,
             dirty: Dirty::Full,
             show_hud: false,
             vsync: false,
@@ -671,13 +676,18 @@ impl App {
         }
     }
 
-    /// Przesuniecie w poziomie (tylko gdy kolumna jest szersza niz okno).
-    /// Warstwa sucha nie ma sciezki przyrostowej dla osi X - pelna przebudowa,
-    /// ktora po Etapie 2 kosztuje pojedyncze ms.
+    /// Przesuniecie w poziomie. Widok zablokowany: kolumna zawsze wysrodkowana
+    /// (`x` ignorowane) - to jest bezwzgledny srodek notatki. Odblokowany:
+    /// canvas nieskonczony, bez ograniczen. Warstwa sucha nie ma sciezki
+    /// przyrostowej dla osi X - pelna przebudowa, ktora kosztuje pojedyncze ms.
     fn scroll_x_to(&mut self, x: f32) {
         let old = self.cam.scroll_x;
         let w = self.renderer.size().0 as f32;
-        self.cam.scroll_x_to(x, w, self.doc.content_bbox());
+        if self.view_locked {
+            self.cam.center_column(w);
+        } else {
+            self.cam.scroll_x_free(x);
+        }
         if (self.cam.scroll_x - old).abs() > f32::EPSILON {
             self.dirty = Dirty::Full;
         }
@@ -692,15 +702,21 @@ impl App {
         self.fit_zoom = false;
         let (cx, cy) = self.cam.to_canvas(sx, sy);
         self.cam.zoom = new_zoom;
-        // Po zmianie zoomu ten sam punkt canvasu ma zostac pod kursorem.
+        // Po zmianie zoomu ten sam punkt canvasu ma zostac pod kursorem
+        // (w osi X tylko przy odblokowanym widoku - zablokowany centruje).
         let scroll = cy - (sy - self.cam.shift.1) / new_zoom;
         let bottom = self.doc.content_bottom();
         let h = self.view_h();
         self.cam.scroll_to(scroll, bottom, h);
-        let w = self.renderer.size().0 as f32;
         let scroll_x = cx - (sx - self.cam.shift.0) / new_zoom;
-        self.cam.scroll_x_to(scroll_x, w, self.doc.content_bbox());
+        self.scroll_x_to(scroll_x);
         self.dirty = Dirty::Full;
+    }
+
+    /// Przyciski lupy na pasku: zoom wokol srodka okna.
+    fn zoom_center(&mut self, factor: f32) {
+        let (w, h) = self.renderer.size();
+        self.zoom_at(factor, w as f32 * 0.5, h as f32 * 0.5);
     }
 
     /// Zoom "dopasuj szerokosc" (Z9): kolumna na cala szerokosc okna. Domyslny
@@ -714,6 +730,24 @@ impl App {
         let h = self.view_h();
         self.cam.scroll_to(self.cam.scroll_y, bottom, h);
         self.dirty = Dirty::Full;
+    }
+
+    /// Klodka widoku na pasku. Zablokowanie wraca do dopasowanej szerokosci
+    /// i srodka kolumny - to "dom" notatki; odblokowanie zostawia widok tam,
+    /// gdzie jest, i od tej chwili wolno jechac w bok bez konca.
+    fn toggle_view_lock(&mut self) {
+        self.view_locked = !self.view_locked;
+        self.config
+            .set("view_lock", if self.view_locked { "1" } else { "0" });
+        self.config.save();
+        if self.view_locked {
+            self.fit_width();
+        }
+        self.status = if self.view_locked {
+            "view locked: column centred, no sideways scroll".to_string()
+        } else {
+            "view unlocked: scroll sideways over the infinite canvas".to_string()
+        };
     }
 
     // ----- pasek -------------------------------------------------------------
@@ -730,6 +764,7 @@ impl App {
             notes_len: self.notes.len(),
             title: "",
             zoom: self.cam.zoom,
+            view_locked: self.view_locked,
             maximized: window::is_maximized(self.hwnd),
             menu_open: self.menu.open,
         }
@@ -759,13 +794,22 @@ impl App {
                 self.color_idx = i;
                 self.eraser_tool = false;
             }
-            Action::WidthDown => self.set_width(self.ink.base_width - 0.4),
-            Action::WidthUp => self.set_width(self.ink.base_width + 0.4),
+            Action::WidthDown => self.set_width(self.ink.base_width - 0.1),
+            Action::WidthUp => self.set_width(self.ink.base_width + 0.1),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
             Action::PrevNote => self.switch_note(self.note_idx.saturating_sub(1)),
             Action::NextNote => self.switch_note(self.note_idx + 1),
             Action::NewNote => self.new_note(),
+            Action::ZoomOut => self.zoom_center(0.8),
+            Action::ZoomIn => self.zoom_center(1.25),
+            Action::ZoomFit => self.fit_width(),
+            Action::ViewLock => self.toggle_view_lock(),
+            Action::LockPc => {
+                if !window::lock_workstation() {
+                    self.status = "could not lock the computer".to_string();
+                }
+            }
         }
         self.arm_ui_timer();
         true
@@ -2195,7 +2239,7 @@ impl App {
         };
         format!(
             "SpectreNotes   note {}/{}   strokes: {}   {}   zoom {:.0}%\n\
-             tool: {}   width: {:.1} px   scroll: {:.0}   waves: {}   frame: {:.2} ms (max {:.1})   GPU: {}\n\
+             tool: {}   width: {:.1} px   scroll: {:.0},{:.0}   waves: {}   frame: {:.2} ms (max {:.1})   GPU: {}\n\
              [1-6] color  [E] eraser  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top  [Ctrl+wheel] zoom\n\
              [barrel button]/[wheel] scroll   [PgUp/PgDn] notes  [Ctrl+N] new   [Win+Shift+N] show/hide\n\
              [F11] fullscreen  [H] hud  [V] vsync  [T] scrolling: {}  [Esc] hide  [Ctrl+Q] quit\n\
@@ -2213,6 +2257,7 @@ impl App {
             self.cam.zoom * 100.0,
             tool,
             self.ink.base_width,
+            self.cam.scroll_x,
             self.cam.scroll_y,
             match (self.waves.as_ref(), self.waves_forced) {
                 (Some(wv), forced) => {
@@ -2607,9 +2652,9 @@ pub unsafe extern "system" fn wndproc(
                 }
                 _ => {
                     if vk == VK_OEM_4 {
-                        app.set_width(app.ink.base_width - 0.4);
+                        app.set_width(app.ink.base_width - 0.1);
                     } else if vk == VK_OEM_6 {
-                        app.set_width(app.ink.base_width + 0.4);
+                        app.set_width(app.ink.base_width + 0.1);
                     } else if vk == VK_HOME {
                         app.scroll_to(0.0);
                     } else if vk == VK_PRIOR {

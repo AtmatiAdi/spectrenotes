@@ -229,6 +229,11 @@ pub fn is_maximized(hwnd: HWND) -> bool {
     unsafe { IsZoomed(hwnd).as_bool() }
 }
 
+/// Blokada komputera (jak Win+L). Natychmiast, bez pytania - to swiadomy
+/// przycisk na koncu paska; odblokowanie to i tak PIN albo odcisk.
+pub fn lock_workstation() -> bool {
+    unsafe { windows::Win32::System::Shutdown::LockWorkStation().is_ok() }
+}
 /// Obsluga WM_NCCALCSIZE: caly prostokat okna to obszar klienta. Przy
 /// zmaksymalizowanym oknie system wysuwa ramke poza monitor - wtedy trzeba
 /// ja odjac, inaczej tresc bylaby obcieta z czterech stron.
