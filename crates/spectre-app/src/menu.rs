@@ -9,6 +9,7 @@
 //! i przycisk "synchronizuj teraz". Zakladka "Account" ma szczegoly (logowanie,
 //! budzet ruchu), "Settings" przelaczaja to, co juz jest w aplikacji.
 
+use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
@@ -17,6 +18,22 @@ use crate::sync::{Mark, Status as SyncStatus};
 use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
+/// Szerokosc miniatury w kafelku dla danej skali DPI - aplikacja buduje bitmape
+/// dokladnie tej wielkosci, zeby nie rysowac na zapas ani nie rozciagac.
+pub fn card_thumb_w(scale: f32) -> f32 {
+    let avail = PANEL_W * scale - PAD * 2.0 * scale;
+    ((avail - CARD_GAP * scale * (CARD_COLS - 1) as f32) / CARD_COLS as f32).floor()
+}
+
+/// Kafelek notatki na liscie: miniatura strony z tytulem na dole. Dwie kolumny
+/// w panelu - notatke poznaje sie po rysunku, wiec kafelek musi byc widoczny,
+/// ale lista ma nadal pokazywac kilka na raz.
+const CARD_COLS: usize = 2;
+const CARD_GAP: f32 = 10.0;
+/// Wysokosc miniatury wzgledem jej szerokosci (kadr strony).
+pub const CARD_ASPECT: f32 = 0.72;
+/// Pasek z tytulem i data pod miniatura.
+const CARD_BAND: f32 = 34.0;
 /// Naglowek panelu: avatar, nazwa, stan synchronizacji, przycisk sync.
 const HEADER_H: f32 = 76.0;
 const AVATAR: f32 = 44.0;
@@ -25,8 +42,34 @@ const TAB_H: f32 = 44.0;
 const ROW_H: f32 = 40.0;
 const HEAD_H: f32 = 34.0;
 const PAD: f32 = 14.0;
-const DATE_W: f32 = 84.0;
 const WHEEL_STEP: f32 = 80.0;
+
+/// Tlo kafelka - widac je, zanim miniatura sie zbuduje.
+const CARD_BG: Rgba = Rgba::rgb(24, 24, 24);
+/// Pasek pod tytulem: kreski notatki nie moga zjadac liter.
+const CARD_BAND_BG: Rgba = Rgba::rgb(14, 14, 14);
+
+/// Co pokazuje kafelek na liscie.
+struct Card<'a> {
+    hit: MenuHit,
+    /// Biezaca notatka - ramka akcentem.
+    active: bool,
+    /// `None`, gdy tresci jeszcze nie mamy (cudza notatka z LAN, nieotwarta).
+    thumb: Option<u64>,
+    title: &'a str,
+    sub: &'a str,
+}
+
+/// Klucz miniatury notatki w rendererze. Menu nie zna bitmap, a `UiPrim` ma byc
+/// tani do skopiowania - lecimy skrotem identyfikatora (FNV-1a).
+pub fn thumb_key(note_id: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in note_id.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x1000_0000_01b3);
+    }
+    h
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -154,6 +197,8 @@ pub struct MenuState<'a> {
 
 /// Jedna cudza notatka na liscie "Shared on LAN".
 pub struct OfferView {
+    /// Identyfikator notatki u peera - klucz miniatury, gdy juz ja otworzylismy.
+    pub note: String,
     pub title: String,
     pub author_dir: String,
     pub protected: bool,
@@ -464,50 +509,183 @@ impl Menu {
         self.rows.push((hit, r));
     }
 
-    fn note_row(&mut self, s: &MenuState, i: usize, list: Rect, y: f32, out: &mut Vec<UiPrim>) {
+    /// Kafelki notatek w dwoch kolumnach. Zwraca zajeta wysokosc.
+    fn note_grid(
+        &mut self,
+        s: &MenuState,
+        ids: &[usize],
+        list: Rect,
+        y: f32,
+        out: &mut Vec<UiPrim>,
+    ) -> f32 {
+        self.grid(list, y, ids.len(), out, |m, out, slot, r| {
+            m.note_card(s, ids[slot], r, out)
+        })
+    }
+
+    /// Wspolny uklad kafelkow: dwie kolumny, `cell` rysuje jeden.
+    fn grid<F>(
+        &mut self,
+        list: Rect,
+        y: f32,
+        count: usize,
+        out: &mut Vec<UiPrim>,
+        mut cell: F,
+    ) -> f32
+    where
+        F: FnMut(&mut Self, &mut Vec<UiPrim>, usize, Rect),
+    {
+        if count == 0 {
+            return 0.0;
+        }
         let k = self.scale;
+        let cols = CARD_COLS.max(1);
+        let gap = CARD_GAP * k;
+        let avail = list.w - PAD * 2.0 * k;
+        let cw = ((avail - gap * (cols - 1) as f32) / cols as f32).floor();
+        let ch = (cw * CARD_ASPECT).round() + CARD_BAND * k;
+        for slot in 0..count {
+            let (col, row) = (slot % cols, slot / cols);
+            let r = Rect {
+                x: list.x + PAD * k + col as f32 * (cw + gap),
+                y: y + row as f32 * (ch + gap),
+                w: cw,
+                h: ch,
+            };
+            cell(self, out, slot, r);
+        }
+        let rows = count.div_ceil(cols) as f32;
+        rows * ch + (rows - 1.0) * gap
+    }
+
+    /// Kafelek notatki: miniatura strony z tytulem na niej. Notatki poznaje sie
+    /// po tym, co na nich narysowano - sama nazwa ("untitled") nie wystarcza.
+    fn note_card(&mut self, s: &MenuState, i: usize, r: Rect, out: &mut Vec<UiPrim>) {
         let n = &s.notes[i];
-        let r = Rect {
-            x: list.x,
-            y,
-            w: list.w,
-            h: (ROW_H * k),
+        let hit = MenuHit::Note(i);
+        let title = if n.title.is_empty() {
+            "untitled"
+        } else {
+            n.title.as_str()
         };
-        let active = i == s.note_idx;
-        self.row(MenuHit::Note(i), r, out, active);
-        if active {
-            out.push(UiPrim::Rect {
-                x: r.x + 6.0 * k,
-                y: r.y + 8.0 * k,
-                w: 3.0 * k,
-                h: r.h - 16.0 * k,
-                color: ACCENT,
-                r: 1.5 * k,
+        let sub = local_date(n.created_ms);
+        let c = Card {
+            hit,
+            active: i == s.note_idx,
+            thumb: Some(thumb_key(&n.id)),
+            title,
+            sub: &sub,
+        };
+        self.card(r, c, out);
+    }
+
+    /// Kafelek: tlo strony, miniatura (gdy juz jest), pasek z tytulem i podpisem.
+    fn card(&mut self, r: Rect, c: Card, out: &mut Vec<UiPrim>) {
+        let Card {
+            hit,
+            active,
+            thumb,
+            title,
+            sub,
+        } = c;
+        let k = self.scale;
+        let band = CARD_BAND * k;
+        // Tlo widac, dopoki miniatura sie nie zbuduje (albo gdy notatki nie mamy).
+        out.push(UiPrim::Rect {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            color: CARD_BG,
+            r: 0.0,
+        });
+        if let Some(key) = thumb {
+            out.push(UiPrim::Thumb {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h - band,
+                key,
             });
         }
-        let (text, color) = if n.title.is_empty() {
-            ("untitled".to_string(), FG_DIM)
-        } else {
-            (n.title.clone(), FG)
-        };
+        // Pasek pod tekstem: kreski notatki nie moga zjadac liter.
+        out.push(UiPrim::Rect {
+            x: r.x,
+            y: r.y + r.h - band,
+            w: r.w,
+            h: band,
+            color: CARD_BAND_BG,
+            r: 0.0,
+        });
         out.push(UiPrim::Text {
-            x: r.x + (PAD * k) + 8.0 * k,
-            y: r.y,
-            w: r.w - PAD * 2.0 * k - 8.0 * k - (DATE_W * k),
-            h: r.h,
-            text,
-            color,
+            x: r.x + 8.0 * k,
+            y: r.y + r.h - band,
+            w: r.w - 16.0 * k,
+            h: band * 0.58,
+            text: title.to_string(),
+            color: FG,
             font: UiFont::Ui,
         });
         out.push(UiPrim::Text {
-            x: r.x + r.w - (PAD * k) - (DATE_W * k),
-            y: r.y,
-            w: (DATE_W * k),
-            h: r.h,
-            text: local_date(n.created_ms),
+            x: r.x + 8.0 * k,
+            y: r.y + r.h - band * 0.44,
+            w: r.w - 16.0 * k,
+            h: band * 0.44,
+            text: sub.to_string(),
             color: FG_DIM,
-            font: UiFont::Ui,
+            font: UiFont::Mono,
         });
+        // Ramka: biezaca notatka akcentem, wskazana jasniej, reszta ledwo widoczna.
+        let (edge, width) = if active {
+            (ACCENT, 2.0 * k)
+        } else if self.hot == Some(hit) {
+            (FG_DIM, 1.0 * k)
+        } else {
+            (LINE, 1.0)
+        };
+        out.push(UiPrim::Outline {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+            color: edge,
+            width,
+            r: 0.0,
+        });
+        self.rows.push((hit, r));
+    }
+
+    /// Kafelki cudzych notatek z LAN. Tresci jeszcze nie mamy (przychodzi
+    /// dopiero po otwarciu), wiec zamkniete pokazuja sam kafelek z autorem.
+    fn offer_grid(&mut self, s: &MenuState, list: Rect, y: f32, out: &mut Vec<UiPrim>) -> f32 {
+        let shown: Vec<usize> = (0..s.offers.len())
+            .filter(|i| self.open_edit.as_ref().is_none_or(|(idx, _)| idx != i))
+            .collect();
+        self.grid(list, y, shown.len(), out, |m, out, slot, r| {
+            let o = &s.offers[shown[slot]];
+            let title = if o.title.is_empty() {
+                "untitled"
+            } else {
+                o.title.as_str()
+            };
+            let state = match o.state {
+                OfferState::Closed => "",
+                OfferState::Pending => " · opening",
+                OfferState::Open => " · open",
+            };
+            let lock = if o.protected { "🔒 " } else { "" };
+            let sub = format!("{lock}{}{state}", o.author_dir);
+            // Miniatura tylko dla otwartej: wtedy operacje leza juz u nas.
+            let thumb = (o.state == OfferState::Open).then(|| thumb_key(&o.note));
+            let c = Card {
+                hit: MenuHit::Offer(shown[slot]),
+                active: false,
+                thumb,
+                title,
+                sub: &sub,
+            };
+            m.card(r, c, out);
+        })
     }
 
     /// Naglowek folderu z przyciskiem "move here" (gdy biezaca notatka
@@ -593,10 +771,7 @@ impl Menu {
             .rev()
             .collect();
         y += self.folder_head(s, None, root.len(), list, y, out);
-        for i in root {
-            self.note_row(s, i, list, y, out);
-            y += ROW_H * k;
-        }
+        y += self.note_grid(s, &root, list, y, out);
         for (fi, name) in folders.iter().enumerate() {
             y += 8.0 * k;
             let ids: Vec<usize> = (0..s.notes.len())
@@ -604,10 +779,7 @@ impl Menu {
                 .rev()
                 .collect();
             y += self.folder_head(s, Some((fi, name)), ids.len(), list, y, out);
-            for i in ids {
-                self.note_row(s, i, list, y, out);
-                y += ROW_H * k;
-            }
+            y += self.note_grid(s, &ids, list, y, out);
         }
         self.folder_names = folders;
 
@@ -656,32 +828,12 @@ impl Menu {
         if s.offers.is_empty() {
             y += self.line(list, y, "nobody nearby is sharing a note", FG_DIM, out);
         }
-        for (i, o) in s.offers.iter().enumerate() {
-            if let Some((idx, buf)) = self.open_edit.clone() {
-                if idx == i {
-                    y += self.edit_row(list, y, &buf, "password, Enter", out);
-                    continue;
-                }
-            }
-            let title = if o.title.is_empty() {
-                "untitled"
-            } else {
-                o.title.as_str()
-            };
-            let state = match o.state {
-                OfferState::Closed => "",
-                OfferState::Pending => "  ·  opening...",
-                OfferState::Open => "  ·  open",
-            };
-            let lock = if o.protected { "  🔒" } else { "" };
-            let text = format!("{title}{lock}  —  {}{state}", o.author_dir);
-            let color = if o.state == OfferState::Open {
-                FG
-            } else {
-                FG_DIM
-            };
-            y += self.action_row(list, y, MenuHit::Offer(i), &text, color, out);
+        // Pytanie o haslo do cudzej notatki idzie nad siatke, a jej kafelek
+        // znika z siatki - inaczej to samo udostepnienie byloby w dwoch miejscach.
+        if let Some((_, buf)) = self.open_edit.clone() {
+            y += self.edit_row(list, y, &buf, "password, Enter", out);
         }
+        y += self.offer_grid(s, list, y, out);
         y + 10.0 * k - (list.y - self.scroll)
     }
 

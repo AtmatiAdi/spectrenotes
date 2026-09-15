@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 
+use spectre_core::camera::COLUMN_W;
 use spectre_core::{Bbox, Camera, Document, StrokeId};
 use spectre_ink::{InkConfig, Segment};
 use spectre_proto::Rgba;
@@ -102,6 +103,15 @@ pub enum UiPrim {
         text: String,
         color: Rgba,
         font: UiFont,
+    },
+    /// Miniatura notatki z `Renderer::build_thumb`; nic nie rysuje, gdy jeszcze
+    /// jej nie zbudowano (lista pokazuje wtedy sam kafelek z tytulem).
+    Thumb {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        key: u64,
     },
     /// Avatar uzytkownika (`Renderer::set_avatar`) w kolku o boku `size`;
     /// nic nie rysuje, gdy avataru nie ma.
@@ -264,6 +274,8 @@ pub struct Renderer {
     dim_px: Vec<u8>,
     /// Avatar zalogowanego uzytkownika (naglowek menu): pedzel bitmapowy i rozmiar zrodla.
     avatar: Option<(ID2D1BitmapBrush1, u32, u32)>,
+    /// Miniatury notatek (lista w menu), klucz = skrot identyfikatora notatki.
+    thumbs: HashMap<u64, ID2D1Bitmap1>,
     round: ID2D1StrokeStyle1,
     dwrite: IDWriteFactory,
     /// Czcionki UI w fizycznych pikselach dla `ui_scale` (`set_ui_scale`).
@@ -290,6 +302,8 @@ struct GeoEntry {
 const GEO_CACHE_BUDGET: usize = 6_000_000;
 /// Zoom w tym zakresie wzgledem zbudowanego nie wymaga przebudowy obrysu.
 const GEO_ZOOM_TOL: f32 = 1.5;
+/// Najcienszа kreska w miniaturze, w jej pikselach.
+const THUMB_MIN_PX: f32 = 1.2;
 
 impl Renderer {
     pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
@@ -395,6 +409,7 @@ impl Renderer {
                 dim_bmp: None,
                 dim_px: Vec::new(),
                 avatar: None,
+                thumbs: HashMap::new(),
                 round,
                 dwrite,
                 fonts,
@@ -544,6 +559,123 @@ impl Renderer {
 
     pub fn clear_avatar(&mut self) {
         self.avatar = None;
+    }
+
+    /// Miniatura notatki do listy w menu: cala notatka narysowana raz do wlasnej
+    /// bitmapy, potem juz tylko przepisywana na ekran (`UiPrim::Thumb`).
+    ///
+    /// Kadr jest **jak strona**: w poziomie zawsze cala kolumna (miniatury roznych
+    /// notatek maja wtedy te sama skale i da sie je porownac), w pionie od gory
+    /// tresci - notatka zaczynajaca sie nisko nie daje pustego kafelka.
+    ///
+    /// Nie idzie przez `draw_document`: tamten cache geometrii jest kluczowany
+    /// samym `StrokeId` (autor + numer), a te same numery wystepuja w kazdej
+    /// notatce - miniatura jednej pokazywalaby kreski drugiej.
+    pub fn build_thumb(
+        &mut self,
+        key: u64,
+        doc: &Document,
+        ink: &InkConfig,
+        w: u32,
+        h: u32,
+    ) -> Result<()> {
+        if w == 0 || h == 0 {
+            return Ok(());
+        }
+        let zoom = w as f32 / COLUMN_W;
+        let top = doc.content_bbox().map_or(0.0, |b| b.min_y.max(0.0));
+        let cam = Camera {
+            scroll_x: 0.0,
+            scroll_y: top,
+            zoom,
+            shift: (0.0, 0.0),
+        };
+        let region = cam.visible(w as f32, h as f32);
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                ..Default::default()
+            };
+            let bmp = self.ctx.CreateBitmap(
+                D2D_SIZE_U {
+                    width: w,
+                    height: h,
+                },
+                None,
+                0,
+                &props,
+            )?;
+            self.ctx.SetTarget(&bmp);
+            self.ctx.BeginDraw();
+            self.ctx.Clear(Some(&BG_COLOR));
+            let res = self.draw_thumb_strokes(doc, &cam, ink, region);
+            self.ctx.EndDraw(None, None)?;
+            self.ctx.SetTarget(None);
+            res?;
+            self.thumbs.insert(key, bmp);
+        }
+        Ok(())
+    }
+
+    /// Kreski notatki bez cache'u realizacji - miniatura powstaje raz, wiec nie
+    /// ma czego cache'owac, a wspolny cache kluczowany `StrokeId` mieszalby
+    /// notatki. Geometria jest budowana tak, jakby zoom byl mniejszy: minimalna
+    /// grubosc (`MIN_WIDTH_PX`) rosnie wtedy do `THUMB_MIN_PX` piksela miniatury,
+    /// inaczej kreski zwezone ~20 razy bylyby niewidoczne.
+    unsafe fn draw_thumb_strokes(
+        &mut self,
+        doc: &Document,
+        cam: &Camera,
+        ink: &InkConfig,
+        rect: Bbox,
+    ) -> Result<()> {
+        self.ctx.SetTransform(&Matrix3x2 {
+            M11: cam.zoom,
+            M12: 0.0,
+            M21: 0.0,
+            M22: cam.zoom,
+            M31: -cam.scroll_x * cam.zoom,
+            M32: -cam.scroll_y * cam.zoom,
+        });
+        let geo_zoom = (cam.zoom * geometry::MIN_WIDTH_PX / THUMB_MIN_PX).max(1e-4);
+        let mut segs = std::mem::take(&mut self.seg_scratch);
+        let mut res = Ok(());
+        for (_, data, _) in doc.visible_in(rect) {
+            segs.clear();
+            stroke_segments(data, ink, &mut segs);
+            match geometry::build(&self.factory2d, &segs, geo_zoom) {
+                Ok(geo) => match self.brush(data.color) {
+                    Ok(brush) => self.ctx.FillGeometry(&geo, &brush, None),
+                    Err(e) => {
+                        res = Err(e);
+                        break;
+                    }
+                },
+                Err(e) => {
+                    res = Err(e);
+                    break;
+                }
+            }
+        }
+        self.seg_scratch = segs;
+        self.ctx.SetTransform(&Matrix3x2::identity());
+        res
+    }
+
+    pub fn has_thumb(&self, key: u64) -> bool {
+        self.thumbs.contains_key(&key)
+    }
+
+    /// Zapomina miniatury, ktorych nie ma w `keep` - lista notatek sie zmienia,
+    /// a bitmapy siedza w pamieci sterownika.
+    pub fn retain_thumbs(&mut self, keep: &dyn Fn(u64) -> bool) {
+        self.thumbs.retain(|k, _| keep(*k));
     }
 
     pub fn has_avatar(&self) -> bool {
@@ -1069,6 +1201,24 @@ impl Renderer {
                             radiusY: size * 0.5,
                         };
                         self.ctx.FillEllipse(&e, brush);
+                    }
+                }
+                UiPrim::Thumb { x, y, w, h, key } => {
+                    if let Some(bmp) = self.thumbs.get(key) {
+                        let dest = D2D_RECT_F {
+                            left: *x,
+                            top: *y,
+                            right: x + w,
+                            bottom: y + h,
+                        };
+                        self.ctx.DrawBitmap(
+                            bmp,
+                            Some(&dest),
+                            1.0,
+                            D2D1_INTERPOLATION_MODE_LINEAR,
+                            None,
+                            None,
+                        );
                     }
                 }
                 UiPrim::Clip { x, y, w, h } => {

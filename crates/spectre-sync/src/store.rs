@@ -221,21 +221,36 @@ pub struct NoteStore {
     chunk_no: u32,
 }
 
+/// Same operacje notatki, **bez otwierania zapisu**: podglad cudzej notatki
+/// (miniatura na liscie) nie ma prawa zalozyc w niej katalogu autora ani pustego
+/// pliku chunka. Brak notatki = pusta lista, nie blad.
+pub fn read_ops(space: &Space, note_id: &str) -> io::Result<Vec<Op>> {
+    let ops_dir = space.note_dir(note_id).join("ops");
+    if !ops_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    read_ops_dir(&ops_dir)
+}
+
+fn read_ops_dir(ops_dir: &Path) -> io::Result<Vec<Op>> {
+    let mut ops = Vec::new();
+    for author_dir in read_sorted_dirs(ops_dir)? {
+        for chunk in read_sorted_chunks(&author_dir)? {
+            if let Some(parsed) = OpsReader::read_path(&chunk)? {
+                ops.extend(parsed.ops);
+            }
+        }
+    }
+    Ok(ops)
+}
+
 impl NoteStore {
     /// Otwiera notatke: wczytuje operacje wszystkich autorow, przygotowuje
     /// zapis dla `author`. Zwraca operacje do `Document::apply`.
     pub fn open(space: &Space, note_id: &str, author: &AuthorName) -> io::Result<(Self, Vec<Op>)> {
         let ops_dir = space.note_dir(note_id).join("ops");
         fs::create_dir_all(&ops_dir)?;
-
-        let mut ops = Vec::new();
-        for author_dir in read_sorted_dirs(&ops_dir)? {
-            for chunk in read_sorted_chunks(&author_dir)? {
-                if let Some(parsed) = OpsReader::read_path(&chunk)? {
-                    ops.extend(parsed.ops);
-                }
-            }
-        }
+        let ops = read_ops_dir(&ops_dir)?;
 
         let own_dir = ops_dir.join(author.dir_name());
         fs::create_dir_all(&own_dir)?;

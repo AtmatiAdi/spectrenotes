@@ -61,6 +61,11 @@ const PARTNER_HOLD_MS: u32 = 30_000;
 /// tylko przy otwartym menu i gasnie z nim (Z7: w tle zero wybudzen).
 const TIMER_MENU_CLOCK: usize = 6;
 const MENU_CLOCK_MS: u32 = 1000;
+/// Miniatury notatek do listy w menu buduja sie po kolei, z budzetem na klatke:
+/// wczytanie cudzej notatki to odczyt z dysku, a panel ma sie otworzyc od razu.
+const TIMER_THUMBS: usize = 7;
+const THUMBS_TICK_MS: u32 = 16;
+const THUMB_BUDGET_MS: f32 = 5.0;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -201,6 +206,11 @@ pub struct App {
     partner: PartnerState,
     shield_ping: Option<Instant>,
     partner_log: std::path::PathBuf,
+    /// Miniatury notatek: identyfikator -> `lamport` dokumentu, z ktorego
+    /// powstala bitmapa (w rendererze, pod `menu::thumb_key`). Rozny `lamport`
+    /// = notatka sie zmienila i miniatura jest do odswiezenia.
+    thumbs: HashMap<String, u64>,
+    thumbs_pending: bool,
     /// Kanal wejscia testowego (`test_input`) - tylko gdy proces wystartowal
     /// ze zmienna `SPECTRENOTES_TEST_INPUT`; inaczej `WM_COPYDATA` jest ignorowane.
     test_input: bool,
@@ -430,6 +440,8 @@ impl App {
             shield: spectre_shell_win::shield::ShieldPartner::new(),
             partner: PartnerState::Unknown,
             shield_ping: None,
+            thumbs: HashMap::new(),
+            thumbs_pending: false,
             partner_log: data_dir.join("partner.log"),
             test_input: std::env::var_os("SPECTRENOTES_TEST_INPUT").is_some(),
             started: Instant::now(),
@@ -1727,6 +1739,7 @@ impl App {
             .offers
             .iter()
             .map(|o| OfferView {
+                note: o.note.clone(),
                 title: o.title.clone(),
                 author_dir: o.author_dir.clone(),
                 protected: o.protected,
@@ -2056,6 +2069,114 @@ impl App {
         }
     }
 
+    // ----- miniatury notatek -------------------------------------------------
+
+    /// Rozmiar miniatury w pikselach: tyle, ile zajmuje kafelek w panelu, zeby
+    /// bitmapa nie byla ani rozciagana, ani rysowana na zapas.
+    fn thumb_size(&self) -> (u32, u32) {
+        let scale = window::dpi_scale(self.hwnd);
+        let w = menu::card_thumb_w(scale);
+        (w.max(1.0) as u32, (w * menu::CARD_ASPECT).max(1.0) as u32)
+    }
+
+    /// Buduje brakujace miniatury widocznych notatek - najwyzej przez
+    /// `THUMB_BUDGET_MS`, reszta w kolejnym tiku. Panel ma sie otworzyc od razu,
+    /// a wczytanie cudzej notatki to odczyt z dysku.
+    fn ensure_thumbs(&mut self) {
+        let (tw, th) = self.thumb_size();
+        let t0 = Instant::now();
+        let mut left = false;
+        // Biezaca notatka idzie z otwartego dokumentu - bez zagladania na dysk.
+        let mut todo: Vec<(String, Option<u64>)> = Vec::new();
+        let current = self.notes[self.note_idx].id.clone();
+        todo.push((current.clone(), Some(self.doc.lamport())));
+        for n in &self.notes {
+            if n.id != current {
+                todo.push((n.id.clone(), None));
+            }
+        }
+        for id in self.lan_open.keys() {
+            if !self.notes.iter().any(|n| n.id == *id) {
+                todo.push((id.clone(), None));
+            }
+        }
+        for (id, live_lamport) in todo {
+            let key = menu::thumb_key(&id);
+            let built = self.thumbs.get(&id).copied();
+            // Notatka nieotwarta nie zmienia sie sama: budujemy ja raz.
+            let fresh = match (built, live_lamport) {
+                (Some(b), Some(now)) => b == now,
+                (Some(_), None) => true,
+                (None, _) => false,
+            };
+            if fresh && self.renderer.has_thumb(key) {
+                continue;
+            }
+            if t0.elapsed().as_secs_f32() * 1000.0 > THUMB_BUDGET_MS {
+                left = true;
+                break;
+            }
+            let lamport = match live_lamport {
+                Some(l) => {
+                    let doc = std::mem::replace(&mut self.doc, Document::new(self.author.id()));
+                    let r = self.renderer.build_thumb(key, &doc, &self.ink, tw, th);
+                    self.doc = doc;
+                    if r.is_err() {
+                        continue;
+                    }
+                    l
+                }
+                None => {
+                    let Ok(ops) = spectre_sync::store::read_ops(&self.space, &id) else {
+                        continue;
+                    };
+                    let mut doc = Document::new(self.author.id());
+                    for op in &ops {
+                        doc.apply(op);
+                    }
+                    if self
+                        .renderer
+                        .build_thumb(key, &doc, &self.ink, tw, th)
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    doc.lamport()
+                }
+            };
+            self.thumbs.insert(id, lamport);
+        }
+        // Bitmapy siedza w pamieci sterownika - usuniete notatki nie moga ich trzymac.
+        if !left {
+            let keys: std::collections::HashSet<u64> =
+                self.thumbs.keys().map(|id| menu::thumb_key(id)).collect();
+            self.renderer.retain_thumbs(&|k| keys.contains(&k));
+        }
+        self.arm_thumbs(left);
+    }
+
+    fn arm_thumbs(&mut self, want: bool) {
+        if want == self.thumbs_pending {
+            return;
+        }
+        self.thumbs_pending = want;
+        unsafe {
+            if want {
+                SetTimer(Some(self.hwnd), TIMER_THUMBS, THUMBS_TICK_MS, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), TIMER_THUMBS);
+            }
+        }
+    }
+
+    fn thumbs_tick(&mut self) {
+        if self.menu.open && self.waves.is_none() && !self.hidden {
+            self.render();
+        } else {
+            self.arm_thumbs(false);
+        }
+    }
+
     // ----- AMOLED (Z7) -------------------------------------------------------
 
     /// Odliczanie bezczynnosci dziala tylko, gdy okno jest widoczne - w tle
@@ -2322,6 +2443,7 @@ impl App {
         }
         self.arm_menu_clock(self.menu.open && self.waves.is_none());
         if self.menu.open && self.waves.is_none() {
+            self.ensure_thumbs();
             let author = self.author.dir_name();
             let live_line = self.live.status_line();
             let offers = self.offer_views();
@@ -2884,6 +3006,7 @@ pub unsafe extern "system" fn wndproc(
                 TIMER_WAVES => app.waves_tick(),
                 TIMER_PARTNER => app.partner_tick(),
                 TIMER_MENU_CLOCK => app.menu_clock_tick(),
+                TIMER_THUMBS => app.thumbs_tick(),
                 TIMER_GIT => {
                     let _ = KillTimer(Some(hwnd), TIMER_GIT);
                     app.git_sync(false);

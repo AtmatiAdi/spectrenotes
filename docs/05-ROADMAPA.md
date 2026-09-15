@@ -229,6 +229,12 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       nieaktywne nie widzi wejścia, więc fale i pełny ekran wchodziły podczas
       pisania w innej aplikacji. `GetLastInputInfo` + `waves_delay`.
 
+- [x] Lista notatek jako kafelki z miniaturami (2026-09-15): miniatura strony
+      z tytułem i datą na pasku; renderowane raz do bitmapy (`Renderer::build_thumb`,
+      `UiPrim::Thumb`), budowane po kolei z budżetem na klatkę, bo wczytanie
+      cudzej notatki to odczyt z dysku. Notatki z LAN mają te same kafelki,
+      miniaturę po otwarciu (wcześniej nie mamy treści).
+
 Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,
       gdzie ląduje przeglądarka wersji, jak wygląda przenoszenie notatek i foldery

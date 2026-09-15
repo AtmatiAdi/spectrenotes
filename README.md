@@ -85,8 +85,15 @@ nazwa i stan logowania, licznik od ostatniej synchronizacji tykający co sekund�
 z dokładną godziną (`synced 4:37 ago · 12:04:11`; bez logowania `saved …`) i przycisk
 „synchronizuj teraz". Zakładka *Konto* rozdziela trzy zegary: zapis na dysk, GitHub,
 peer w LAN.
-*Notatki*: lista w folderach, od najnowszej, z datą utworzenia;
-tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,
+*Notatki*: **kafelki z miniaturą** notatki (dwie kolumny, od najnowszej), tytuł
+i data na pasku u dołu miniatury — notatkę poznaje się po tym, co na niej
+narysowano, bo większość nie ma nazwy. Miniatura to kadr jak strona: w poziomie
+cała kolumna (ta sama skala w każdym kafelku), w pionie od góry treści, żeby
+notatka zaczynająca się nisko nie dawała pustego kafelka. Każda powstaje raz,
+do własnej bitmapy, i potem jest już tylko przepisywana; bieżąca odświeża się,
+gdy notatka się zmieni. Cudze notatki z LAN mają takie same kafelki — miniaturę
+dostają po otwarciu, bo dopiero wtedy mamy ich treść.
+Tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,
 na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę,
 `Enter`), pod spodem *This note on LAN* (udostępnij, hasło) i *Shared on LAN* (cudze
 udostępnienia). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
