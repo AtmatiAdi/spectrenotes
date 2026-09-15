@@ -91,7 +91,10 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       tytuł notatki i przyciski okna w dwóch zakładkach nad canvasem; pasek narzędzi
       zadokowany u góry wchłania oba pola; snap i Win+strzałki zachowane
 - [x] Pasek narzędzi dokowalny do 4 krawędzi (przeciąganie za uchwyt), orientacja
-      pozioma dla góra/dół; dok i położenie okna w `config.txt`
+      pozioma dla góra/dół; dok i położenie okna w `config.txt`. Uchwyt siedzi na
+      **samym końcu paska**, za kłódką komputera (2026-09-15) — na początku, przy
+      menu, łapał się przypadkiem; w doku u góry koniec paska trzyma zapas od
+      uchwytu przesuwania okna, żeby dwa ⠿ nie stały obok siebie
 - [ ] Więcej narzędzi (zaznaczanie, kształty) — po Etapie 5, wymaga `StrokeTransform`
 - [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
 - [x] Menu (☰ na pasku narzędzi, `M`) z nagłówkiem konta (avatar z GitHuba, nazwa,

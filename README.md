@@ -68,10 +68,14 @@ Dwuklik na uchwycie maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
 
 **Pasek narzędzi** wyjeżdża, gdy rysik zbliży się do krawędzi, przy której jest
 zadokowany, i chowa się po 2,5 s bezczynności (Z7). **Jest dokowalny**: złap za
-uchwyt (kropki na początku paska) i upuść przy dowolnej krawędzi — góra/dół
+uchwyt (kropki ⠿ na **samym końcu** paska) i upuść przy dowolnej krawędzi — góra/dół
 przełącza go w orientację poziomą. Kolejno: menu, pióro, gumka, kolory, grubość
 (co 0,1 px), cofnij/ponów, lupa −/+, procent zoomu (tap = dopasuj
-szerokość), **kłódka widoku**, a na samym końcu **kłódka komputera** (jak `Win+L`).
+szerokość), **kłódka widoku**, dalej **kłódka komputera** (jak `Win+L`), a na samym
+końcu uchwyt przesuwania paska. Uchwyt był kiedyś pierwszy, tuż przy menu, i łapał
+się zamiast przycisków — na końcu, za kłódką, jest mniej pod ręką. W pasku u góry
+koniec paska trzyma zapas od uchwytu przesuwania okna, żeby dwa takie same ⠿ nie
+stały obok siebie.
 Gdy pasek jest krótszy niż elementy, elementy kurczą się proporcjonalnie — nic nie
 wypada poza okno. Dok i położenie okna zapisują się
 w `%APPDATA%\SpectreNotes\config.txt` (jawny `klucz=wartość`).

@@ -197,7 +197,8 @@ pub struct Toolbar {
     /// Uchwyt (2x3 kropki) tuz przy przyciskach okna - drugie miejsce do
     /// przesuwania okna, poza uchwytem zakladki tytulu.
     win_grip: Option<Rect>,
-    /// `LockPc` nie plynie z reszta elementow: kotwica na koncu paska.
+    /// `LockPc` nie plynie z reszta elementow: kotwica przy koncu paska, tuz
+    /// przed uchwytem przesuwania paska.
     lock_pc: Rect,
 }
 
@@ -242,8 +243,7 @@ impl Toolbar {
         let item = px(ITEM_LEN);
         // (akcja, odstep przed elementem, dlugosc w osi glownej) - w pikselach.
         let mut order: Vec<(Action, f32, f32)> = vec![
-            (Action::Grip, 0.0, px(GRIP_LEN)),
-            (Action::Menu, px(4.0), item),
+            (Action::Menu, 0.0, item),
             (Action::Pen, px(8.0), item),
             (Action::Eraser, 0.0, item),
         ];
@@ -267,9 +267,9 @@ impl Toolbar {
 
         let horizontal = self.dock.horizontal();
         let absorbs = self.dock == Dock::Top && self.chrome;
-        // Elementy okna w pasku u gory: od prawej przyciski, uchwyt, i dopiero
-        // za nimi kotwica `LockPc`; w innych dokach `LockPc` siedzi na samym
-        // koncu paska.
+        // Elementy okna w pasku u gory: od prawej przyciski okna i ich uchwyt,
+        // a dopiero przed nimi koniec paska - uchwyt paska i kotwica `LockPc`.
+        // W innych dokach ta dwojka siedzi na samym koncu paska.
         if absorbs {
             let btn = px(WIN_BTN_W);
             let mut x = w;
@@ -291,11 +291,19 @@ impl Toolbar {
             });
         }
         let end = match self.dock {
-            Dock::Top if absorbs => self.win_grip.map_or(w, |g| g.x) - px(4.0),
+            // Pasek u gory konczy sie **z zapasem** przed uchwytem przyciskow okna:
+            // dwa takie same uchwyty ⠿ tuz obok siebie to gotowa pomylka (jeden
+            // przesuwa pasek, drugi okno).
+            Dock::Top if absorbs => self.win_grip.map_or(w, |g| g.x) - px(20.0),
             Dock::Top | Dock::Bottom => w - px(6.0),
             Dock::Left | Dock::Right => h - px(6.0),
         };
-        let lock_along = end - item;
+        // Uchwyt przesuwania paska jest na samym koncu, za klodka komputera.
+        // Stal na poczatku, tuz przy menu, i lapal sie zamiast przyciskow -
+        // ma byc mniej pod reka, nie wygodniej. Przerwa przed nim jest po to,
+        // zeby chybiony chwyt trafial w puste miejsce paska, a nie w klodke.
+        let grip_along = end - px(GRIP_LEN);
+        let lock_along = grip_along - px(10.0) - item;
 
         // Poczatek osi glownej i polozenie w osi poprzecznej. Pasek z prawej
         // zaczyna sie pod zakladka z przyciskami okna, zeby na nia nie wchodzic.
@@ -355,6 +363,10 @@ impl Toolbar {
         self.items.push(Item {
             action: Action::LockPc,
             rect: self.lock_pc,
+        });
+        self.items.push(Item {
+            action: Action::Grip,
+            rect: place(grip_along, px(GRIP_LEN)),
         });
 
         // Elementy okna.
@@ -1149,6 +1161,12 @@ mod tests {
         assert!(t.hit(30.0, 1000.0).is_none());
         assert_eq!(t.hit(30.0, 60.0), Some(Action::Menu));
         assert!(!t.caption_hit(30.0, 60.0));
+        // Uchwyt paska nie jest juz przy menu: siedzi na samym koncu, za klodka.
+        let bar_end = 1300.0 - px(6.0, S);
+        let grip_cy = bar_end - px(GRIP_LEN, S) * 0.5;
+        assert_eq!(t.hit(30.0, grip_cy), Some(Action::Grip));
+        let lock_cy = bar_end - px(GRIP_LEN, S) - px(10.0, S) - px(ITEM_LEN, S) * 0.5;
+        assert_eq!(t.hit(30.0, lock_cy), Some(Action::LockPc));
     }
 
     /// Pasek u gory wchlania przyciski okna: musza byc w oknie, a nie za nim.
@@ -1161,7 +1179,11 @@ mod tests {
         let win_x = 1400.0 - px(WIN_BTN_W, S) * 3.0;
         assert_eq!(t.title_hit(win_x + 5.0, 30.0), Some(TitleAction::Minimize));
         assert!(t.caption_hit(win_x - px(TAB_GRIP_W, S) * 0.5, 30.0));
-        let lock_cx = win_x - px(TAB_GRIP_W, S) - px(4.0, S) - px(ITEM_LEN, S) * 0.5;
+        // Koniec paska: uchwyt przesuwania paska, przed nim klodka komputera.
+        let bar_end = win_x - px(TAB_GRIP_W, S) - px(20.0, S);
+        let grip_cx = bar_end - px(GRIP_LEN, S) * 0.5;
+        assert_eq!(t.hit(grip_cx, 30.0), Some(Action::Grip));
+        let lock_cx = bar_end - px(GRIP_LEN, S) - px(10.0, S) - px(ITEM_LEN, S) * 0.5;
         assert_eq!(t.hit(lock_cx, 30.0), Some(Action::LockPc));
         // Tytul: na srodku okna, gdy jest miejsce (szerokie okno).
         t.layout(2880.0, 1000.0, S, 6);
