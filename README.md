@@ -49,6 +49,10 @@ naprawdę poszło i dlaczego (`Spectre: shield held off, last ping 3 s ago` / `n
 window on \\.\DISPLAY2, not the laptop panel` / `Spectre not running`), a przejścia tego
 stanu lądują w `%APPDATA%\SpectreNotes\partner.log`; Spectre loguje każde zakrycie
 i odkrycie panelu z powodem i stanem dzierżawy (`%APPDATA%\Spectre\spectre.log`).
+Przyciemniacz paska zadań w Spectre ustępuje aplikacji na pełnym ekranie — naszej do
+15 IX 2026 nie ustępował, bo predykat „to moje okno" dopasowywał **prefiks** nazwy klasy
+`Spectre`, a nasza klasa nazywa się `SpectreNotes`. Naprawione po stronie Spectre:
+`WindowFilter.IsOwn` pyta o tożsamość procesu, nie o nazwę.
 
 **Okno nie ma systemowej ramki ani paska tytułowego** — canvas zaczyna się od samej
 góry. Nad nim wiszą dwie małe **zakładki**: tytuł notatki na środku (tap, wpisz,
@@ -217,7 +221,10 @@ skalowane w trakcie rysowania: każdy prostokąt, glif i czcionka DWrite ma
 policzony docelowy rozmiar (ostrość i brak kosztu skalowania rastra). Po
 przeniesieniu okna na monitor o innym DPI `WM_DPICHANGED` przelicza układ i
 odtwarza czcionki. **Canvas jest osobny** — kreski żyją we własnych jednostkach,
-zoom to sprawa kamery, nie DPI.
+zoom to sprawa kamery, nie DPI. **Zmiana rozmiaru okna zoomu nie rusza**: notatka
+otwiera się dopasowana do szerokości okna, a potem mniejsze okno pokazuje mniej
+canvasu, a większe więcej — kreska ma zawsze ten sam rozmiar fizyczny. Dopasowanie
+jest na żądanie: procent na pasku albo `0`.
 
 ### Testy GUI bez ruszania myszy
 

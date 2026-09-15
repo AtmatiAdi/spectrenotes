@@ -53,10 +53,11 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       klawiszem, powrót po 10 s; pokrycie 93 % próbek w 2 min). Pixel shift, globalna
       rampa i plamy z gradientem radialnym **odrzucone po teście**
 - [x] Szerokość kolumny (Z9): `COLUMN_W = 2880` jednostek (na docelowym panelu zoom
-      „dopasuj szerokość" = 1,0). Domyślnie dopasowanie do okna, trzymane przy zmianie
-      rozmiaru do pierwszego ręcznego zoomu; `0` wraca. Kolumna węższa niż okno jest
-      wyśrodkowana; szersza — przewijana w poziomie przyciskiem bocznym (zakres
-      poszerzony o treść poza kolumną, żeby wszystko było osiągalne)
+      „dopasuj szerokość" = 1,0). Notatka otwiera się dopasowana do okna; zmiana rozmiaru
+      okna zoomu nie zmienia (mniejsze okno = mniej widocznego canvasu), `0` dopasowuje
+      na żądanie. Kolumna węższa niż okno jest wyśrodkowana; szersza — przewijana
+      w poziomie przyciskiem bocznym (zakres poszerzony o treść poza kolumną, żeby
+      wszystko było osiągalne)
 - [x] **Kryterium 100 000 kresek: spełnione.** Indeks pasów po Y w `Document`
       (`visible_in` czyta kilka pasów zamiast skanować wszystko — skan kosztował ~5 ms
       na klatkę i dominował nad rysowaniem). Bench: rebuild 1,6 ms, scroll +2 px

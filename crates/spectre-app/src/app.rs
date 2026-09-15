@@ -168,8 +168,9 @@ pub struct App {
     last_erase_canvas: Option<(f32, f32)>,
     /// Poczatek przewijania rysikiem: (pozycja ekranowa, (scroll_x, scroll_y)).
     pan_start: ((f32, f32), (f32, f32)),
-    /// Zoom "dopasuj szerokosc" aktywny - podaza za rozmiarem okna.
-    fit_zoom: bool,
+    /// Pierwsze `WM_SIZE` jeszcze nie przyszlo. Tylko wtedy zoom dopasowuje sie
+    /// sam do okna - pozniejsze zmiany rozmiaru zostawiaja go w spokoju.
+    first_size: bool,
     /// Widok zablokowany: kolumna wysrodkowana, bez przesuwania w poziomie
     /// (zoom nadal wolno). Odblokowany: canvas nieskonczony w osi X.
     view_locked: bool,
@@ -421,7 +422,7 @@ impl App {
             last_screen: (0.0, 0.0),
             last_erase_canvas: None,
             pan_start: ((0.0, 0.0), (0.0, 0.0)),
-            fit_zoom: true,
+            first_size: true,
             view_locked,
             dirty: Dirty::Full,
             show_hud: false,
@@ -874,7 +875,6 @@ impl App {
         if (new_zoom - self.cam.zoom).abs() < 1e-4 {
             return;
         }
-        self.fit_zoom = false;
         let (cx, cy) = self.cam.to_canvas(sx, sy);
         self.cam.zoom = new_zoom;
         // Po zmianie zoomu ten sam punkt canvasu ma zostac pod kursorem
@@ -894,11 +894,10 @@ impl App {
         self.zoom_at(factor, w as f32 * 0.5, h as f32 * 0.5);
     }
 
-    /// Zoom "dopasuj szerokosc" (Z9): kolumna na cala szerokosc okna. Domyslny
-    /// tryb - trzyma sie przy zmianie rozmiaru okna, dopoki uzytkownik nie
-    /// przyblizy recznie. `0` wraca do niego.
+    /// Zoom "dopasuj szerokosc" (Z9): kolumna na cala szerokosc okna. Stan
+    /// poczatkowy notatki i jawne zyczenie uzytkownika (procent na pasku, `0`) -
+    /// nie chodzi za oknem: zmiana rozmiaru okna zoomu nie rusza.
     fn fit_width(&mut self) {
-        self.fit_zoom = true;
         let w = self.renderer.size().0 as f32;
         self.cam.fit_width(w);
         let bottom = self.doc.content_bottom();
@@ -3028,10 +3027,16 @@ pub unsafe extern "system" fn wndproc(
             let h = ((lparam.0 >> 16) & 0xffff) as u32;
             if let Ok(true) = app.renderer.resize(w, h) {
                 app.dirty = Dirty::Full;
-                if app.fit_zoom {
+                // Zmiana rozmiaru okna **nie rusza zoomu** - w mniejszym oknie widac
+                // mniej canvasu, w wiekszym wiecej, kreska ma ten sam rozmiar
+                // fizyczny. Dopasowanie szerokosci jest tylko na start notatki
+                // i na zadanie (procent na pasku, `0`).
+                if app.first_size {
+                    app.first_size = false;
                     app.fit_width();
                 } else {
                     app.scroll_x_to(app.cam.scroll_x);
+                    app.scroll_to(app.cam.scroll_y);
                 }
             }
             app.relayout();

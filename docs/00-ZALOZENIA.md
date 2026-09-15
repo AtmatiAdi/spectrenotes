@@ -99,8 +99,10 @@ Konsekwencje:
 - **ustalone (Etap 2):** kolumna ma 2880 jednostek canvasu — tyle, żeby na
   docelowym panelu 2880 px zoom „dopasuj szerokość" wynosił 1,0 i pióro miało
   dokładnie tę grubość, która została oceniona jako dobra. Na innym oknie/monitorze
-  domyślnie dopasowanie do szerokości; ręczny zoom wyłącza podążanie za oknem,
-  `0` je przywraca. Przy zoomie większym niż dopasowanie przycisk boczny przewija
+  notatka **otwiera się** dopasowana do szerokości okna. Zmiana rozmiaru okna zoomu
+  już nie rusza — w mniejszym oknie widać mniej canvasu, w większym więcej, a kreska
+  ma zawsze ten sam rozmiar fizyczny; `0` (albo procent na pasku) dopasowuje na
+  żądanie. Przy zoomie większym niż dopasowanie przycisk boczny przewija
   także w poziomie.
 
 ### Z10. Dotyk wyłączony w trybie notatki
