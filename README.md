@@ -53,6 +53,13 @@ Przyciemniacz paska zadań w Spectre ustępuje aplikacji na pełnym ekranie — 
 15 IX 2026 nie ustępował, bo predykat „to moje okno" dopasowywał **prefiks** nazwy klasy
 `Spectre`, a nasza klasa nazywa się `SpectreNotes`. Naprawione po stronie Spectre:
 `WindowFilter.IsOwn` pyta o tożsamość procesu, nie o nazwę.
+Tam też siedziała przyczyna zgłoszenia „małe okno SpectreNotes zasłania pasek zadań":
+przyciemniacz Spectre jest **oknem własnościowym** paska (owner = `Shell_TrayWnd`),
+a podnosił się skokiem `HWND_NOTOPMOST` → `HWND_TOPMOST`. Win32 wiąże te stany
+jednostronnie — zdjęcie topmost z okna własnościowego zdejmuje je też z właściciela,
+a podniesienie z powrotem właściciela już nie podnosi. Pasek zadań tracił więc
+`WS_EX_TOPMOST` przy pierwszym sprawdzeniu z-order i od tej chwili zasłaniało go
+dowolne okno. Naprawione po stronie Spectre (`HWND_TOP`).
 
 **Okno nie ma systemowej ramki ani paska tytułowego** — canvas zaczyna się od samej
 góry. Nad nim wiszą dwie małe **zakładki**: tytuł notatki na środku (tap, wpisz,
@@ -69,7 +76,9 @@ zmaksymalizowane i pamięta, do czego się przywraca. Przycisk maksymalizacji
 w pełnym ekranie najpierw z niego wychodzi, a potem przełącza okno, i pokazuje
 stan, do którego wrócisz (❐ = wrócisz do zmaksymalizowanego). Do `config.txt`
 zapisuje się położenie sprzed pełnego ekranu — prostokąt monitora nie jest niczyim
-wyborem.
+wyborem. Wejście i wyjście meldujemy powłoce przez `ITaskbarList2::MarkFullscreenWindow`,
+więc pasek zadań ustępuje od razu, zamiast czekać na heurystykę powłoki (ta wymaga
+pierwszego planu i zauważa rzecz po sekundzie czy dwóch).
 Gdy pasek narzędzi jest zadokowany u góry, **wchłania** oba pola — tytuł,
 uchwyt i przyciski stają się jego elementami i znikają razem z nim; tytuł ma wtedy tę
 samą szerokość i to samo miejsce co zakładka (środek okna), nie rozciąga się na wolne

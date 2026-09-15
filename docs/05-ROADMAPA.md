@@ -209,6 +209,14 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       (2026-09-15). W pełnym ekranie zakładki (tytuł i przyciski) chodzą razem
       z paskiem — wjeżdżają przy krawędzi, znikają po bezczynności — żeby dało się
       z niego wyjść bez `F11`; uchwyty przesuwania okna są tam wygaszone.
+- [x] **Pasek zadań pod oknem** (2026-09-15): zgłoszone jako „małe okno zasłania pasek
+      zadań". Przyczyna w Spectre — przyciemniacz paska jest oknem własnościowym
+      `Shell_TrayWnd` i podnosił się skokiem przez `HWND_NOTOPMOST`, co zdejmowało
+      topmost także właścicielowi; naprawione tam (`HWND_TOP`). U nas: wejście
+      i wyjście z pełnego ekranu melduje się powłoce przez
+      `ITaskbarList2::MarkFullscreenWindow`, więc pasek ustępuje od razu, a nie po
+      heurystyce. Zmierzone: z działającym Spectre pasek trzyma `WS_EX_TOPMOST`,
+      a okno przesunięte na jego pas już go nie zakrywa.
 - [x] **Pełny ekran a maksymalizacja** (2026-09-15): pełny ekran jest trybem nad
       stanem okna. Wejście zapamiętuje `WINDOWPLACEMENT` (a więc i maksymalizację,
       i prostokąt przywrócenia), wyjście oddaje dokładnie ten stan; przycisk

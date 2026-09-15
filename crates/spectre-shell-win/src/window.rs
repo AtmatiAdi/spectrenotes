@@ -5,6 +5,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::SystemInformation::GetTickCount;
@@ -18,6 +21,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
+use windows::Win32::UI::Shell::{ITaskbarList2, TaskbarList};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 pub type WndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
@@ -140,6 +144,32 @@ pub fn run_message_loop() {
     }
 }
 
+/// Mowi powloce wprost, czy okno jest pelnoekranowe (`ITaskbarList2`).
+///
+/// Automat powloki obniza pasek zadan, gdy na pierwszym planie stoi okno
+/// zakrywajace monitor, ale **koniec** tego trybu zauwaza dopiero przy zmianie
+/// okna pierwszego planu. Nasze okno pierwszego planu nie oddaje, wiec po
+/// wyjsciu z pelnego ekranu pasek zostawal na dole listy - i zaslanialo go
+/// potem kazde okno, takze male i nieprzesuniete nigdzie blisko pelnego ekranu.
+/// `MarkFullscreenWindow` jest na to przewidzianym API; nie dotykamy z-order
+/// cudzego okna.
+fn mark_fullscreen(hwnd: HWND, on: bool) {
+    static COM: std::sync::Once = std::sync::Once::new();
+    unsafe {
+        COM.call_once(|| {
+            // Watek UI dostaje apartament STA; gdy ktos zdazyl zalozyc inny model,
+            // `RPC_E_CHANGED_MODE` jest w porzadku - korzystamy z istniejacego.
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        });
+        if let Ok(list) =
+            CoCreateInstance::<_, ITaskbarList2>(&TaskbarList, None, CLSCTX_INPROC_SERVER)
+        {
+            let _ = list.HrInit();
+            let _ = list.MarkFullscreenWindow(hwnd, on);
+        }
+    }
+}
+
 /// Borderless fullscreen o rozmiarze monitora. Przy dokladnym dopasowaniu do
 /// trybu pulpitu DWM oddaje swapchain wprost do skanowania (independent flip).
 ///
@@ -204,6 +234,7 @@ impl Fullscreen {
                         r.bottom - r.top,
                         SWP_FRAMECHANGED,
                     );
+                    mark_fullscreen(hwnd, true);
                     self.active = true;
                 }
             } else {
@@ -222,6 +253,7 @@ impl Fullscreen {
                     0,
                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE,
                 );
+                mark_fullscreen(hwnd, false);
                 self.active = false;
             }
         }
