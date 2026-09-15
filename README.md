@@ -194,6 +194,13 @@ HUD pokazuje to, co realnie decyduje o odczuciu:
 Bezwzględnej latencji pen-to-photon HUD nie zmierzy — to się robi kamerą 240 fps
 (telefon), licząc klatki między dotknięciem rysika a pojawieniem się piksela.
 
+### Ochrona AMOLED liczy bezczynność człowieka
+
+Odliczanie do fal bierze bezczynność **całego systemu** (`GetLastInputInfo`),
+nie tylko tego okna. Okno nieaktywne nie dostaje żadnych komunikatów wejścia,
+więc bez tego ochrona wchodziła (razem z pełnym ekranem) w trakcie pisania
+w innej aplikacji. `W` (wymuszony podgląd) omija sprawdzenie.
+
 ### DPI i piksele
 
 Całe UI aplikacji (pasek, zakładki, menu) jest liczone w **pikselach logicznych**

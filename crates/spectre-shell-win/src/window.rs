@@ -7,6 +7,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::UI::Controls::{
     SetWindowFeedbackSetting, FEEDBACK_PEN_BARRELVISUALIZATION, FEEDBACK_PEN_DOUBLETAP,
     FEEDBACK_PEN_PRESSANDHOLD, FEEDBACK_PEN_RIGHTTAP, FEEDBACK_PEN_TAP,
@@ -15,6 +16,7 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::Input::Pointer::EnableMouseInPointer;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -215,6 +217,28 @@ pub fn trim_working_set() {
 // do krawedzi dzialaja), ale WM_NCCALCSIZE oddaje caly prostokat jako obszar
 // klienta, a WM_NCHITTEST mowi systemowi, gdzie jest uchwyt do przesuwania
 // i gdzie krawedzie do zmiany rozmiaru. Ramke i przyciski rysuje aplikacja.
+
+/// Czas od ostatniego wejscia uzytkownika w **calym systemie** (klawiatura,
+/// mysz, rysik), w milisekundach - takze wtedy, gdy trafilo do innej
+/// aplikacji. Ochrona AMOLED musi liczyc bezczynnosc czlowieka, nie okna:
+/// pisanie w terminalu obok to praca, a nie powod, zeby zgasic panel.
+///
+/// `GetLastInputInfo` nie widzi wejscia do okien o wyzszych uprawnieniach
+/// (UIPI) - wtedy zwroci za duzo, czyli najwyzej ochrona wlaczy sie mimo pracy.
+pub fn system_idle_ms() -> u32 {
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    unsafe {
+        if GetLastInputInfo(&mut info).as_bool() {
+            // Oba liczniki przepelniaja sie tak samo co ~49 dni.
+            GetTickCount().wrapping_sub(info.dwTime)
+        } else {
+            0
+        }
+    }
+}
 
 /// Skala DPI monitora, na ktorym jest okno: 1.0 = 96 DPI, 1.25 = 125 %.
 /// UI aplikacji liczy z niej fizyczne piksele (jak Windows swoj pasek zadan).

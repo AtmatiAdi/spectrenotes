@@ -2148,6 +2148,23 @@ impl App {
     /// tylko zerujemy przy starcie. (Ustawianie go tutaj dawalo dt ~ 0 w kazdej
     /// klatce: fala nigdy nie wychodzila z fade-inu i byla niewidoczna.)
     fn waves_tick(&mut self) {
+        // Bezczynnosc liczymy dla **calego systemu**, nie tylko dla tego okna.
+        // Okno nieaktywne nie dostaje zadnych komunikatow wejscia, wiec bez tego
+        // ochrona wchodzila (razem z pelnym ekranem) w trakcie pisania w innej
+        // aplikacji. `W` (wymuszony podglad) omija to.
+        if let Some(ms) = waves_delay(
+            window::system_idle_ms(),
+            self.waves_idle_s * 1000,
+            self.waves_forced,
+        ) {
+            if self.stop_waves() {
+                self.render();
+            }
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_WAVES, ms, None);
+            }
+            return;
+        }
         if self.waves.is_none() {
             // "Tylko ekran laptopa": na zewnetrznym monitorze nie startujemy,
             // ale odliczamy dalej - po przeniesieniu okna na panel ochrona
@@ -2497,6 +2514,21 @@ fn open_note(
         doc.apply(op);
     }
     Ok((store, doc))
+}
+
+/// Decyzja tiku ochrony AMOLED przy danej bezczynnosci **systemu**:
+/// `Some(ms)` - jeszcze nie czas, przestaw timer na tyle milisekund (czlowiek
+/// pracuje, choćby w innej aplikacji); `None` - czas na fale.
+///
+/// `want_ms == 0` (ochrona wylaczona) tez daje `None`, bo wtedy timer w ogole
+/// nie chodzi, a wymuszony podglad (`W`) ma wystartowac od razu.
+fn waves_delay(idle_ms: u32, want_ms: u32, forced: bool) -> Option<u32> {
+    if forced || want_ms == 0 || idle_ms >= want_ms {
+        return None;
+    }
+    // Nigdy 0: Windows i tak podnioslby to do minimum timera, a tak wiadomo,
+    // ze kolejne sprawdzenie jest realnym odstepem, nie petla.
+    Some((want_ms - idle_ms).max(250))
 }
 
 fn entry_for(space: &Space, id: String) -> NoteEntry {
@@ -2920,5 +2952,30 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ochrona AMOLED ma liczyc bezczynnosc czlowieka, nie okna: praca w innej
+    /// aplikacji (okno nie dostaje wtedy zadnego komunikatu wejscia) musi
+    /// odsuwac fale i pelny ekran.
+    #[test]
+    fn ochrona_czeka_na_bezczynnosc_calego_systemu() {
+        let want = 180_000;
+        // Ktos wlasnie pisze gdzie indziej - czekamy caly okres od jego wejscia.
+        assert_eq!(waves_delay(0, want, false), Some(want));
+        // Minute po ostatnim wejsciu - zostaja dwie.
+        assert_eq!(waves_delay(60_000, want, false), Some(120_000));
+        // Okres minal: czas na fale.
+        assert_eq!(waves_delay(want, want, false), None);
+        assert_eq!(waves_delay(want + 5_000, want, false), None);
+        // Tuz przed koncem timer dostaje sensowny odstep, nie zero.
+        assert_eq!(waves_delay(want - 1, want, false), Some(250));
+        // Wymuszony podglad (`W`) i wylaczona ochrona nie czekaja na nic.
+        assert_eq!(waves_delay(0, want, true), None);
+        assert_eq!(waves_delay(0, 0, false), None);
     }
 }

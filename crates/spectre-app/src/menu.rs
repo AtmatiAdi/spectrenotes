@@ -493,7 +493,7 @@ impl Menu {
         out.push(UiPrim::Text {
             x: r.x + (PAD * k) + 8.0 * k,
             y: r.y,
-            w: r.w - (PAD * k) * 2.0 * k - 8.0 * k - (DATE_W * k),
+            w: r.w - PAD * 2.0 * k - 8.0 * k - (DATE_W * k),
             h: r.h,
             text,
             color,
@@ -535,7 +535,7 @@ impl Menu {
         out.push(UiPrim::Text {
             x: r.x + (PAD * k),
             y: r.y,
-            w: r.w - (PAD * k) * 2.0 * k - 110.0 * k,
+            w: r.w - PAD * 2.0 * k - 110.0 * k,
             h: r.h,
             text: format!("{label}  ·  {count}"),
             color: FG_DIM,
@@ -690,7 +690,7 @@ impl Menu {
         out.push(UiPrim::Rect {
             x: list.x + (PAD * k),
             y,
-            w: list.w - (PAD * k) * 2.0 * k,
+            w: list.w - PAD * 2.0 * k,
             h: 1.0,
             color: LINE,
             r: 0.0,
@@ -719,7 +719,7 @@ impl Menu {
         out.push(UiPrim::Text {
             x: r.x + (PAD * k) + 8.0 * k,
             y: r.y,
-            w: r.w - (PAD * k) * 2.0 * k - 8.0 * k,
+            w: r.w - PAD * 2.0 * k - 8.0 * k,
             h: r.h,
             text: label.to_string(),
             color,
@@ -747,7 +747,7 @@ impl Menu {
         out.push(UiPrim::Outline {
             x: r.x + (PAD * k),
             y: r.y + 4.0 * k,
-            w: r.w - (PAD * k) * 2.0 * k,
+            w: r.w - PAD * 2.0 * k,
             h: r.h - 8.0 * k,
             color: ACCENT,
             width: 1.0,
@@ -756,7 +756,7 @@ impl Menu {
         out.push(UiPrim::Text {
             x: r.x + (PAD * k) + 8.0 * k,
             y: r.y,
-            w: r.w - (PAD * k) * 2.0 * k - 16.0 * k,
+            w: r.w - PAD * 2.0 * k - 16.0 * k,
             h: r.h,
             text: if buf.is_empty() {
                 placeholder.to_string()
@@ -880,7 +880,7 @@ impl Menu {
                 out.push(UiPrim::Text {
                     x: r.x + (PAD * k) + 8.0 * k,
                     y: r.y,
-                    w: r.w - (PAD * k) * 2.0 * k - 90.0 * k,
+                    w: r.w - PAD * 2.0 * k - 90.0 * k,
                     h: r.h,
                     text: label.to_string(),
                     color: FG,
@@ -905,7 +905,7 @@ impl Menu {
             out.push(UiPrim::Text {
                 x: list.x + (PAD * k) + 8.0 * k,
                 y,
-                w: list.w - (PAD * k) * 2.0 * k,
+                w: list.w - PAD * 2.0 * k,
                 h: 18.0 * k,
                 text: label.to_string(),
                 color: FG_DIM,
@@ -915,7 +915,7 @@ impl Menu {
             out.push(UiPrim::Text {
                 x: list.x + (PAD * k) + 8.0 * k,
                 y,
-                w: list.w - (PAD * k) * 2.0 * k,
+                w: list.w - PAD * 2.0 * k,
                 h: 20.0 * k,
                 text: value.to_string(),
                 color: FG,
@@ -1116,7 +1116,7 @@ impl Menu {
                     out.push(UiPrim::Text {
                         x: list.x + (PAD * k),
                         y,
-                        w: list.w - (PAD * k) * 2.0 * k,
+                        w: list.w - PAD * 2.0 * k,
                         h: 44.0 * k,
                         text: code.to_string(),
                         color: ACCENT,
@@ -1151,7 +1151,7 @@ impl Menu {
                     let r = Rect {
                         x: list.x + (PAD * k),
                         y: y + 2.0 * k,
-                        w: list.w - (PAD * k) * 2.0 * k,
+                        w: list.w - PAD * 2.0 * k,
                         h: (ROW_H * k) - 4.0 * k,
                     };
                     out.push(UiPrim::Outline {
@@ -1286,7 +1286,7 @@ impl Menu {
         out.push(UiPrim::Text {
             x: list.x + (PAD * k) + 8.0 * k,
             y,
-            w: list.w - (PAD * k) * 2.0 * k - 8.0 * k,
+            w: list.w - PAD * 2.0 * k - 8.0 * k,
             h: 22.0 * k,
             text: text.to_string(),
             color,
@@ -1309,7 +1309,7 @@ impl Menu {
         let r = Rect {
             x: list.x + (PAD * k),
             y,
-            w: list.w - (PAD * k) * 2.0 * k,
+            w: list.w - PAD * 2.0 * k,
             h: 36.0 * k,
         };
         out.push(UiPrim::Outline {
@@ -1339,7 +1339,7 @@ impl Menu {
         out.push(UiPrim::Text {
             x: list.x + (PAD * k),
             y,
-            w: list.w - (PAD * k) * 2.0 * k,
+            w: list.w - PAD * 2.0 * k,
             h: (HEAD_H * k),
             text: title.to_string(),
             color: FG_DIM,
