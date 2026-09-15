@@ -950,7 +950,13 @@ impl App {
             title: "",
             zoom: self.cam.zoom,
             view_locked: self.view_locked,
-            maximized: window::is_maximized(self.hwnd),
+            // W pelnym ekranie przycisk pokazuje stan, do ktorego wyjscie wroci -
+            // inaczej obiecywalby co innego, niz da klikniecie.
+            maximized: if self.fullscreen.is_active() {
+                self.fullscreen.was_maximized()
+            } else {
+                window::is_maximized(self.hwnd)
+            },
             fullscreen: self.fullscreen.is_active(),
             menu_open: self.menu.open,
         }
@@ -1011,14 +1017,25 @@ impl App {
             TitleAction::Minimize => unsafe {
                 let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
             },
-            TitleAction::Maximize => unsafe {
+            TitleAction::Maximize => {
+                // Pelny ekran jest trybem **nad** stanem okna, wiec prosba
+                // o maksymalizacje albo przywrocenie najpierw z niego wychodzi,
+                // a dopiero potem przelacza okno. Bez tego oba stany zyly obok
+                // siebie: maksymalizacja w pelnym ekranie robila z niego popup
+                // na obszarze roboczym, a przyciski pokazywaly co innego, niz
+                // robily.
+                if self.fullscreen.is_active() {
+                    self.toggle_fullscreen();
+                }
                 let cmd = if window::is_maximized(self.hwnd) {
                     SW_RESTORE
                 } else {
                     SW_MAXIMIZE
                 };
-                let _ = ShowWindow(self.hwnd, cmd);
-            },
+                unsafe {
+                    let _ = ShowWindow(self.hwnd, cmd);
+                }
+            }
             TitleAction::Close => self.hide(),
         }
     }
@@ -1245,7 +1262,13 @@ impl App {
     }
 
     fn save_placement(&mut self) {
-        if let Some(p) = window::placement_string(self.hwnd) {
+        // W pelnym ekranie okno ma prostokat monitora, ktory nie jest niczyim
+        // wyborem - do konfiguracji idzie polozenie sprzed wejscia w ten tryb.
+        let p = self
+            .fullscreen
+            .saved_placement_string()
+            .or_else(|| window::placement_string(self.hwnd));
+        if let Some(p) = p {
             self.config.set("window", p);
         }
         self.config.set("dock", self.toolbar.dock.name());

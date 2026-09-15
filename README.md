@@ -62,6 +62,14 @@ uchwytem ⠿ po lewej stronie przycisków. W pełnym ekranie przycisk pokazuje �
 do okna), a zakładki chodzą razem z paskiem: podjedź rysikiem do krawędzi, a wracają
 na ekran — inaczej ⛶ byłoby wejściem bez wyjścia dla kogoś, kto nie zna `F11`.
 Uchwytów ⠿ tam nie ma, bo okna na pełnym ekranie nie ma po czym przesuwać.
+**Pełny ekran jest trybem *nad* stanem okna, nie trzecim stanem obok zwykłego
+i zmaksymalizowanego**: wejście zapamiętuje cały `WINDOWPLACEMENT`, więc wyjście
+(⧉, `F11`, `Esc`) oddaje dokładnie to, co było — zmaksymalizowane okno wraca
+zmaksymalizowane i pamięta, do czego się przywraca. Przycisk maksymalizacji
+w pełnym ekranie najpierw z niego wychodzi, a potem przełącza okno, i pokazuje
+stan, do którego wrócisz (❐ = wrócisz do zmaksymalizowanego). Do `config.txt`
+zapisuje się położenie sprzed pełnego ekranu — prostokąt monitora nie jest niczyim
+wyborem.
 Gdy pasek narzędzi jest zadokowany u góry, **wchłania** oba pola — tytuł,
 uchwyt i przyciski stają się jego elementami i znikają razem z nim; tytuł ma wtedy tę
 samą szerokość i to samo miejsce co zakładka (środek okna), nie rozciąga się na wolne

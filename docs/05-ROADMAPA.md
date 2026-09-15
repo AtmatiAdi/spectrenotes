@@ -209,6 +209,13 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       (2026-09-15). W pełnym ekranie zakładki (tytuł i przyciski) chodzą razem
       z paskiem — wjeżdżają przy krawędzi, znikają po bezczynności — żeby dało się
       z niego wyjść bez `F11`; uchwyty przesuwania okna są tam wygaszone.
+- [x] **Pełny ekran a maksymalizacja** (2026-09-15): pełny ekran jest trybem nad
+      stanem okna. Wejście zapamiętuje `WINDOWPLACEMENT` (a więc i maksymalizację,
+      i prostokąt przywrócenia), wyjście oddaje dokładnie ten stan; przycisk
+      maksymalizacji w pełnym ekranie najpierw z niego wychodzi i pokazuje stan,
+      do którego wróci; do `config.txt` idzie położenie sprzed pełnego ekranu.
+      Zmierzone: zmaksymalizowane → F11 → F11 wraca na -9,-9-2889,1749
+      (`IsZoomed`), ❐ w pełnym ekranie daje z powrotem okno 1400x1000.
 - [x] **Kłódka widoku**: zablokowany = kolumna wyśrodkowana (bezwzględny środek
       notatki), zoom wolno, scroll w bok nie; odblokowany = canvas nieskończony
       w osi X. Naprawia „odblokowanie" scrolla w bok przez rysowanie po oddaleniu.

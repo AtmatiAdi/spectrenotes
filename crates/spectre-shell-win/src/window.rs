@@ -142,11 +142,18 @@ pub fn run_message_loop() {
 
 /// Borderless fullscreen o rozmiarze monitora. Przy dokladnym dopasowaniu do
 /// trybu pulpitu DWM oddaje swapchain wprost do skanowania (independent flip).
+///
+/// Pelny ekran jest **trybem nad stanem okna**, nie trzecim stanem obok zwyklego
+/// i zmaksymalizowanego. Zapamietujemy wiec cale `WINDOWPLACEMENT` - a w nim i to,
+/// czy okno bylo zmaksymalizowane, i jego prostokat sprzed maksymalizacji - a
+/// wyjscie oddaje dokladnie ten stan. Sam prostokat nie wystarczal: okno wracalo
+/// "recznie ustawione" na rozmiar maksymalizacji, z `IsZoomed` mowiacym co innego
+/// niz wyglad i ze zgubionym prostokatem przywrocenia.
 #[derive(Default)]
 pub struct Fullscreen {
     active: bool,
     saved_style: i32,
-    saved_rect: RECT,
+    saved_place: WINDOWPLACEMENT,
 }
 
 impl Fullscreen {
@@ -154,11 +161,28 @@ impl Fullscreen {
         self.active
     }
 
+    /// Czy okno bylo zmaksymalizowane, zanim weszlo w pelny ekran. Przycisk
+    /// maksymalizacji ma pokazywac stan, do ktorego wyjscie wroci.
+    pub fn was_maximized(&self) -> bool {
+        self.saved_place.showCmd == SW_SHOWMAXIMIZED.0 as u32
+    }
+
+    /// Polozenie zapamietane przy wejsciu w pelny ekran, w formacie
+    /// `placement_string` - to ono ma trafic do konfiguracji, bo prostokat
+    /// samego pelnego ekranu nie jest niczyim wyborem.
+    pub fn saved_placement_string(&self) -> Option<String> {
+        self.active.then(|| placement_str(&self.saved_place))
+    }
+
     pub fn toggle(&mut self, hwnd: HWND) {
         unsafe {
             if !self.active {
                 self.saved_style = GetWindowLongW(hwnd, GWL_STYLE);
-                let _ = GetWindowRect(hwnd, &mut self.saved_rect);
+                self.saved_place = WINDOWPLACEMENT {
+                    length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+                    ..Default::default()
+                };
+                let _ = GetWindowPlacement(hwnd, &mut self.saved_place);
                 let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
                 let mut mi = MONITORINFO {
                     cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -184,15 +208,19 @@ impl Fullscreen {
                 }
             } else {
                 SetWindowLongW(hwnd, GWL_STYLE, self.saved_style);
-                let r = self.saved_rect;
+                // Prostokat i stan wracaja razem, jednym `SetWindowPlacement`:
+                // zmaksymalizowane okno wraca zmaksymalizowane i pamieta, do czego
+                // sie przywraca.
+                let _ = SetWindowPlacement(hwnd, &self.saved_place);
+                // Placement nie rusza z-order - "zawsze na wierzchu" zdejmujemy sami.
                 let _ = SetWindowPos(
                     hwnd,
                     Some(HWND_NOTOPMOST),
-                    r.left,
-                    r.top,
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    SWP_FRAMECHANGED,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE,
                 );
                 self.active = false;
             }
@@ -350,16 +378,20 @@ pub fn placement_string(hwnd: HWND) -> Option<String> {
     unsafe {
         GetWindowPlacement(hwnd, &mut wp).ok()?;
     }
+    Some(placement_str(&wp))
+}
+
+fn placement_str(wp: &WINDOWPLACEMENT) -> String {
     let r = wp.rcNormalPosition;
     let max = wp.showCmd == SW_SHOWMAXIMIZED.0 as u32;
-    Some(format!(
+    format!(
         "{},{},{},{},{}",
         r.left,
         r.top,
         r.right - r.left,
         r.bottom - r.top,
         max as u8
-    ))
+    )
 }
 
 /// Odtworzenie polozenia zapisanego przez `placement_string`. `show = false`
