@@ -145,6 +145,8 @@ pub enum Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleAction {
     EditTitle,
+    /// Pelny ekran (jak `F11`) - pierwszy z przyciskow, najdalej od `Close`.
+    Fullscreen,
     Minimize,
     Maximize,
     Close,
@@ -162,6 +164,7 @@ pub struct UiState<'a> {
     pub zoom: f32,
     pub view_locked: bool,
     pub maximized: bool,
+    pub fullscreen: bool,
     pub menu_open: bool,
 }
 
@@ -193,7 +196,7 @@ pub struct Toolbar {
     title_rect: Option<Rect>,
     tab_grip: Option<Rect>,
     /// Minimalizuj, maksymalizuj, zamknij.
-    win_btns: [Rect; 3],
+    win_btns: [Rect; 4],
     /// Uchwyt (2x3 kropki) tuz przy przyciskach okna - drugie miejsce do
     /// przesuwania okna, poza uchwytem zakladki tytulu.
     win_grip: Option<Rect>,
@@ -218,7 +221,7 @@ impl Toolbar {
             title_hot: None,
             title_rect: None,
             tab_grip: None,
-            win_btns: [Rect::ZERO; 3],
+            win_btns: [Rect::ZERO; 4],
             win_grip: None,
             lock_pc: Rect::ZERO,
         }
@@ -229,9 +232,12 @@ impl Toolbar {
         self.dock == Dock::Top
     }
 
-    /// Zakladki wiszace nad canvasem sa na ekranie.
+    /// Zakladki wiszace nad canvasem sa na ekranie. W pelnym ekranie (`chrome`
+    /// wylaczony) chodza razem z paskiem: przy krawedzi wyjezdzaja, po chwili
+    /// bezczynnosci znikaja - inaczej z pelnego ekranu nie dalo by sie wyjsc
+    /// niczym poza klawiatura.
     fn tabs_shown(&self) -> bool {
-        self.chrome && !self.absorbs()
+        !self.absorbs() && (self.chrome || self.visible)
     }
 
     /// `w`, `h` - rozmiar okna w pikselach, `scale` - DPI monitora / 96.
@@ -266,14 +272,16 @@ impl Toolbar {
         ]);
 
         let horizontal = self.dock.horizontal();
-        let absorbs = self.dock == Dock::Top && self.chrome;
+        // Pasek u gory wchlania tytul i przyciski okna takze w pelnym ekranie -
+        // tam pokazuje je razem ze soba.
+        let absorbs = self.absorbs();
         // Elementy okna w pasku u gory: od prawej przyciski okna i ich uchwyt,
         // a dopiero przed nimi koniec paska - uchwyt paska i kotwica `LockPc`.
         // W innych dokach ta dwojka siedzi na samym koncu paska.
         if absorbs {
             let btn = px(WIN_BTN_W);
             let mut x = w;
-            for i in [2usize, 1, 0] {
+            for i in [3usize, 2, 1, 0] {
                 x -= btn;
                 self.win_btns[i] = Rect {
                     x,
@@ -396,12 +404,6 @@ impl Toolbar {
                 });
                 self.tab_grip = None;
             }
-            Dock::Top => {
-                self.win_btns = [Rect::ZERO; 3];
-                self.win_grip = None;
-                self.title_rect = None;
-                self.tab_grip = None;
-            }
             _ => self.layout_tabs(),
         }
     }
@@ -422,13 +424,6 @@ impl Toolbar {
     /// rogu - z takim samym uchwytem po lewej stronie przyciskow.
     fn layout_tabs(&mut self) {
         let (w, _) = self.view;
-        if !self.chrome {
-            self.win_btns = [Rect::ZERO; 3];
-            self.win_grip = None;
-            self.title_rect = None;
-            self.tab_grip = None;
-            return;
-        }
         let (tab_h, grip, btn) = (self.px(TAB_H), self.px(TAB_GRIP_W), self.px(WIN_BTN_W));
         let tw = self.tab_width();
         let tx = ((w - tw) * 0.5).round();
@@ -444,7 +439,7 @@ impl Toolbar {
             w: tw - grip - self.px(8.0),
             h: tab_h,
         });
-        for (i, k) in [3.0f32, 2.0, 1.0].iter().enumerate() {
+        for (i, k) in [4.0f32, 3.0, 2.0, 1.0].iter().enumerate() {
             self.win_btns[i] = Rect {
                 x: w - btn * k,
                 y: 0.0,
@@ -453,7 +448,7 @@ impl Toolbar {
             };
         }
         self.win_grip = Some(Rect {
-            x: w - btn * 3.0 - grip,
+            x: w - btn * 4.0 - grip,
             y: 0.0,
             w: grip,
             h: tab_h,
@@ -549,14 +544,15 @@ impl Toolbar {
         Some(Rect {
             x: first.x - grip,
             y: 0.0,
-            w: first.w * 3.0 + grip,
+            w: first.w * 4.0 + grip,
             h: self.px(TAB_H),
         })
     }
 
-    /// Czy elementy okna sa w tej chwili na ekranie (zakladki albo widoczny pasek u gory).
+    /// Czy elementy okna sa w tej chwili na ekranie (zakladki albo widoczny pasek
+    /// u gory). W pelnym ekranie tylko razem z paskiem.
     fn window_controls_shown(&self) -> bool {
-        self.chrome && (!self.absorbs() || self.visible)
+        (self.chrome && !self.absorbs()) || self.visible
     }
 
     /// Element okna pod punktem (piksele okna).
@@ -569,6 +565,7 @@ impl Toolbar {
             return None;
         }
         for (i, a) in [
+            TitleAction::Fullscreen,
             TitleAction::Minimize,
             TitleAction::Maximize,
             TitleAction::Close,
@@ -720,8 +717,11 @@ impl Toolbar {
                 r: 10.0 * k,
             });
         }
-        for g in [self.tab_grip, self.win_grip].into_iter().flatten() {
-            grip_dots(g, FG_DIM, k, out);
+        // Uchwyty przesuwania okna tylko poza pelnym ekranem: tam nie maja co robic.
+        if self.chrome {
+            for g in [self.tab_grip, self.win_grip].into_iter().flatten() {
+                grip_dots(g, FG_DIM, k, out);
+            }
         }
         self.build_title(s, out);
         self.build_win_buttons(s, out);
@@ -776,6 +776,10 @@ impl Toolbar {
     fn build_win_buttons(&self, s: &UiState, out: &mut Vec<UiPrim>) {
         let k = self.scale;
         for (i, (a, glyph)) in [
+            (
+                TitleAction::Fullscreen,
+                if s.fullscreen { "⧉" } else { "⛶" },
+            ),
             (TitleAction::Minimize, "—"),
             (TitleAction::Maximize, if s.maximized { "❐" } else { "☐" }),
             (TitleAction::Close, "✕"),
@@ -1098,9 +1102,10 @@ impl Toolbar {
             }
         }
         // Pasek u gory wchlania tytul, uchwyt i przyciski okna.
-        if self.absorbs() && self.chrome {
+        if self.absorbs() {
             self.build_title(s, out);
-            if let Some(g) = self.win_grip {
+            // W pelnym ekranie okna nie ma po czym przesuwac - uchwytu nie ma.
+            if let Some(g) = self.win_grip.filter(|_| self.chrome) {
                 grip_dots(g, FG_DIM, k, out);
             }
             self.build_win_buttons(s, out);
@@ -1143,9 +1148,18 @@ mod tests {
         );
         let grip_w = px(TAB_GRIP_W, S);
         // Uchwyt przy przyciskach: tuz na lewo od trzech przyciskow.
-        let win_x = 1400.0 - px(WIN_BTN_W, S) * 3.0;
+        // Cztery przyciski: pelny ekran, minimalizuj, maksymalizuj, zamknij.
+        let btn = px(WIN_BTN_W, S);
+        let win_x = 1400.0 - btn * 4.0;
         assert!(t.caption_hit(win_x - grip_w * 0.5, 25.0));
-        assert_eq!(t.title_hit(win_x + 5.0, 25.0), Some(TitleAction::Minimize));
+        assert_eq!(
+            t.title_hit(win_x + 5.0, 25.0),
+            Some(TitleAction::Fullscreen)
+        );
+        assert_eq!(
+            t.title_hit(win_x + btn + 5.0, 25.0),
+            Some(TitleAction::Minimize)
+        );
         assert_eq!(t.title_hit(1395.0, 25.0), Some(TitleAction::Close));
         // Uchwyt zakladki tytulu: poczatek zakladki wysrodkowanej w oknie.
         let tab_w = t.tab_width();
@@ -1176,8 +1190,15 @@ mod tests {
         t.visible = true;
         t.layout(1400.0, 1300.0, S, 6);
         assert_eq!(t.title_hit(1395.0, 30.0), Some(TitleAction::Close));
-        let win_x = 1400.0 - px(WIN_BTN_W, S) * 3.0;
-        assert_eq!(t.title_hit(win_x + 5.0, 30.0), Some(TitleAction::Minimize));
+        let win_x = 1400.0 - px(WIN_BTN_W, S) * 4.0;
+        assert_eq!(
+            t.title_hit(win_x + 5.0, 30.0),
+            Some(TitleAction::Fullscreen)
+        );
+        assert_eq!(
+            t.title_hit(win_x + px(WIN_BTN_W, S) + 5.0, 30.0),
+            Some(TitleAction::Minimize)
+        );
         assert!(t.caption_hit(win_x - px(TAB_GRIP_W, S) * 0.5, 30.0));
         // Koniec paska: uchwyt przesuwania paska, przed nim klodka komputera.
         let bar_end = win_x - px(TAB_GRIP_W, S) - px(20.0, S);
@@ -1201,5 +1222,26 @@ mod tests {
         t.layout(1000.0, 1000.0, 2.0, 6);
         assert_eq!(t.bar_rect().w, one * 2.0);
         assert_eq!(t.bar_rect().w, 96.0);
+    }
+
+    /// Pelny ekran gasi chrome, ale przyciski okna musza chodzic razem z paskiem:
+    /// inaczej `⛶` byloby pulapka - wejscie bez wyjscia inaczej niz klawiatura.
+    #[test]
+    fn w_pelnym_ekranie_przyciski_okna_chodza_z_paskiem() {
+        let mut t = Toolbar::new(Dock::Left);
+        t.chrome = false;
+        t.layout(1400.0, 1300.0, S, 6);
+        let btn = px(WIN_BTN_W, S);
+        let (close_x, full_x) = (1400.0 - btn * 0.5, 1400.0 - btn * 3.5);
+        assert_eq!(
+            t.title_hit(close_x, 18.0),
+            None,
+            "schowany pasek - bez okna"
+        );
+        t.visible = true;
+        assert_eq!(t.title_hit(close_x, 18.0), Some(TitleAction::Close));
+        assert_eq!(t.title_hit(full_x, 18.0), Some(TitleAction::Fullscreen));
+        // Okna na pelnym ekranie nie ma po czym przesuwac - uchwyty nie lapia.
+        assert!(!t.caption_hit(full_x - px(TAB_GRIP_W, S), 18.0));
     }
 }

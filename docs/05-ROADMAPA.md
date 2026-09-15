@@ -200,6 +200,10 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       wypełnia się po wymianie operacji
 - [x] **Pasek jako pasek tytułowy** (2026-09-15): puste miejsce paska w każdym doku
       przesuwa okno (`HTCAPTION`); drugi uchwyt ⠿ przy przyciskach okna.
+- [x] **Przycisk pełnego ekranu ⛶** przy minimalizuj/maksymalizuj/zamknij
+      (2026-09-15). W pełnym ekranie zakładki (tytuł i przyciski) chodzą razem
+      z paskiem — wjeżdżają przy krawędzi, znikają po bezczynności — żeby dało się
+      z niego wyjść bez `F11`; uchwyty przesuwania okna są tam wygaszone.
 - [x] **Kłódka widoku**: zablokowany = kolumna wyśrodkowana (bezwzględny środek
       notatki), zoom wolno, scroll w bok nie; odblokowany = canvas nieskończony
       w osi X. Naprawia „odblokowanie" scrolla w bok przez rysowanie po oddaleniu.

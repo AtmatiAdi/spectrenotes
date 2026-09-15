@@ -938,6 +938,7 @@ impl App {
             zoom: self.cam.zoom,
             view_locked: self.view_locked,
             maximized: window::is_maximized(self.hwnd),
+            fullscreen: self.fullscreen.is_active(),
             menu_open: self.menu.open,
         }
     }
@@ -993,6 +994,7 @@ impl App {
                     let _ = SetFocus(Some(self.hwnd));
                 }
             }
+            TitleAction::Fullscreen => self.toggle_fullscreen(),
             TitleAction::Minimize => unsafe {
                 let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
             },
