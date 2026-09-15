@@ -490,6 +490,11 @@ impl Toolbar {
         self.dock_rect(self.dock)
     }
 
+    /// Grubosc paska w pikselach fizycznych - tyle zajmuje przy swojej krawedzi.
+    pub fn thickness(&self) -> f32 {
+        self.px(BAR_THICK)
+    }
+
     fn in_edge_zone(&self, x: f32, y: f32) -> bool {
         let (w, h) = self.view;
         let edge = self.px(EDGE_ZONE);

@@ -200,6 +200,11 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       wypełnia się po wymianie operacji
 - [x] **Pasek jako pasek tytułowy** (2026-09-15): puste miejsce paska w każdym doku
       przesuwa okno (`HTCAPTION`); drugi uchwyt ⠿ przy przyciskach okna.
+- [x] **Panel menu omija pasek narzędzi** (2026-09-15): z lewej staje obok niego,
+      u góry/u dołu za nim; ☰ zostaje klikalny (drugie dotknięcie zamyka), a otwarte
+      menu trzyma pasek na ekranie — widać, co robią ustawienia doku i przypięcia.
+      Miniatura dostała też zapas nad treścią: kreska leżąca dokładnie na górnej
+      krawędzi treści wypadała za kadrem i kafelek wyglądał na pusty.
 - [x] **Przycisk pełnego ekranu ⛶** przy minimalizuj/maksymalizuj/zamknij
       (2026-09-15). W pełnym ekranie zakładki (tytuł i przyciski) chodzą razem
       z paskiem — wjeżdżają przy krawędzi, znikają po bezczynności — żeby dało się

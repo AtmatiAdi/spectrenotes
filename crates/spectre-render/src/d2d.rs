@@ -304,6 +304,8 @@ const GEO_CACHE_BUDGET: usize = 6_000_000;
 const GEO_ZOOM_TOL: f32 = 1.5;
 /// Najcienszа kreska w miniaturze, w jej pikselach.
 const THUMB_MIN_PX: f32 = 1.2;
+/// Zapas nad trescia w kadrze miniatury, w jej pikselach.
+const THUMB_TOP_MARGIN_PX: f32 = 3.0;
 
 impl Renderer {
     pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
@@ -583,7 +585,12 @@ impl Renderer {
             return Ok(());
         }
         let zoom = w as f32 / COLUMN_W;
-        let top = doc.content_bbox().map_or(0.0, |b| b.min_y.max(0.0));
+        // Kadr zaczyna sie **nad** trescia: kreska lezaca dokladnie na jej gornej
+        // krawedzi wypadala pol piksela za kadrem i kafelek wygladal na pusty.
+        let margin = THUMB_TOP_MARGIN_PX / zoom;
+        let top = doc
+            .content_bbox()
+            .map_or(0.0, |b| (b.min_y - margin).max(0.0));
         let cam = Camera {
             scroll_x: 0.0,
             scroll_y: top,

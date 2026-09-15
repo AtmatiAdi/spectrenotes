@@ -359,7 +359,13 @@ impl App {
         toolbar.visible = toolbar_pin;
         toolbar.layout(w as f32, h as f32, ui_scale, PALETTE.len());
         let mut menu = Menu::new();
-        menu.layout(w as f32, h as f32, ui_scale);
+        menu.layout(
+            w as f32,
+            h as f32,
+            ui_scale,
+            toolbar.dock,
+            toolbar.thickness(),
+        );
         let data_dir = Config::path()
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -560,13 +566,20 @@ impl App {
             }
             self.menu_tap(h);
         } else {
+            // Przycisk ☰ jest teraz widoczny obok panelu, wiec sam musi decydowac
+            // o zamknieciu: gdyby zadzialala tu jeszcze regula "dotkniecie poza
+            // panelem zamyka", oba przelaczenia znioslyby sie i menu by zostalo.
+            let on_bar = self.toolbar.pointer_inside(x, y);
+            let menu_btn = on_bar && self.toolbar.hit(x, y) == Some(Action::Menu);
             if self.menu.open {
                 // Dotkniecie poza panelem zamyka go i od razu dziala
                 // jak zwykle - bez drugiego tapniecia.
                 self.commit_folder_edit();
-                self.menu.toggle();
+                if !menu_btn {
+                    self.menu.toggle();
+                }
             }
-            if self.toolbar.pointer_inside(x, y) {
+            if on_bar {
                 self.toolbar_tap(x, y);
             } else {
                 if self.toolbar.title_edit.is_some() {
@@ -1197,7 +1210,13 @@ impl App {
         self.renderer.set_ui_scale(ui_scale);
         self.toolbar
             .layout(w as f32, h as f32, ui_scale, PALETTE.len());
-        self.menu.layout(w as f32, h as f32, ui_scale);
+        self.menu.layout(
+            w as f32,
+            h as f32,
+            ui_scale,
+            self.toolbar.dock,
+            self.toolbar.thickness(),
+        );
     }
 
     fn commit_folder_edit(&mut self) {
@@ -1218,6 +1237,8 @@ impl App {
         if self.toolbar.drop_at(x, y, PALETTE.len()) {
             self.config.set("dock", self.toolbar.dock.name());
             self.config.save();
+            // Panel menu omija pasek, wiec musi poznac nowa krawedz.
+            self.relayout();
         }
         self.toolbar.visible = true;
         self.arm_ui_timer();
@@ -3014,7 +3035,9 @@ pub unsafe extern "system" fn wndproc(
                 }
                 TIMER_UI => {
                     let _ = KillTimer(Some(hwnd), TIMER_UI);
-                    if app.toolbar.idle(app.last_screen) {
+                    // Otwarte menu trzyma pasek na ekranie: panel wychodzi
+                    // z przycisku ☰ i tym samym przyciskiem ma sie zamykac.
+                    if !app.menu.open && app.toolbar.idle(app.last_screen) {
                         app.render();
                     } else if app.toolbar.visible {
                         app.arm_ui_timer();

@@ -120,7 +120,11 @@ w kluczu `Run` użytkownika, aplikacja startuje z `--tray`, czyli schowana w tra
 Trwałe wartości lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba (kod w przeglądarce albo
 wklejony token — GitHub nie przyjmuje już logowania hasłem, więc login jest przez
 przeglądarkę lub PAT), stan synchronizacji i budżetu ruchu, „Synchronizuj teraz".
-Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go.
+Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go. **Nigdy nie zakrywa paska
+narzędzi**: przy lewej krawędzi staje obok niego, u góry i u dołu zaczyna się za nim
+(przy prawej pasek i tak nie jest po drodze). Dzięki temu ☰ zostaje pod palcem —
+drugie dotknięcie zamyka menu — a ustawienia paska (krawędź doku, przypięcie) widać
+od razu na żywym pasku. Otwarte menu trzyma pasek na ekranie, mimo Z7.
 
 **Synchronizacja (Etap 5).** Space jest repozytorium git — `libgit2` siedzi w binarce,
 niczego nie trzeba instalować (ADR 0003/0006). Aplikacja sama robi `commit` 10 s po

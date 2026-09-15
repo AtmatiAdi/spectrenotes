@@ -15,7 +15,7 @@ use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
 use crate::sync::{Mark, Status as SyncStatus};
-use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
+use crate::ui::{Dock, Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
 /// Szerokosc miniatury w kafelku dla danej skali DPI - aplikacja buduje bitmape
@@ -240,6 +240,10 @@ pub struct Menu {
     view: (f32, f32),
     /// Skala DPI monitora (1.0 = 96 DPI) z ostatniego `layout`.
     scale: f32,
+    /// Krawedz i grubosc paska narzedzi z ostatniego `layout` - panel ma go
+    /// omijac, nie zakrywac.
+    dock: Dock,
+    bar: f32,
     content_h: f32,
     /// Foldery w kolejnosci z ostatniego `build` - `MoveTo(i)` odnosi sie do niej.
     folder_names: Vec<String>,
@@ -262,24 +266,40 @@ impl Menu {
             view: (0.0, 0.0),
             content_h: 0.0,
             scale: 1.0,
+            dock: Dock::Left,
+            bar: 0.0,
             folder_names: Vec::new(),
         }
     }
 
     /// `w`, `h` - rozmiar okna w pikselach, `scale` - DPI monitora / 96; wymiary
-    /// panelu sa liczone z niej na fizyczne piksele jak w `ui.rs`.
-    pub fn layout(&mut self, w: f32, h: f32, scale: f32) {
+    /// panelu sa liczone z niej na fizyczne piksele jak w `ui.rs`. `dock` i `bar`
+    /// (krawedz i grubosc paska narzedzi) mowia, ktorego pasa okna panel ma nie
+    /// zajmowac.
+    pub fn layout(&mut self, w: f32, h: f32, scale: f32, dock: Dock, bar: f32) {
         self.view = (w, h);
         self.scale = scale;
+        self.dock = dock;
+        self.bar = bar;
     }
 
+    /// Panel nigdy nie zakrywa paska narzedzi. Przy lewej krawedzi staje **obok**
+    /// niego: przycisk ☰ zostaje na wierzchu, wiec drugie dotkniecie zamyka menu -
+    /// i widac, co robia ustawienia paska (dok, przypiecie). U gory i u dolu panel
+    /// zaczyna sie za paskiem; przy prawej krawedzi nie ma go po co ruszac.
     pub fn panel_rect(&self) -> Rect {
         let k = self.scale;
+        let (x, top, bottom) = match self.dock {
+            Dock::Left => (self.bar, 0.0, 0.0),
+            Dock::Top => (0.0, self.bar, 0.0),
+            Dock::Bottom => (0.0, 0.0, self.bar),
+            Dock::Right => (0.0, 0.0, 0.0),
+        };
         Rect {
-            x: 0.0,
-            y: 0.0,
-            w: (PANEL_W * k).min(self.view.0 - 24.0 * k).max(120.0 * k),
-            h: self.view.1,
+            x,
+            y: top,
+            w: (PANEL_W * k).min(self.view.0 - x - 24.0 * k).max(120.0 * k),
+            h: (self.view.1 - top - bottom).max(0.0),
         }
     }
 
@@ -1612,5 +1632,35 @@ pub fn human_age(secs: u64) -> String {
         format!("{} h ago", secs / 3600)
     } else {
         format!("{} days ago", secs / 86_400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Panel omija pasek narzedzi, zeby przycisk ☰ zostal klikalny (drugie
+    /// dotkniecie zamyka menu) i zeby bylo widac, co robia ustawienia paska.
+    #[test]
+    fn panel_nie_zakrywa_paska_narzedzi() {
+        let (w, h, bar) = (1400.0, 1000.0, 60.0);
+        let mut m = Menu::new();
+
+        m.layout(w, h, 1.25, Dock::Left, bar);
+        let p = m.panel_rect();
+        assert_eq!((p.x, p.y, p.h), (bar, 0.0, h), "z lewej: obok paska");
+
+        m.layout(w, h, 1.25, Dock::Top, bar);
+        let p = m.panel_rect();
+        assert_eq!((p.x, p.y, p.h), (0.0, bar, h - bar), "u gory: pod paskiem");
+
+        m.layout(w, h, 1.25, Dock::Bottom, bar);
+        let p = m.panel_rect();
+        assert_eq!((p.x, p.y, p.h), (0.0, 0.0, h - bar), "u dolu: nad paskiem");
+
+        // Z prawej pasek i tak nie jest po drodze - panel zostaje przy krawedzi.
+        m.layout(w, h, 1.25, Dock::Right, bar);
+        let p = m.panel_rect();
+        assert_eq!((p.x, p.y, p.h), (0.0, 0.0, h));
     }
 }
