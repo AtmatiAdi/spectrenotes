@@ -41,6 +41,18 @@ use crate::live::wire::{next_frame, Frame, Msg, SharedNote, PROTO_VERSION};
 
 pub const MCAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 94, 94);
 pub const MCAST_PORT: u16 = 47941;
+/// Port grupy multicast tego procesu. Testy jednostkowe biora sasiedni:
+/// uruchomiona na tej samej maszynie prawdziwa aplikacja slyszalaby ich
+/// beacony, laczyla sie z wezlami testowymi i psula asercje (16 IX 2026:
+/// `heartbeat_zrzuca_milczacego_peera` dostal Hello od "adi@laptop").
+fn mcast_port() -> u16 {
+    if cfg!(test) {
+        MCAST_PORT + 1
+    } else {
+        MCAST_PORT
+    }
+}
+
 const BEACON_MAGIC: &[u8; 8] = b"SPCTLV2\0";
 const BEACON_EVERY: Duration = Duration::from_secs(2);
 /// Po nieudanym polaczeniu do tego samego peera probujemy dopiero po tym czasie.
@@ -301,7 +313,7 @@ impl Beacon {
 fn multicast_socket() -> io::Result<UdpSocket> {
     let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     s.set_reuse_address(true)?;
-    s.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MCAST_PORT).into())?;
+    s.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, mcast_port()).into())?;
     s.join_multicast_v4(&MCAST_ADDR, &Ipv4Addr::UNSPECIFIED)?;
     s.set_multicast_loop_v4(true)?;
     s.set_read_timeout(Some(Duration::from_millis(500)))?;
@@ -309,7 +321,7 @@ fn multicast_socket() -> io::Result<UdpSocket> {
 }
 
 fn beacon_loop(udp: UdpSocket, beacon: Vec<u8>, discovering: Arc<AtomicBool>, tx: Sender<Cmd>) {
-    let target = SocketAddrV4::new(MCAST_ADDR, MCAST_PORT);
+    let target = SocketAddrV4::new(MCAST_ADDR, mcast_port());
     let mut last_sent: Option<Instant> = None;
     let mut buf = [0u8; 512];
     loop {
