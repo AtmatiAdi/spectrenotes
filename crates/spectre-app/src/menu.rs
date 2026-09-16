@@ -212,6 +212,8 @@ pub struct UpdateView {
     pub line: String,
     /// Etykieta przycisku `MenuHit::Update`; `None` = bez przycisku (trwa sprawdzanie).
     pub action: Option<&'static str>,
+    /// Druga linia (naglowek opisu wydania), gdy jest.
+    pub detail: Option<String>,
     /// Postep pobierania 0..1 - rysowany paskiem pod wierszem.
     pub progress: Option<f32>,
     /// Jest opis wydania do otwarcia (`MenuHit::ReleaseNotes`).
@@ -980,6 +982,9 @@ impl Menu {
         y += self.section(list, y, "Application", out);
         y += self.line(list, y, &format!("SpectreNotes {}", s.version), FG, out);
         y += self.line(list, y, &s.update.line, FG_DIM, out);
+        if let Some(d) = &s.update.detail {
+            y += self.line(list, y, d, FG_DIM, out);
+        }
         if let Some(p) = s.update.progress {
             let (bx, bw) = (list.x + (PAD * k) + 8.0 * k, list.w - PAD * 2.0 * k - 8.0 * k);
             out.push(UiPrim::Rect {

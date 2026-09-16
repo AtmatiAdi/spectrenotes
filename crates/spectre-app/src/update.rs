@@ -206,7 +206,11 @@ fn worker(ctx: Ctx, jobs: Receiver<Job>, events: Sender<Event>) {
     // Wydanie z ostatniego sprawdzenia - `Download` odnosi sie do niego.
     let mut latest: Option<Release> = None;
     while let Ok(job) = jobs.recv() {
-        let token = secret::load(&ctx.token_path);
+        // Token logowania GitHub; `GITHUB_TOKEN` w srodowisku jako zapas (jak w
+        // `gh` i narzedziach git) - m.in. gdy token logowania jest PAT-em
+        // ograniczonym do repozytorium notatek.
+        let token = secret::load(&ctx.token_path)
+            .or_else(|| std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty()));
         let client = Client::new(&ctx.repo, token.as_deref());
         let ev = match job {
             Job::Check => match client.latest() {

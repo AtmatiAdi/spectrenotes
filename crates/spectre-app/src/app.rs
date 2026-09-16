@@ -1609,8 +1609,16 @@ impl App {
                     .filter(|a| a != spectre_shell_win::autostart::TRAY_ARG)
                     .collect();
                 self.relaunch = Some(args);
+                // Nie `DestroyWindow` tutaj: jestesmy w srodku obslugi komunikatu
+                // z `&mut App`, a `WM_DESTROY` zwalnia `App`. Zamkniecie idzie
+                // osobnym komunikatem, po powrocie z tej sciezki.
                 unsafe {
-                    let _ = DestroyWindow(self.hwnd);
+                    let _ = PostMessageW(
+                        Some(self.hwnd),
+                        spectre_shell_win::install::WM_QUIT_APP,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
                 }
             }
             Err(e) => {
@@ -1623,6 +1631,10 @@ impl App {
     /// Stan aktualizacji jako tekst dla menu.
     fn update_view(&self) -> menu::UpdateView {
         use spectre_update::human_bytes;
+        // Naglowek opisu wydania w osobnej linii; panel ma ~40 znakow szerokosci.
+        let headline = |i: &crate::update::Info| {
+            (!i.headline.is_empty()).then(|| one_line(&i.headline, 40))
+        };
         let checked = |m: Option<Mark>| match m {
             Some(m) => format!("checked {}", menu::human_age(m.age_s())),
             None => "not checked yet".to_string(),
@@ -1631,32 +1643,27 @@ impl App {
             UpdateState::Idle => menu::UpdateView {
                 line: checked(self.update.checked),
                 action: Some("Check for updates"),
+                detail: None,
                 progress: None,
                 notes: false,
             },
             UpdateState::Checking => menu::UpdateView {
                 line: "checking GitHub...".into(),
                 action: None,
+                detail: None,
                 progress: None,
                 notes: false,
             },
             UpdateState::UpToDate => menu::UpdateView {
                 line: format!("up to date - {}", checked(self.update.checked)),
                 action: Some("Check again"),
+                detail: None,
                 progress: None,
                 notes: false,
             },
             UpdateState::Available(i) => menu::UpdateView {
-                line: format!(
-                    "version {} available ({}){}",
-                    i.version,
-                    human_bytes(i.size),
-                    if i.headline.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" - {}", i.headline)
-                    }
-                ),
+                line: format!("version {} available ({})", i.version, human_bytes(i.size)),
+                detail: headline(i),
                 action: Some("Download"),
                 progress: None,
                 notes: true,
@@ -1669,6 +1676,7 @@ impl App {
                     human_bytes(*total)
                 ),
                 action: Some("Cancel"),
+                detail: headline(info),
                 progress: Some(if *total > 0 {
                     (*done as f32 / *total as f32).min(1.0)
                 } else {
@@ -1679,12 +1687,14 @@ impl App {
             UpdateState::Ready { info, .. } => menu::UpdateView {
                 line: format!("version {} downloaded and verified", info.version),
                 action: Some("Install and restart"),
+                detail: headline(info),
                 progress: Some(1.0),
                 notes: true,
             },
             UpdateState::Error(e) => menu::UpdateView {
                 line: format!("error: {}", one_line(e, 46)),
                 action: Some("Try again"),
+                detail: None,
                 progress: None,
                 notes: false,
             },
@@ -3246,6 +3256,9 @@ pub unsafe extern "system" fn wndproc(
                 TIMER_UPDATE => {
                     // Pierwszy raz po 20 s, potem co 6 h - ten sam timer, nowy odstep.
                     SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_EVERY_MS, None);
+                    // `.old.exe` po aktualizacji: na starcie stary proces mogl jeszcze
+                    // zyc (konczy sync) - druga proba, gdy juz na pewno go nie ma.
+                    spectre_shell_win::install::cleanup_old();
                     app.update.check();
                 }
                 TIMER_GIT => {
