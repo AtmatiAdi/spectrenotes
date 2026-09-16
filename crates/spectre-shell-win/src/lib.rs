@@ -6,8 +6,10 @@
 
 pub mod autostart;
 pub mod display;
+pub mod hash;
 pub mod http;
 pub mod image;
+pub mod install;
 pub mod pen;
 pub mod secret;
 pub mod shield;

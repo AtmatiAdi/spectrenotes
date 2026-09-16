@@ -108,6 +108,8 @@ pub enum Setting {
     WavesDim,
     /// Warstwa live w LAN (Etap 6) wl./wyl.
     Live,
+    /// Automatyczne sprawdzanie wydan na GitHubie.
+    UpdateCheck,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +124,11 @@ pub enum MenuHit {
     Login,
     Logout,
     SyncNow,
+    /// Przycisk aktualizacji - znaczenie zalezy od stanu (sprawdz / pobierz /
+    /// anuluj / zainstaluj), patrz `UpdateView::action`.
+    Update,
+    /// Otworz opis nowego wydania w przegladarce.
+    ReleaseNotes,
     /// Zaczyna wklejanie tokenu GitHub (PAT).
     PasteToken,
     /// Biezaca notatka: udostepnij w sieci / cofnij.
@@ -173,6 +180,10 @@ pub struct MenuState<'a> {
     pub sync: &'a SyncStatus,
     pub sync_last: &'a str,
     pub sync_busy: bool,
+    /// Wersja tej kompilacji i stan aktualizacji (sekcja "Application").
+    pub version: &'a str,
+    pub update: &'a UpdateView,
+    pub update_check: bool,
     /// Ostatnia udana wymiana z GitHubem (fetch/push), ostatni zapis na dysk
     /// i ostatnia wymiana operacji z peerem w LAN. Naglowek pokazuje jedna
     /// z nich (najmocniejsza dostepna) z licznikiem tykajacym co sekunde,
@@ -193,6 +204,18 @@ pub struct MenuState<'a> {
     pub offers: &'a [OfferView],
     /// Stale adresy peerow (Tailscale), w kolejnosci `MenuHit::Peer(i)`.
     pub peers: &'a [String],
+}
+
+/// Stan aktualizacji przetlumaczony na tekst (`app::update_view`).
+pub struct UpdateView {
+    /// Wiersz pod numerem wersji.
+    pub line: String,
+    /// Etykieta przycisku `MenuHit::Update`; `None` = bez przycisku (trwa sprawdzanie).
+    pub action: Option<&'static str>,
+    /// Postep pobierania 0..1 - rysowany paskiem pod wierszem.
+    pub progress: Option<f32>,
+    /// Jest opis wydania do otwarcia (`MenuHit::ReleaseNotes`).
+    pub notes: bool,
 }
 
 /// Jedna cudza notatka na liscie "Shared on LAN".
@@ -951,6 +974,68 @@ impl Menu {
             s if s < 60 => format!("{s} s"),
             s => format!("{} min", s / 60),
         };
+        // "Application" na gorze: wersja, stan aktualizacji i przycisk,
+        // ktory znaczy to, co w danej chwili ma sens (sprawdz / pobierz /
+        // anuluj / zainstaluj). Pasek postepu tylko podczas pobierania.
+        y += self.section(list, y, "Application", out);
+        y += self.line(list, y, &format!("SpectreNotes {}", s.version), FG, out);
+        y += self.line(list, y, &s.update.line, FG_DIM, out);
+        if let Some(p) = s.update.progress {
+            let (bx, bw) = (list.x + (PAD * k) + 8.0 * k, list.w - PAD * 2.0 * k - 8.0 * k);
+            out.push(UiPrim::Rect {
+                x: bx,
+                y: y + 4.0 * k,
+                w: bw,
+                h: 6.0 * k,
+                color: LINE,
+                r: 3.0 * k,
+            });
+            out.push(UiPrim::Rect {
+                x: bx,
+                y: y + 4.0 * k,
+                w: bw * p.clamp(0.0, 1.0),
+                h: 6.0 * k,
+                color: ACCENT,
+                r: 3.0 * k,
+            });
+            y += 16.0 * k;
+        }
+        y += 6.0 * k;
+        if let Some(label) = s.update.action {
+            y += self.button(list, y, MenuHit::Update, label, FG, out);
+        }
+        if s.update.notes {
+            y += self.action_row(list, y, MenuHit::ReleaseNotes, "What's new (opens browser)", FG_DIM, out);
+        }
+        {
+            let r = Rect {
+                x: list.x,
+                y,
+                w: list.w,
+                h: (ROW_H * k),
+            };
+            self.row(MenuHit::Setting(Setting::UpdateCheck), r, out, false);
+            out.push(UiPrim::Text {
+                x: r.x + (PAD * k) + 8.0 * k,
+                y: r.y,
+                w: r.w - PAD * 2.0 * k - 90.0 * k,
+                h: r.h,
+                text: "Check for updates automatically".to_string(),
+                color: FG,
+                font: UiFont::Ui,
+            });
+            out.push(UiPrim::Text {
+                x: r.x + r.w - (PAD * k) - 90.0 * k,
+                y: r.y,
+                w: 82.0 * k,
+                h: r.h,
+                text: on_off(s.update_check).to_string(),
+                color: ACCENT,
+                font: UiFont::Ui,
+            });
+            y += ROW_H * k;
+        }
+        y += 10.0 * k;
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.
         let groups: [(&str, Vec<SettingRow>); 6] = [

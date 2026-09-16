@@ -613,6 +613,7 @@ dependencies = [
  "spectre-render",
  "spectre-shell-win",
  "spectre-sync",
+ "spectre-update",
  "windows",
 ]
 
@@ -666,6 +667,23 @@ dependencies = [
  "socket2",
  "spectre-core",
  "spectre-proto",
+]
+
+[[package]]
+name = "spectre-update"
+version = "0.1.0"
+dependencies = [
+ "spectre-shell-win",
+ "windows",
+]
+
+[[package]]
+name = "spectrenotes-setup"
+version = "0.1.0"
+dependencies = [
+ "spectre-shell-win",
+ "spectre-update",
+ "windows",
 ]
 
 [[package]]

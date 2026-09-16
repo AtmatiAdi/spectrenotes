@@ -279,7 +279,11 @@ Do rozstrzygnięcia (lista otwarta — dopisywać):
 
 ## Etap 7 — Dystrybucja
 
-- Updater z GitHub Releases, atomowa podmiana przy restarcie
+- [x] Wydania: `release.ps1` (wersja → testy → build → tag → GitHub Release, 3 ostatnie)
+- [x] Instalator `SpectreNotes-Setup.exe` (pobiera najnowsze wydanie, SHA-256, `--install`)
+- [x] Updater w aplikacji: sprawdzanie w tle, Download z postępem, „Install and restart"
+      (podmiana przez rename działającej binarki — 06-DYSTRYBUCJA)
+- [ ] Publiczne repozytorium wydań (żeby inni instalowali bez tokenu)
 - Podpis kodu (patrz niżej — otwarty problem)
 - Instrukcja dołączenia kogoś do space'u
 

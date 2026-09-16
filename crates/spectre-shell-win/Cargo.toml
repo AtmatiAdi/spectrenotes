@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 spectre-proto = { path = "../spectre-proto" }
@@ -31,5 +32,6 @@ features = [
     "Win32_System_Registry",
     "Win32_System_Console",
     "Win32_System_Shutdown",
+    "Win32_Storage_FileSystem",
     "Win32_System_SystemInformation",
 ]

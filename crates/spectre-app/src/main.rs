@@ -23,11 +23,12 @@ mod lan;
 mod live;
 mod menu;
 mod sync;
+mod update;
 mod ui;
 
 use std::path::PathBuf;
 
-use spectre_shell_win::window;
+use spectre_shell_win::{install, window};
 
 fn main() -> windows::core::Result<()> {
     if std::env::args().any(|a| a == "--bench" || a == "--fill-white" || a == "--console") {
@@ -47,6 +48,20 @@ fn main() -> windows::core::Result<()> {
             windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
         });
     }
+    // `--install`: skopiuj te binarke do %LOCALAPPDATA%SpectreNotespp, zrob skrot
+    // i wpis odinstalowania, uruchom zainstalowana kopie. Uzywa go instalator
+    // (`SpectreNotes-Setup.exe`) po pobraniu wydania; dziala tez recznie.
+    if std::env::args().any(|a| a == "--install") {
+        return match install::install_self(spectre_update::CURRENT) {
+            Ok(exe) => install::spawn(&exe, &[]).map_err(io_fail),
+            Err(e) => Err(io_fail(e)),
+        };
+    }
+    if std::env::args().any(|a| a == "--uninstall") {
+        return install::uninstall_self().map_err(io_fail);
+    }
+    // Po aktualizacji: stara binarka lezy obok jako `.old.exe`.
+    install::cleanup_old();
     window::init_process();
 
     let space_dir = std::env::args()
@@ -120,4 +135,8 @@ fn fill_white(space_dir: &std::path::Path) -> std::io::Result<()> {
     )?;
     println!("notatka {id}: {n} bialych pasow, {}", space_dir.display());
     Ok(())
+}
+
+fn io_fail(e: std::io::Error) -> windows::core::Error {
+    windows::core::Error::new(windows::Win32::Foundation::E_FAIL, e.to_string())
 }

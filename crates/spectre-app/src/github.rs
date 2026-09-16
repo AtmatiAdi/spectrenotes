@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use spectre_shell_win::http;
 use spectre_sync::GitError;
+pub use spectre_update::json::{json_str, json_u64};
 
 /// OAuth App "SpectreNotes" - do uzupelnienia po rejestracji na GitHubie
 /// (Settings -> Developer settings -> OAuth Apps, "Enable Device Flow").
@@ -243,58 +244,6 @@ pub fn repo_name(space_dir_name: &str) -> String {
     )
 }
 
-/// Wartosc tekstowa pola `"key": "..."` z plaskiego JSON-a (bez zagniezdzen
-/// o tej samej nazwie). Obsluguje `\"`, `\\`, `\/`, `\n`, `\uXXXX`.
-pub fn json_str(body: &str, key: &str) -> Option<String> {
-    let pat = format!("\"{key}\"");
-    let mut from = 0;
-    while let Some(i) = body[from..].find(&pat) {
-        let after = &body[from + i + pat.len()..];
-        let after = after.trim_start();
-        if let Some(rest) = after.strip_prefix(':') {
-            let rest = rest.trim_start();
-            if let Some(s) = rest.strip_prefix('"') {
-                let mut out = String::new();
-                let mut chars = s.chars();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '"' => return Some(out),
-                        '\\' => match chars.next()? {
-                            'n' => out.push('\n'),
-                            't' => out.push('\t'),
-                            'u' => {
-                                let hex: String = chars.by_ref().take(4).collect();
-                                if let Some(ch) =
-                                    u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
-                                {
-                                    out.push(ch);
-                                }
-                            }
-                            other => out.push(other),
-                        },
-                        c => out.push(c),
-                    }
-                }
-                return None;
-            }
-            return None;
-        }
-        from += i + pat.len();
-    }
-    None
-}
-
-pub fn json_u64(body: &str, key: &str) -> Option<u64> {
-    let pat = format!("\"{key}\"");
-    let i = body.find(&pat)?;
-    let rest = body[i + pat.len()..]
-        .trim_start()
-        .strip_prefix(':')?
-        .trim_start();
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
-}
-
 fn one_line(s: &str) -> String {
     s.lines()
         .find(|l| !l.trim().is_empty())
@@ -307,18 +256,6 @@ fn one_line(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn json_plaski() {
-        let body = r#"{"device_code":"abc\"d","user_code":"WDJB-MJHT","interval":5,"expires_in":899,"login":"AtmatiAdi","x":{"login":"inny"}}"#;
-        assert_eq!(json_str(body, "device_code").as_deref(), Some("abc\"d"));
-        assert_eq!(json_str(body, "user_code").as_deref(), Some("WDJB-MJHT"));
-        assert_eq!(json_u64(body, "interval"), Some(5));
-        assert_eq!(json_u64(body, "expires_in"), Some(899));
-        assert_eq!(json_str(body, "login").as_deref(), Some("AtmatiAdi"));
-        assert_eq!(json_str(body, "brak"), None);
-        assert_eq!(json_str(r#"{"a":"A\n"}"#, "a").as_deref(), Some("A\n"));
-    }
 
     #[test]
     fn nazwa_repo() {

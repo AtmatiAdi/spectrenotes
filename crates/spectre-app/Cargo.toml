@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "spectrenotes"
@@ -16,6 +17,7 @@ spectre-proto = { path = "../spectre-proto" }
 spectre-render = { path = "../spectre-render" }
 spectre-shell-win = { path = "../spectre-shell-win" }
 spectre-sync = { path = "../spectre-sync" }
+spectre-update = { path = "../spectre-update" }
 
 [dependencies.windows]
 version = "0.62"

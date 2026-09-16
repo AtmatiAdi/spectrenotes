@@ -2,64 +2,120 @@
 
 ## Postać dystrybucyjna
 
-Jeden przenośny `.exe`. Bez instalatora, bez runtime'u, bez wpisów w rejestrze.
-Konfiguracja i dane w `%APPDATA%\SpectreNotes\`, więc usunięcie aplikacji to
-skasowanie jednego pliku.
+Jeden `.exe` (`spectrenotes.exe`, ok. 2,5 MB): statyczna binarka Rusta,
+bez runtime'u. Działa przenośnie (uruchomiona skądkolwiek), a instalacja to
+ten sam plik skopiowany do katalogu użytkownika — bez uprawnień administratora:
 
-Statyczna binarka Rusta w profilu release z `lto = "thin"`, `codegen-units = 1`
-i `strip = true` powinna zmieścić się w kilkunastu megabajtach.
+| co | gdzie |
+|---|---|
+| binarka | `%LOCALAPPDATA%\SpectreNotes\app\spectrenotes.exe` |
+| skrót | menu Start bieżącego użytkownika (`SpectreNotes.lnk`) |
+| wpis „Zainstalowane aplikacje" | `HKCU\...\Uninstall\SpectreNotes` (odinstalowanie: `spectrenotes.exe --uninstall`) |
+| autostart (opcja w Settings) | `HKCU\...\Run` → `spectrenotes.exe --tray` |
+| **dane i konfiguracja** | `%APPDATA%\SpectreNotes\` — **instalacja i odinstalowanie ich nie dotykają** |
 
-## Aktualizacje przez git
+`spectrenotes.exe --install` robi całą instalację sam (zamyka działającą
+instancję, kopiuje się, tworzy skrót i wpis, uruchamia zainstalowaną kopię).
+Kod: `spectre-shell-win::install`.
 
-Aplikacja sprawdza tagi w repozytorium wydań (nie w repozytorium notatek — to są
-dwie różne rzeczy) i pobiera artefakt przypięty do tagu.
+## Wydania (GitHub Releases)
+
+Wydanie to tag `vX.Y.Z` w repozytorium (`repository` w `Cargo.toml` — jedno
+źródło prawdy, z niego bierze adres i aplikacja, i skrypt) z trzema zasobami
+o **stałych nazwach**, żeby `releases/latest/download/<nazwa>` był trwałym adresem:
+
+| zasób | co to |
+|---|---|
+| `spectrenotes.exe` | aplikacja |
+| `SpectreNotes-Setup.exe` | instalator (patrz niżej) |
+| `SHA256SUMS.txt` | sumy obu plików w formacie `sha256sum` |
 
 ```
-start aplikacji (albo raz na dobę, w tle)
-   → sprawdzenie najnowszego tagu
-   → pobranie artefaktu + weryfikacja sumy BLAKE3
-   → zapis obok biezacej binarki jako <nazwa>.new
-   → przy nastepnym starcie: atomowa podmiana i usuniecie starej
+.\release.ps1 -Bump patch            # 0.2.0 -> 0.2.1
+.\release.ps1 -Version 0.3.0 -Notes "..."
+.\release.ps1 -Bump minor -DryRun    # wszystko lokalnie, bez pushu i release'u
 ```
 
-Podmiana przy starcie, nie w trakcie działania — proces rezydentny (Z2) nie może
-sobie podmienić własnego pliku pod nogami. Aktualizacja nigdy nie przerywa pracy;
-w najgorszym razie czeka do następnego uruchomienia.
+Skrypt: podnosi `version` w `[workspace.package]`, `cargo test --workspace`,
+`cargo build --release`, liczy sumy, commituje „Wydanie vX.Y.Z", taguje, pushuje,
+`gh release create`, a na końcu **kasuje wydania starsze niż 3 ostatnie** (tagi
+zostają — to tylko referencje do commitów, a zasoby starych wydań nie są do
+niczego potrzebne). Wymaga czystego drzewa na `main` i zalogowanego `gh`.
+Opis wydania domyślnie to lista commitów od poprzedniego tagu `v*`.
 
-Kanał `stable` i `edge` jako dwa różne wzorce tagów, żeby dało się komuś dać
-wersję do testów bez ruszania wersji, na której się realnie notuje.
+Wersja binarki = `CARGO_PKG_VERSION` z workspace'u; aplikacja porównuje ją
+z tagiem najnowszego wydania (`spectre-update::Version`, semver bez sufiksów).
 
-## Rozdawanie aplikacji innym
+## Instalator
 
-Dołączenie kogoś do space'u to dwie rzeczy:
+`SpectreNotes-Setup.exe` (`tools/setup`) sam **nic nie zawiera**: pyta GitHub
+o najnowsze wydanie, pobiera `spectrenotes.exe` z paskiem postępu, sprawdza
+SHA-256 z `SHA256SUMS.txt` tego samego wydania i uruchamia pobrany plik
+z `--install`. Dzięki temu instalator się nie starzeje — ten sam plik pobrany
+pół roku temu zainstaluje bieżącą wersję. `--repo owner/repo` wskazuje inne
+repozytorium, `--token` (albo `GITHUB_TOKEN`) daje dostęp do prywatnego.
 
-1. dostęp do prywatnego repo GitHub (zaproszenie),
-2. jego węzeł w tej samej sieci Tailscale (dla warstwy live).
+## Aktualizacje w aplikacji
 
-Bez punktu 2 współpraca nadal działa, tylko przez gita — czyli z opóźnieniem
-rzędu sekund zamiast milisekund. To sensowny tryb degradacji, a nie awaria.
+```
+start + 20 s, potem co 6 h (albo przycisk w menu)
+   → GET /repos/<repo>/releases/latest   (spectre-update, WinHTTP, bez zależności)
+   → nowsza wersja?  → Settings → Application: "version X available (2.3 MB)  [Download]"
+   → Download        → pasek postępu, anulowanie; plik w %LOCALAPPDATA%\SpectreNotes\updates\
+   → weryfikacja SHA-256 (bez sumy nie instalujemy)
+   → [Install and restart]
+        spectrenotes.exe -> spectrenotes.old.exe    (rename działa na uruchomionym pliku)
+        nowy plik -> spectrenotes.exe
+        zapis stanu, zamknięcie, start nowej binarki z tym samym space'em
+   → nowa instancja na starcie kasuje spectrenotes.old.exe
+```
+
+Wszystko poza podmianą dzieje się w osobnym wątku (`spectre-app::update`,
+jak `sync`); wątek renderu nigdy nie czeka na sieć. Podmiana jest natychmiastowa,
+nie „przy następnym starcie" — proces rezydentny (Z2) mógłby nie być
+restartowany tygodniami, a użytkownik, który kliknął „Install", chce widzieć
+efekt. Aktualizacja **nigdy nie zaczyna się sama**: bez kliknięcia „Download"
+nic nie jest pobierane, a bez „Install" nic nie jest podmieniane.
+
+Wyłączenie automatu: `Check for updates automatically` w Settings
+(`update_check=0` w `config.txt`). Inne repozytorium wydań: `update_repo=owner/repo`.
+
+Jeśli aplikacja uruchomiona jest spoza katalogu instalacji (np. `target\release`),
+aktualizacja podmienia **ten** plik — updater nie przenosi aplikacji.
+
+## Prywatne repozytorium a inni użytkownicy
+
+Zasoby wydań w **prywatnym** repozytorium wymagają tokenu — anonimowe zapytanie
+dostaje 404. Aplikacja używa tokenu logowania GitHub (Account → Sign in), jeśli
+jest; instalator — `--token`. Żeby inne osoby mogły instalować i aktualizować
+bez tokenu, wydania muszą być publiczne: albo publiczne repozytorium źródeł,
+albo osobne publiczne repozytorium tylko na wydania (`release.ps1` i aplikacja
+przyjmują `owner/repo`; w aplikacji `update_repo=`). Dołączenie kogoś do
+**space'u** to osobna sprawa (03-FORMAT-I-SYNC): dostęp do jego prywatnego repo
+notatek i węzeł w tej samej sieci Tailscale dla warstwy live.
 
 ## Otwarty problem: SmartScreen
 
 Niepodpisana binarka pobrana z internetu dostaje pełnoekranowe ostrzeżenie
-„Windows protected your PC". Dla kogoś, komu dajesz aplikację, wygląda to jak
-malware, niezależnie od tego, czym jest.
-
-Warianty:
+„Windows protected your PC". Dotyczy `SpectreNotes-Setup.exe` pobranego
+przeglądarką; `spectrenotes.exe` pobrany **przez instalator lub updater**
+(WinHTTP) nie ma znacznika „z internetu" (Mark of the Web), więc nie wywołuje
+ostrzeżenia — a SHA-256 z tego samego wydania pilnuje, że to ten plik.
 
 | | Koszt | Efekt |
 |---|---|---|
-| Brak podpisu | 0 | ostrzeżenie u każdego, zawsze |
+| Brak podpisu | 0 | ostrzeżenie przy instalatorze, zawsze |
 | Certyfikat self-signed | 0 | ostrzeżenie nadal; pomaga tylko przy ręcznym zaufaniu certyfikatowi |
 | Certyfikat OV | kilkaset zł/rok | ostrzeżenie znika dopiero po zbudowaniu reputacji przez SmartScreen |
 | Certyfikat EV | drożej, wymaga tokena sprzętowego | reputacja od pierwszego uruchomienia |
-| Microsoft Store | opłata jednorazowa + proces certyfikacji | brak ostrzeżeń, ale kłóci się z „update przez gita" |
+| Microsoft Store | opłata jednorazowa + proces certyfikacji | brak ostrzeżeń, ale kłóci się z wydaniami przez GitHub |
 
-Decyzja odłożona do Etapu 7 — nie blokuje niczego wcześniej, a przy rozdawaniu
-w gronie kilku znajomych da się na razie żyć z ręcznym „Więcej informacji → Uruchom mimo to".
+Decyzja odłożona — w gronie kilku znajomych da się żyć z ręcznym
+„Więcej informacji → Uruchom mimo to" raz, przy instalatorze.
 
 ## Kompilacja u odbiorcy
 
-Alternatywa dla podpisu: odbiorca buduje ze źródeł. Wymaga u niego Rusta i
-VS Build Tools, więc realnie działa tylko dla osób technicznych — ale jest
-całkowicie darmowa i omija SmartScreen w całości.
+Alternatywa dla podpisu: odbiorca buduje ze źródeł (`.\dev.cmd -Install`,
+`cargo build --release`). Wymaga Rusta i VS Build Tools, więc realnie działa
+tylko dla osób technicznych — ale omija SmartScreen w całości. Tak zbudowana
+binarka też aktualizuje się z wydań.

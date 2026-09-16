@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/atmat/SpectreNotes"
+repository = "https://github.com/AtmatiAdi/spectrenotes"
 
 [profile.dev]
 # Rysowanie musi byc plynne nawet w buildzie debug - inaczej ocena odczucia piora

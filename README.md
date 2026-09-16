@@ -24,6 +24,22 @@ Narzędzia diagnostyczne w tej samej binarce: `spectrenotes --bench` (pomiary re
 i `spectrenotes --fill-white [space]` (notatka testowa: cała kolumna zamalowana bielą,
 do oglądania fal AMOLED).
 
+## Instalacja i aktualizacje
+
+Gotowa aplikacja: [najnowsze wydanie](https://github.com/AtmatiAdi/spectrenotes/releases/latest)
+→ `SpectreNotes-Setup.exe`. Instalator sam nic nie zawiera — pobiera bieżącą
+wersję, sprawdza sumę SHA-256 i instaluje ją dla użytkownika
+(`%LOCALAPPDATA%\SpectreNotes\app`, skrót w menu Start, wpis w „Zainstalowane
+aplikacje"; notatki są osobno w `%APPDATA%\SpectreNotes` i odinstalowanie ich nie rusza).
+
+Zainstalowana aplikacja sprawdza wydania 20 s po starcie i co 6 h; gdy jest nowsza,
+Settings → **Application** pokazuje „version X available" z przyciskiem Download,
+paskiem postępu i „Install and restart". Nic nie pobiera się ani nie podmienia bez
+kliknięcia. `spectrenotes.exe --install` / `--uninstall` robią to samo z linii poleceń.
+
+Wydanie: `.\release.ps1 -Bump patch` (wersja → testy → build → tag → GitHub Release,
+zostają 3 ostatnie). Szczegóły: [`docs/06-DYSTRYBUCJA.md`](docs/06-DYSTRYBUCJA.md).
+
 ### Aplikacja
 
 Notatki leżą w `%APPDATA%\SpectreNotes\spaces\default` (inna ścieżka: pierwszy
@@ -283,10 +299,13 @@ crates/
   spectre-ink        probki -> krzywa nacisku -> interpolacja -> geometria         [dziala]
   spectre-sync       store + git (libgit2, ADR 0006) + budzet ruchu + live (TCP, ADR 0007; udostepnianie per notatka, ADR 0008)  [dziala]
   spectre-render     Direct2D na DXGI flip-model, przewijanie przyrostowe          [dziala]
-  spectre-shell-win  okno Win32, WM_POINTER, DPI, feedback piora, pelny ekran      [dziala]
+  spectre-shell-win  okno Win32, WM_POINTER, DPI, feedback piora, pelny ekran, WinHTTP, instalacja  [dziala]
+  spectre-update     wydania GitHub: wersje, pobieranie z weryfikacja SHA-256           [dziala]
   spectre-app        binarka `spectrenotes`                                       [dziala]
 tools/
   inkdemo            demo odczucia piora (Etap 0)                                 [dziala]
+  setup              SpectreNotes-Setup.exe: pobiera i instaluje najnowsze wydanie [dziala]
+release.ps1          wydanie: wersja -> testy -> build -> tag -> GitHub Release (3 ostatnie)
 docs/                zalozenia, architektura, ADR-y
 ```
 

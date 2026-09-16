@@ -28,6 +28,7 @@ use crate::lan::LanConfig;
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, SyncWorker, WM_SYNC};
+use crate::update::{State as UpdateState, Updater, WM_UPDATE};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
@@ -64,6 +65,11 @@ const MENU_CLOCK_MS: u32 = 1000;
 /// Miniatury notatek do listy w menu buduja sie po kolei, z budzetem na klatke:
 /// wczytanie cudzej notatki to odczyt z dysku, a panel ma sie otworzyc od razu.
 const TIMER_THUMBS: usize = 7;
+/// Sprawdzenie wydan na GitHubie (`update.rs`): pierwsze chwile po starcie
+/// (nie w tym samym momencie co sync startowy), potem co kilka godzin.
+const TIMER_UPDATE: usize = 8;
+const UPDATE_FIRST_MS: u32 = 20_000;
+const UPDATE_EVERY_MS: u32 = 6 * 3600 * 1000;
 const THUMBS_TICK_MS: u32 = 16;
 const THUMB_BUDGET_MS: f32 = 5.0;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
@@ -237,6 +243,12 @@ pub struct App {
     /// Pierwszy `Status` z gitem uruchamia sync startowy (fetch tego, co zrobily
     /// inne maszyny).
     sync_booted: bool,
+    /// Aktualizacje z wydan GitHuba; `update_check=0` w config wylacza automat.
+    update: Updater,
+    update_check: bool,
+    /// Po zamknieciu okna uruchom binarke ponownie z tymi argumentami
+    /// (restart po aktualizacji) - robi to `WM_DESTROY` juz po sprzatnieciu.
+    relaunch: Option<Vec<String>>,
     /// Merge zmienil biezaca notatke w trakcie akcji - przeladuj po jej koncu.
     reload_pending: bool,
     /// Live (Etap 6): peerzy w LAN, mokre kreski innych, ich rysiki.
@@ -376,6 +388,18 @@ impl App {
             .unwrap_or(crate::github::CLIENT_ID)
             .to_string();
         let sync = SyncWorker::start(hwnd, space.root(), &author, &data_dir, &client_id);
+        let update_repo = config
+            .get("update_repo")
+            .filter(|s| !s.is_empty())
+            .unwrap_or(spectre_update::default_repo())
+            .to_string();
+        let update = Updater::start(hwnd, &update_repo, &data_dir);
+        let update_check = config.get("update_check") != Some("0");
+        if update_check {
+            unsafe {
+                SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_FIRST_MS, None);
+            }
+        }
         let live_enabled = config.get("live") != Some("0");
         let mut live = LiveWorker::start(hwnd, space.root(), &author, live_enabled);
         let space_name = space
@@ -463,6 +487,9 @@ impl App {
             config,
             sync,
             sync_booted: false,
+            update,
+            update_check,
+            relaunch: None,
             reload_pending: false,
             live,
             lan,
@@ -1070,6 +1097,14 @@ impl App {
             }
             MenuHit::Logout => self.sync.send(SyncJob::Logout),
             MenuHit::SyncNow => self.git_sync(true),
+            MenuHit::Update => self.update_tap(),
+            MenuHit::ReleaseNotes => {
+                if let Some(i) = self.update.available() {
+                    if !i.html_url.is_empty() {
+                        window::open_in_browser(&i.html_url);
+                    }
+                }
+            }
             MenuHit::PasteToken => {
                 self.menu.token_edit = Some(String::new());
                 unsafe {
@@ -1156,6 +1191,19 @@ impl App {
                 if self.waves_laptop_only && !self.waves_forced {
                     self.stop_waves();
                     self.arm_amoled_timers();
+                }
+            }
+            Setting::UpdateCheck => {
+                self.update_check = !self.update_check;
+                self.config
+                    .set("update_check", if self.update_check { "1" } else { "0" });
+                self.config.save();
+                unsafe {
+                    if self.update_check {
+                        SetTimer(Some(self.hwnd), TIMER_UPDATE, UPDATE_FIRST_MS, None);
+                    } else {
+                        let _ = KillTimer(Some(self.hwnd), TIMER_UPDATE);
+                    }
                 }
             }
             Setting::Autostart => {
@@ -1510,6 +1558,136 @@ impl App {
         }
         if self.menu.open || self.show_hud || repaint {
             self.render();
+        }
+    }
+
+    // ----- aktualizacje ------------------------------------------------------
+
+    /// Zdarzenia z watku update (po `WM_UPDATE`).
+    fn on_update_events(&mut self) {
+        let was = self.update.available().is_some();
+        if !self.update.poll() {
+            return;
+        }
+        if let Some(i) = self.update.available() {
+            if !was {
+                self.status = format!("SpectreNotes {} is available - see Settings", i.version);
+            }
+        }
+        if let UpdateState::Error(e) = &self.update.state {
+            self.status = format!("update: {}", one_line(e, 90));
+        }
+        if self.menu.open {
+            self.render();
+        }
+    }
+
+    /// Przycisk w sekcji "Application" - znaczenie zalezy od stanu.
+    fn update_tap(&mut self) {
+        match &self.update.state {
+            UpdateState::Idle | UpdateState::UpToDate | UpdateState::Error(_) => {
+                self.update.check()
+            }
+            UpdateState::Checking => {}
+            UpdateState::Available(_) => self.update.download(),
+            UpdateState::Downloading { .. } => self.update.cancel(),
+            UpdateState::Ready { path, .. } => {
+                let path = path.clone();
+                self.install_update(&path);
+            }
+        }
+    }
+
+    /// Podmiana binarki (rename dzialajacego pliku) i restart z tym samym
+    /// space'em. Przy bledzie plik zostaje w `updates`, stan pokazuje blad.
+    fn install_update(&mut self, new: &Path) {
+        match spectre_shell_win::install::replace_current_exe(new) {
+            Ok(_) => {
+                // Bez `--tray`: uzytkownik wlasnie klikal w menu, chce widziec okno.
+                let args: Vec<String> = std::env::args()
+                    .skip(1)
+                    .filter(|a| a != spectre_shell_win::autostart::TRAY_ARG)
+                    .collect();
+                self.relaunch = Some(args);
+                unsafe {
+                    let _ = DestroyWindow(self.hwnd);
+                }
+            }
+            Err(e) => {
+                self.update.state = UpdateState::Error(format!("install: {e}"));
+                self.status = format!("update: install failed: {e}");
+            }
+        }
+    }
+
+    /// Stan aktualizacji jako tekst dla menu.
+    fn update_view(&self) -> menu::UpdateView {
+        use spectre_update::human_bytes;
+        let checked = |m: Option<Mark>| match m {
+            Some(m) => format!("checked {}", menu::human_age(m.age_s())),
+            None => "not checked yet".to_string(),
+        };
+        match &self.update.state {
+            UpdateState::Idle => menu::UpdateView {
+                line: checked(self.update.checked),
+                action: Some("Check for updates"),
+                progress: None,
+                notes: false,
+            },
+            UpdateState::Checking => menu::UpdateView {
+                line: "checking GitHub...".into(),
+                action: None,
+                progress: None,
+                notes: false,
+            },
+            UpdateState::UpToDate => menu::UpdateView {
+                line: format!("up to date - {}", checked(self.update.checked)),
+                action: Some("Check again"),
+                progress: None,
+                notes: false,
+            },
+            UpdateState::Available(i) => menu::UpdateView {
+                line: format!(
+                    "version {} available ({}){}",
+                    i.version,
+                    human_bytes(i.size),
+                    if i.headline.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" - {}", i.headline)
+                    }
+                ),
+                action: Some("Download"),
+                progress: None,
+                notes: true,
+            },
+            UpdateState::Downloading { info, done, total } => menu::UpdateView {
+                line: format!(
+                    "downloading {}: {} / {}",
+                    info.version,
+                    human_bytes(*done),
+                    human_bytes(*total)
+                ),
+                action: Some("Cancel"),
+                progress: Some(if *total > 0 {
+                    (*done as f32 / *total as f32).min(1.0)
+                } else {
+                    0.0
+                }),
+                notes: true,
+            },
+            UpdateState::Ready { info, .. } => menu::UpdateView {
+                line: format!("version {} downloaded and verified", info.version),
+                action: Some("Install and restart"),
+                progress: Some(1.0),
+                notes: true,
+            },
+            UpdateState::Error(e) => menu::UpdateView {
+                line: format!("error: {}", one_line(e, 70)),
+                action: Some("Try again"),
+                progress: None,
+                notes: false,
+            },
         }
     }
 
@@ -2494,6 +2672,7 @@ impl App {
             let offers = self.offer_views();
             let current = &self.notes[self.note_idx].id;
             let share = self.lan.shares.get(current).map(|k| k.is_some());
+            let update_view = self.update_view();
             // Pola wprost (nie metoda na `self`): `build` bierze &mut menu, stan czyta reszte.
             let ms = MenuState {
                 notes: &self.notes,
@@ -2517,6 +2696,9 @@ impl App {
                 sync: &self.sync.status,
                 sync_last: &self.sync.last,
                 sync_busy: self.sync.pending > 0,
+                version: spectre_update::CURRENT,
+                update: &update_view,
+                update_check: self.update_check,
                 synced: self.sync.last_remote_ok,
                 saved: self.saved,
                 peer: self.live.last_ops,
@@ -3031,6 +3213,15 @@ pub unsafe extern "system" fn wndproc(
             app.partner_soon();
             LRESULT(0)
         }
+        WM_UPDATE => {
+            app.on_update_events();
+            LRESULT(0)
+        }
+        spectre_shell_win::install::WM_QUIT_APP => {
+            // Instalator prosi o zakonczenie (nie schowanie do traya).
+            let _ = DestroyWindow(hwnd);
+            LRESULT(0)
+        }
         WM_SYNC => {
             app.on_sync_events();
             LRESULT(0)
@@ -3052,6 +3243,11 @@ pub unsafe extern "system" fn wndproc(
                 TIMER_PARTNER => app.partner_tick(),
                 TIMER_MENU_CLOCK => app.menu_clock_tick(),
                 TIMER_THUMBS => app.thumbs_tick(),
+                TIMER_UPDATE => {
+                    // Pierwszy raz po 20 s, potem co 6 h - ten sam timer, nowy odstep.
+                    SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_EVERY_MS, None);
+                    app.update.check();
+                }
                 TIMER_GIT => {
                     let _ = KillTimer(Some(hwnd), TIMER_GIT);
                     app.git_sync(false);
@@ -3122,7 +3318,15 @@ pub unsafe extern "system" fn wndproc(
                 app.commit_title();
                 app.sync_now();
                 app.release_partner("exiting");
+                let relaunch = app.relaunch.take();
                 drop(app);
+                // Restart po aktualizacji: dopiero teraz, gdy stan jest zapisany,
+                // a nowa instancja czyta config juz po nas.
+                if let Some(args) = relaunch {
+                    if let Some(exe) = spectre_shell_win::install::current_exe() {
+                        let _ = spectre_shell_win::install::spawn(&exe, &args);
+                    }
+                }
             }
             PostQuitMessage(0);
             LRESULT(0)
