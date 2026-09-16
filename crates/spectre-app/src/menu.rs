@@ -986,7 +986,10 @@ impl Menu {
             y += self.line(list, y, d, FG_DIM, out);
         }
         if let Some(p) = s.update.progress {
-            let (bx, bw) = (list.x + (PAD * k) + 8.0 * k, list.w - PAD * 2.0 * k - 8.0 * k);
+            let (bx, bw) = (
+                list.x + (PAD * k) + 8.0 * k,
+                list.w - PAD * 2.0 * k - 8.0 * k,
+            );
             out.push(UiPrim::Rect {
                 x: bx,
                 y: y + 4.0 * k,
@@ -1010,7 +1013,14 @@ impl Menu {
             y += self.button(list, y, MenuHit::Update, label, FG, out);
         }
         if s.update.notes {
-            y += self.action_row(list, y, MenuHit::ReleaseNotes, "What's new (opens browser)", FG_DIM, out);
+            y += self.action_row(
+                list,
+                y,
+                MenuHit::ReleaseNotes,
+                "What's new (opens browser)",
+                FG_DIM,
+                out,
+            );
         }
         {
             let r = Rect {

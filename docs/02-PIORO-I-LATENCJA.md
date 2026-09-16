@@ -109,10 +109,20 @@ albo gdy coś się zmieniło. To jednocześnie najniższa latencja i zero poboru
 ## Mokry i suchy atrament
 
 - **Mokry** — stroke aktualnie rysowany. Przerysowywany co klatkę, prezentowany natychmiast.
-- **Suchy** — stroke zakończony. Wypalany do cache kafli (tile cache) i odtąd nieruszany.
+- **Suchy** — stroke zakończony. Wypalany do warstwy suchej (bitmapa ekranu przewijana
+  przyrostowo, ADR 0005) i odtąd nieruszany.
 
 Bez tego podziału notatka z 100 000 stroke'ów zabija framerate. Z nim koszt klatki
-zależy tylko od długości *bieżącego* stroke'a.
+zależy tylko od długości *bieżącego* stroke'a — a i ten jest ograniczony: odcinki
+ostateczne mokrej kreski trafiają do warstwy suchej porcjami (po ~150 px), więc co
+klatkę rysuje się najwyżej porcja plus czubek.
+
+**Mokry i suchy wyglądają identycznie** — to zasada, nie efekt uboczny. Obie ścieżki
+budują tę samą wstęgę (`spectre-render::geometry`) i rysują ją jako jedną figurę;
+`DrawLine` per odcinek odpadło, bo osobno antyaliasowane kapsuły sumowały alfę na
+krawędziach i mokra kreska była ~0,5 px grubsza niż po puszczeniu (16 IX 2026).
+To, co wychodzi spod pióra, zostaje — bez tego żaden przyszły pędzel czy ołówek
+nie ma sensu.
 
 ## Czego świadomie NIE robimy (Z6)
 

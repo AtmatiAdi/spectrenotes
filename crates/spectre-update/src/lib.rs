@@ -102,8 +102,8 @@ impl Release {
     /// Z odpowiedzi `GET /repos/{repo}/releases/latest`.
     pub fn parse(body: &str) -> Result<Self> {
         let tag = json_str(body, "tag_name").ok_or_else(|| Error::Parse("tag_name".into()))?;
-        let version =
-            Version::parse(&tag).ok_or_else(|| Error::Parse(format!("tag `{tag}` is not vX.Y.Z")))?;
+        let version = Version::parse(&tag)
+            .ok_or_else(|| Error::Parse(format!("tag `{tag}` is not vX.Y.Z")))?;
         let assets = parse_assets(body);
         Ok(Self {
             version,
@@ -116,7 +116,9 @@ impl Release {
     }
 
     pub fn asset(&self, name: &str) -> Option<&Asset> {
-        self.assets.iter().find(|a| a.name.eq_ignore_ascii_case(name))
+        self.assets
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
     }
 
     /// Czy to wydanie jest nowsze niz `current` (np. `CURRENT`).
@@ -298,7 +300,8 @@ impl<'a> Client<'a> {
         let sums = release
             .asset(ASSET_SUMS)
             .ok_or_else(|| Error::Checksum(format!("release has no {ASSET_SUMS}")))?;
-        let tmp = std::env::temp_dir().join(format!("spectrenotes-sums-{}.txt", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("spectrenotes-sums-{}.txt", std::process::id()));
         self.download(sums, &tmp, &mut |_, _| true)?;
         let text = std::fs::read_to_string(&tmp)?;
         let _ = std::fs::remove_file(&tmp);
@@ -324,7 +327,9 @@ impl<'a> Client<'a> {
         let got = spectre_shell_win::hash::sha256_file(dest)?;
         if !got.eq_ignore_ascii_case(&want) {
             let _ = std::fs::remove_file(dest);
-            return Err(Error::Checksum(format!("{name}: expected {want}, got {got}")));
+            return Err(Error::Checksum(format!(
+                "{name}: expected {want}, got {got}"
+            )));
         }
         Ok(dest.to_path_buf())
     }
@@ -417,10 +422,7 @@ mod tests {
             repo_from_url("https://github.com/AtmatiAdi/spectrenotes"),
             Some("AtmatiAdi/spectrenotes")
         );
-        assert_eq!(
-            repo_from_url("https://github.com/A/b.git/"),
-            Some("A/b")
-        );
+        assert_eq!(repo_from_url("https://github.com/A/b.git/"), Some("A/b"));
         assert_eq!(repo_from_url("https://gitlab.com/a/b"), None);
         assert_eq!(default_repo(), "AtmatiAdi/spectrenotes-releases");
         assert!(repo_from_url(&format!("https://github.com/{RELEASES_REPO}")).is_some());
@@ -461,7 +463,10 @@ mod tests {
         let r = Release::parse(r#"{"tag_name":"v1.0.0","assets":[],"tarball_url":"x"}"#).unwrap();
         assert!(r.assets.is_empty());
         assert_eq!(r.name, "v1.0.0");
-        assert!(matches!(Release::parse(r#"{"name":"x"}"#), Err(Error::Parse(_))));
+        assert!(matches!(
+            Release::parse(r#"{"name":"x"}"#),
+            Err(Error::Parse(_))
+        ));
         assert!(matches!(
             Release::parse(r#"{"tag_name":"nightly"}"#),
             Err(Error::Parse(_))

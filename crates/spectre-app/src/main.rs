@@ -23,8 +23,8 @@ mod lan;
 mod live;
 mod menu;
 mod sync;
-mod update;
 mod ui;
+mod update;
 
 use std::path::PathBuf;
 

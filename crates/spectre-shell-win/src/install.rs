@@ -17,8 +17,7 @@ use std::path::{Path, PathBuf};
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED,
+    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Registry::{
@@ -111,7 +110,9 @@ pub fn install_self(version: &str, about_url: &str) -> std::io::Result<PathBuf> 
         }
     }
     create_shortcut(&shortcut_path(), &dest, "", "SpectreNotes - pen notes")?;
-    let size_kb = std::fs::metadata(&dest).map(|m| m.len() / 1024).unwrap_or(0) as u32;
+    let size_kb = std::fs::metadata(&dest)
+        .map(|m| m.len() / 1024)
+        .unwrap_or(0) as u32;
     register_uninstall(version, about_url, &dest, size_kb)?;
     Ok(dest)
 }
@@ -238,7 +239,8 @@ pub fn create_shortcut(lnk: &Path, target: &Path, args: &str, desc: &str) -> std
         let args_w = wide(args);
         let desc_w = wide(desc);
         link.SetPath(PCWSTR(target_w.as_ptr())).map_err(com)?;
-        link.SetWorkingDirectory(PCWSTR(dir_w.as_ptr())).map_err(com)?;
+        link.SetWorkingDirectory(PCWSTR(dir_w.as_ptr()))
+            .map_err(com)?;
         link.SetArguments(PCWSTR(args_w.as_ptr())).map_err(com)?;
         link.SetDescription(PCWSTR(desc_w.as_ptr())).map_err(com)?;
         let file: IPersistFile = link.cast().map_err(com)?;
@@ -259,7 +261,10 @@ fn set_sz(h: HKEY, name: &str, value: &str) -> std::io::Result<()> {
     if rc == ERROR_SUCCESS {
         Ok(())
     } else {
-        Err(std::io::Error::other(format!("registry {name}: code {}", rc.0)))
+        Err(std::io::Error::other(format!(
+            "registry {name}: code {}",
+            rc.0
+        )))
     }
 }
 
@@ -277,7 +282,10 @@ fn set_dword(h: HKEY, name: &str, value: u32) -> std::io::Result<()> {
     if rc == ERROR_SUCCESS {
         Ok(())
     } else {
-        Err(std::io::Error::other(format!("registry {name}: code {}", rc.0)))
+        Err(std::io::Error::other(format!(
+            "registry {name}: code {}",
+            rc.0
+        )))
     }
 }
 
@@ -304,7 +312,10 @@ pub fn register_uninstall(
         )
     };
     if rc != ERROR_SUCCESS {
-        return Err(std::io::Error::other(format!("uninstall key: code {}", rc.0)));
+        return Err(std::io::Error::other(format!(
+            "uninstall key: code {}",
+            rc.0
+        )));
     }
     let exe_s = exe.to_string_lossy();
     let dir_s = exe

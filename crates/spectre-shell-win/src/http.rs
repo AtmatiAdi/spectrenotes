@@ -264,7 +264,9 @@ impl Request {
             )
         };
         ok.ok()?;
-        Some(String::from_utf16_lossy(&buf[..(len as usize / 2).min(buf.len())]))
+        Some(String::from_utf16_lossy(
+            &buf[..(len as usize / 2).min(buf.len())],
+        ))
     }
 
     /// Kolejny kawalek ciala do `buf`; `None` = koniec.

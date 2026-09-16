@@ -13,14 +13,13 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1Brush, ID2D1DeviceContext,
-    ID2D1DeviceContext1, ID2D1Factory1, ID2D1GeometryRealization, ID2D1StrokeStyle1,
+    ID2D1DeviceContext1, ID2D1Factory1, ID2D1GeometryRealization, ID2D1PathGeometry1,
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_BRUSH_PROPERTIES1,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_INTERPOLATION_MODE_CUBIC,
-    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LINE_JOIN_ROUND, D2D1_ROUNDED_RECT,
-    D2D1_STROKE_STYLE_PROPERTIES1, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_INTERPOLATION_MODE_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT,
+    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
@@ -276,7 +275,6 @@ pub struct Renderer {
     avatar: Option<(ID2D1BitmapBrush1, u32, u32)>,
     /// Miniatury notatek (lista w menu), klucz = skrot identyfikatora notatki.
     thumbs: HashMap<u64, ID2D1Bitmap1>,
-    round: ID2D1StrokeStyle1,
     dwrite: IDWriteFactory,
     /// Czcionki UI w fizycznych pikselach dla `ui_scale` (`set_ui_scale`).
     fonts: TextFormats,
@@ -291,8 +289,22 @@ pub struct Renderer {
     seg_scratch: Vec<Segment>,
 }
 
+/// Obrys kreski w cache: realizacja (mesh na GPU, jedno wywolanie) albo sama
+/// geometria sciezki, gdy kreska jest za cienka na realizacje.
+///
+/// Realizacja D2D antyaliasuje obwodka mesha; ponizej ~1,5 px na ekranie
+/// obwodki obu krawedzi nachodza na siebie i pokrycie wychodzi za duze,
+/// miejscami o 0,4 px (zmierzone 16 IX 2026: kreska 0,94 px dawala 1,06,
+/// a na 60-px odcinku przed lukiem 1,53). `FillGeometry` liczy pokrycie
+/// analitycznie i jest dokladne, ale teseluje przy kazdym rysowaniu -
+/// dlatego tylko dla cienkich.
+enum Shape {
+    Real(ID2D1GeometryRealization),
+    Path(ID2D1PathGeometry1),
+}
+
 struct GeoEntry {
-    real: ID2D1GeometryRealization,
+    shape: Shape,
     zoom: f32,
     verts: usize,
 }
@@ -377,18 +389,6 @@ impl Renderer {
             let hud_bg = solid(&ctx, 0.0, 0.0, 0.0, 0.55)?;
             let cursor_brush = solid(&ctx, 0.6, 0.6, 0.6, 0.8)?;
 
-            let round = factory2d.CreateStrokeStyle(
-                &D2D1_STROKE_STYLE_PROPERTIES1 {
-                    startCap: D2D1_CAP_STYLE_ROUND,
-                    endCap: D2D1_CAP_STYLE_ROUND,
-                    dashCap: D2D1_CAP_STYLE_ROUND,
-                    lineJoin: D2D1_LINE_JOIN_ROUND,
-                    miterLimit: 1.0,
-                    ..Default::default()
-                },
-                None,
-            )?;
-
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let fonts = TextFormats::new(&dwrite, 1.0)?;
 
@@ -412,7 +412,6 @@ impl Renderer {
                 dim_px: Vec::new(),
                 avatar: None,
                 thumbs: HashMap::new(),
-                round,
                 dwrite,
                 fonts,
                 ui_scale: 1.0,
@@ -715,35 +714,53 @@ impl Renderer {
         Ok(b)
     }
 
-    unsafe fn draw_segments(&self, segs: &[Segment], brush: &ID2D1Brush, cam: &Camera) {
-        for s in segs {
-            let (ax, ay) = cam.to_screen(s.a.x, s.a.y);
-            let (bx, by) = cam.to_screen(s.b.x, s.b.y);
-            self.ctx.DrawLine(
-                Vector2 { X: ax, Y: ay },
-                Vector2 { X: bx, Y: by },
-                brush,
-                (s.width * cam.zoom).max(0.4),
-                &self.round,
-            );
+    /// Odcinki jako **jedna** wypelniona wstega (`geometry::build`) - ta sama
+    /// figura, ktora rysuje `draw_document` po zakonczeniu kreski.
+    ///
+    /// Nie `DrawLine` per odcinek: kazda kapsula jest antyaliasowana osobno,
+    /// sasiednie zachodza na piksele krawedzi 2-3 razy i alfa sie sumuje
+    /// (0,41 pokrycia -> 0,65-0,79). Mokra kreska wychodzila przez to ~0,5 px
+    /// grubsza niz zatwierdzona i "chudla" po oderwaniu rysika (16 IX 2026).
+    /// Figura kilkudziesieciu odcinkow buduje sie w mikrosekundach.
+    unsafe fn draw_segments(
+        &self,
+        segs: &[Segment],
+        brush: &ID2D1Brush,
+        cam: &Camera,
+    ) -> Result<()> {
+        if segs.is_empty() {
+            return Ok(());
         }
+        let geo = geometry::build(&self.factory2d, segs, cam.zoom)?;
+        self.ctx.SetTransform(&Self::cam_matrix(cam));
+        self.ctx.FillGeometry(&geo, brush, None);
+        self.ctx.SetTransform(&Matrix3x2::identity());
+        Ok(())
     }
 
-    /// Obrys kreski z cache albo zbudowany teraz. `verts` to koszt pamieciowy.
-    unsafe fn stroke_realization(
+    /// Rysuje kreske: obrys z cache albo zbudowany teraz (`verts` to koszt
+    /// pamieciowy). Realizacja albo `FillGeometry` - patrz `Shape`.
+    unsafe fn draw_stroke(
         &mut self,
         id: StrokeId,
         data: &spectre_proto::StrokeData,
         ink: &InkConfig,
         zoom: f32,
-    ) -> Result<ID2D1GeometryRealization> {
-        if let Some(e) = self.geo_cache.get(&id) {
+        brush: &ID2D1Brush,
+    ) -> Result<()> {
+        let cached = self.geo_cache.get(&id).and_then(|e| {
             let ratio = zoom / e.zoom;
-            if ratio < GEO_ZOOM_TOL && ratio > 1.0 / GEO_ZOOM_TOL {
-                return Ok(e.real.clone());
-            }
+            (ratio < GEO_ZOOM_TOL && ratio > 1.0 / GEO_ZOOM_TOL).then(|| match &e.shape {
+                Shape::Real(r) => Shape::Real(r.clone()),
+                Shape::Path(g) => Shape::Path(g.clone()),
+            })
+        });
+        if let Some(shape) = cached {
+            self.draw_shape(&shape, brush);
+            return Ok(());
+        }
+        if let Some(e) = self.geo_cache.remove(&id) {
             self.geo_cache_verts -= e.verts;
-            self.geo_cache.remove(&id);
         }
         if self.geo_cache_verts > GEO_CACHE_BUDGET {
             self.geo_cache.clear();
@@ -754,21 +771,42 @@ impl Renderer {
         stroke_segments(data, ink, &mut segs);
         let geo = geometry::build(&self.factory2d, &segs, zoom)?;
         let verts = segs.len() * 2 + 32;
+        // Z zapasem na tolerancje zoomu cache'u: realizacja zbudowana teraz bedzie
+        // rysowana takze przy zoomie 1,5x mniejszym i wtedy tez ma miec >= THIN_PX.
+        let thin = geometry::is_thin(&segs, zoom / GEO_ZOOM_TOL);
         self.seg_scratch = segs;
-        // Tolerancja splaszczania w jednostkach canvasu: 1/4 piksela ekranu.
-        let real = self
-            .ctx1
-            .CreateFilledGeometryRealization(&geo, 0.25 / zoom)?;
-        self.geo_cache.insert(
-            id,
-            GeoEntry {
-                real: real.clone(),
-                zoom,
-                verts,
-            },
-        );
+        let shape = if thin {
+            Shape::Path(geo)
+        } else {
+            // Tolerancja splaszczania w jednostkach canvasu: 1/4 piksela ekranu.
+            Shape::Real(
+                self.ctx1
+                    .CreateFilledGeometryRealization(&geo, 0.25 / zoom)?,
+            )
+        };
+        self.draw_shape(&shape, brush);
+        self.geo_cache.insert(id, GeoEntry { shape, zoom, verts });
         self.geo_cache_verts += verts;
-        Ok(real)
+        Ok(())
+    }
+
+    unsafe fn draw_shape(&self, shape: &Shape, brush: &ID2D1Brush) {
+        match shape {
+            Shape::Real(r) => self.ctx1.DrawGeometryRealization(r, brush),
+            Shape::Path(g) => self.ctx.FillGeometry(g, brush, None),
+        }
+    }
+
+    /// Transformacja kamery: canvas -> piksele ekranu.
+    fn cam_matrix(cam: &Camera) -> Matrix3x2 {
+        Matrix3x2 {
+            M11: cam.zoom,
+            M12: 0.0,
+            M21: 0.0,
+            M22: cam.zoom,
+            M31: cam.shift.0 - cam.scroll_x * cam.zoom,
+            M32: cam.shift.1 - cam.scroll_y * cam.zoom,
+        }
     }
 
     /// Rysuje kreski dokumentu przecinajace `rect` (canvas) na biezacy target.
@@ -780,23 +818,9 @@ impl Renderer {
         ink: &InkConfig,
         rect: Bbox,
     ) -> Result<()> {
-        self.ctx.SetTransform(&Matrix3x2 {
-            M11: cam.zoom,
-            M12: 0.0,
-            M21: 0.0,
-            M22: cam.zoom,
-            M31: cam.shift.0 - cam.scroll_x * cam.zoom,
-            M32: cam.shift.1 - cam.scroll_y * cam.zoom,
-        });
+        self.ctx.SetTransform(&Self::cam_matrix(cam));
         let mut res = Ok(());
         for (id, data, _) in doc.visible_in(rect) {
-            let real = match self.stroke_realization(id, data, ink, cam.zoom) {
-                Ok(r) => r,
-                Err(e) => {
-                    res = Err(e);
-                    break;
-                }
-            };
             let brush = match self.brush(data.color) {
                 Ok(b) => b,
                 Err(e) => {
@@ -804,7 +828,10 @@ impl Renderer {
                     break;
                 }
             };
-            self.ctx1.DrawGeometryRealization(&real, &brush);
+            if let Err(e) = self.draw_stroke(id, data, ink, cam.zoom, &brush) {
+                res = Err(e);
+                break;
+            }
         }
         self.ctx.SetTransform(&Matrix3x2::identity());
         res
@@ -964,7 +991,7 @@ impl Renderer {
         unsafe {
             self.ctx.SetTarget(&dry);
             self.ctx.BeginDraw();
-            self.draw_segments(segs, &brush, cam);
+            self.draw_segments(segs, &brush, cam)?;
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
         }
@@ -995,9 +1022,9 @@ impl Renderer {
             self.ctx
                 .DrawImage(&dry, None, None, Default::default(), Default::default());
             for (t, b) in overlay.tails.iter().zip(&tail_brushes) {
-                self.draw_segments(&t.segs, b, cam);
+                self.draw_segments(&t.segs, b, cam)?;
             }
-            self.draw_segments(tail, &brush, cam);
+            self.draw_segments(tail, &brush, cam)?;
             for &(x, y) in overlay.marks {
                 let e = D2D1_ELLIPSE {
                     point: Vector2 { X: x, Y: y },

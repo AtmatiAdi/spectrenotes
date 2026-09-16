@@ -27,6 +27,13 @@ pub const MIN_WIDTH_PX: f32 = 0.4;
 const JOIN_ARC_FROM: f32 = 0.12;
 /// Dopuszczalne odchylenie obrysu po uproszczeniu, w pikselach ekranu.
 const SIMPLIFY_PX: f32 = 0.08;
+/// Ponizej tej szerokosci na ekranie (najgrubsze miejsce kreski) ksztalt jest
+/// "cienki": rysowany `FillGeometry` zamiast realizacji (d2d::Shape) i
+/// upraszczany luzniej (`SIMPLIFY_THIN_PX`) - teselacja przy kazdym rysowaniu
+/// kosztuje proporcjonalnie do liczby punktow, a przy 1 px szczegol 0,08 px
+/// nie ma czego pokazac.
+pub const THIN_PX: f32 = 1.5;
+const SIMPLIFY_THIN_PX: f32 = 0.15;
 
 /// Wierzcholek wstegi: punkt i polowa szerokosci.
 #[derive(Clone, Copy)]
@@ -46,11 +53,16 @@ pub unsafe fn build(
     let sink = geo.Open()?;
     sink.SetFillMode(D2D1_FILL_MODE_WINDING);
     let min_w = MIN_WIDTH_PX / zoom;
+    let eps = if is_thin(segs, zoom) {
+        SIMPLIFY_THIN_PX
+    } else {
+        SIMPLIFY_PX
+    } / zoom;
     let mut pts: Vec<Vector2> = Vec::with_capacity(segs.len() * 2 + 64);
     for chain in chains(segs, min_w) {
         pts.clear();
         outline(&chain, zoom, &mut pts);
-        simplify(&mut pts, SIMPLIFY_PX / zoom);
+        simplify(&mut pts, eps);
         if pts.len() < 3 {
             continue;
         }
@@ -60,6 +72,11 @@ pub unsafe fn build(
     }
     sink.Close()?;
     Ok(geo)
+}
+
+/// Czy kreska w najgrubszym miejscu ma na ekranie mniej niz `THIN_PX`.
+pub fn is_thin(segs: &[Segment], zoom: f32) -> bool {
+    segs.iter().map(|s| s.width).fold(0.0, f32::max) * zoom < THIN_PX
 }
 
 /// Odcinki jednej kreski tworza lancuch (`b_i == a_{i+1}`); rozerwania - osobne
@@ -351,5 +368,106 @@ mod tests {
         // jest spojny): jedna strona ma luk (wiecej punktow), druga miter.
         assert_ne!(left.len(), right.len());
         assert!(left.len().max(right.len()) >= 3 + 4);
+    }
+}
+
+#[cfg(test)]
+mod obrys {
+    use super::*;
+    use spectre_ink::{InkConfig, Sample, StrokeBuilder};
+
+    /// Obrys prostej przechodzacej w luk (scenariusz z harnessu 16 IX 2026):
+    /// wielokat prosty (bez samoprzeciec), nawiniety raz, o stalej szerokosci
+    /// przy stalym nacisku. Roznice w pokryciu, ktore wtedy zmierzono,
+    /// pochodzily z rasteryzacji realizacji D2D, nie z geometrii.
+    #[test]
+    fn prosta_z_lukiem_daje_prosty_wielokat_o_stalej_szerokosci() {
+        let mut b = StrokeBuilder::new(InkConfig::default());
+        let s = |x: f32, y: f32, t: u64| Sample {
+            x,
+            y,
+            pressure: 0.5,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+            t_us: t,
+        };
+        let mut t = 0u64;
+        for i in 0..=30 {
+            b.push(s(300.0 + i as f32 * 10.0, 500.0, t));
+            t += 60_000;
+        }
+        for i in 1..=30 {
+            let a = i as f32 / 30.0 * std::f32::consts::PI;
+            b.push(s(
+                (600.0 + 120.0 * a.sin()).round(),
+                (500.0 - 120.0 * (1.0 - a.cos())).round(),
+                t,
+            ));
+            t += 60_000;
+        }
+        let mut segs = Vec::new();
+        b.finish(&mut segs);
+        let zoom = 0.415;
+        let min_w = MIN_WIDTH_PX / zoom;
+        let chains = chains(&segs, min_w);
+        assert_eq!(chains.len(), 1);
+        let mut pts = Vec::new();
+        outline(&chains[0], zoom, &mut pts);
+        simplify(&mut pts, SIMPLIFY_PX / zoom);
+        let half_at = |x0: f32| -> f32 {
+            pts.iter()
+                .filter(|p| (p.X - x0).abs() < 2.0)
+                .map(|p| (p.Y - 500.0).abs())
+                .fold(0.0, f32::max)
+        };
+        let winding = |x0: f32, y0: f32| -> i32 {
+            let mut w = 0;
+            for i in 0..pts.len() {
+                let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+                if (p.Y <= y0) != (q.Y <= y0) {
+                    let x = p.X + (y0 - p.Y) * (q.X - p.X) / (q.Y - p.Y);
+                    if x > x0 {
+                        w += if q.Y > p.Y { 1 } else { -1 };
+                    }
+                }
+            }
+            w
+        };
+        for x0 in [350.0, 450.0, 530.0, 545.0, 570.0, 595.0] {
+            assert_eq!(winding(x0, 500.0).abs(), 1, "winding w ({x0}, 500)");
+        }
+        // Samoprzeciecia obrysu (krawedzie niesasiednie).
+        let n = pts.len();
+        let mut hits = Vec::new();
+        for i in 0..n {
+            for j in i + 2..n {
+                if i == 0 && j == n - 1 {
+                    continue;
+                }
+                let (p1, p2) = (pts[i], pts[(i + 1) % n]);
+                let (p3, p4) = (pts[j], pts[(j + 1) % n]);
+                let d = (p2.X - p1.X) * (p4.Y - p3.Y) - (p2.Y - p1.Y) * (p4.X - p3.X);
+                if d.abs() < 1e-9 {
+                    continue;
+                }
+                let t = ((p3.X - p1.X) * (p4.Y - p3.Y) - (p3.Y - p1.Y) * (p4.X - p3.X)) / d;
+                let u = ((p3.X - p1.X) * (p2.Y - p1.Y) - (p3.Y - p1.Y) * (p2.X - p1.X)) / d;
+                if t > 0.0 && t < 1.0 && u > 0.0 && u < 1.0 {
+                    hits.push((p1.X + t * (p2.X - p1.X), p1.Y + t * (p2.Y - p1.Y)));
+                }
+            }
+        }
+        assert!(hits.is_empty(), "samoprzeciecia obrysu: {hits:?}");
+        let (a, b2) = (half_at(450.0), half_at(570.0));
+        let widths: Vec<f32> = segs
+            .iter()
+            .filter(|s| s.a.y == 500.0 && s.b.y == 500.0)
+            .map(|s| s.width)
+            .collect();
+        let (wmin, wmax) = (
+            widths.iter().cloned().fold(f32::MAX, f32::min),
+            widths.iter().cloned().fold(0.0, f32::max),
+        );
+        assert!((a - b2).abs() < 0.05, "polszerokosc przy x=450: {a}, przy x=570: {b2}; szerokosci odcinkow prostej: {wmin}..{wmax}");
     }
 }

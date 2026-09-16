@@ -31,7 +31,13 @@ fn pump() {
     }
 }
 
-fn synthetic_doc(strokes: usize, samples: usize, width: f32, height_total: f32) -> Document {
+fn synthetic_doc(
+    strokes: usize,
+    samples: usize,
+    width: f32,
+    height_total: f32,
+    base_width: f32,
+) -> Document {
     let mut doc = Document::new(AuthorId(1));
     let mut seed = 0x9E37_79B9u32;
     let mut rnd = || {
@@ -60,7 +66,7 @@ fn synthetic_doc(strokes: usize, samples: usize, width: f32, height_total: f32) 
         doc.add_stroke(StrokeData {
             tool: 0,
             color: Rgba::rgb(216, 216, 216),
-            base_width: 3.2,
+            base_width,
             samples: s,
         });
     }
@@ -94,16 +100,23 @@ pub fn run() -> windows::core::Result<()> {
         r.tearing_supported()
     );
 
-    // (kresek, probek na kreske, wysokosc rolki). Ostatni przypadek to kryterium
-    // Etapu 2: 100 000 kresek - dlugi notatnik, krotkie kreski, ~250 stron.
-    for &(n, len, height) in &[
-        (200usize, 150usize, 20_000.0f32),
-        (2000, 150, 20_000.0),
-        (10000, 150, 20_000.0),
-        (100_000, 60, 450_000.0),
+    // (kresek, probek na kreske, wysokosc rolki, grubosc). Czwarty przypadek to
+    // kryterium Etapu 2: 100 000 kresek - dlugi notatnik, krotkie kreski, ~250
+    // stron. Ostatni: kreski cienkie (< 1,5 px na ekranie) - ida przez
+    // `FillGeometry`, nie realizacje (d2d::Shape), wiec maja inny koszt.
+    for &(n, len, height, base) in &[
+        (200usize, 150usize, 20_000.0f32, 3.2f32),
+        (2000, 150, 20_000.0, 3.2),
+        (10000, 150, 20_000.0, 3.2),
+        (100_000, 60, 450_000.0, 3.2),
+        (10000, 150, 20_000.0, 1.2),
     ] {
-        let doc = synthetic_doc(n, len, w as f32, height);
+        let doc = synthetic_doc(n, len, w as f32, height, base);
         let mut cam = Camera::default();
+        // Nowy dokument ma te same StrokeId co poprzedni (ten sam autor, licznik
+        // od zera) - bez tego cache podalby obrysy poprzedniego przypadku,
+        // dokladnie tak, jak aplikacja czysci go przy zmianie notatki.
+        r.clear_geometry();
         // Zimny rebuild: budowa obrysow kazdej widocznej kreski - to placi
         // zmiana notatki.
         let t0 = std::time::Instant::now();
@@ -180,7 +193,7 @@ pub fn run() -> windows::core::Result<()> {
         pump();
 
         println!(
-            "\n{n} kresek x {len} probek (widocznych ~{}):\n\
+            "\n{n} kresek x {len} probek, grubosc {base} (widocznych ~{}):\n\
              rebuild zimny    {rebuild_cold:7.2} ms\n\
              rebuild          {rebuild_avg:7.2} ms  (max {rebuild_max:6.2})\n\
              scroll +2px      {scroll_avg:7.3} ms  (max {scroll_max:6.2})\n\

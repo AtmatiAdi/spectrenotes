@@ -20,8 +20,8 @@ use spectre_update::{human_bytes, Client, ASSET_EXE};
 use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, GetStockObject, HBRUSH, HFONT, WHITE_BRUSH, CLEARTYPE_QUALITY, DEFAULT_CHARSET,
-    FF_DONTCARE, FW_NORMAL, OUT_DEFAULT_PRECIS,
+    CreateFontW, GetStockObject, CLEARTYPE_QUALITY, DEFAULT_CHARSET, FF_DONTCARE, FW_NORMAL,
+    HBRUSH, HFONT, OUT_DEFAULT_PRECIS, WHITE_BRUSH,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
@@ -68,7 +68,8 @@ fn main() -> Result<()> {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let token = arg_value(&args, "--token").or_else(|| std::env::var("GITHUB_TOKEN").ok());
-    let repo = arg_value(&args, "--repo").unwrap_or_else(|| spectre_update::default_repo().to_string());
+    let repo =
+        arg_value(&args, "--repo").unwrap_or_else(|| spectre_update::default_repo().to_string());
 
     let hwnd = create_window()?;
     let shared = Arc::new(Mutex::new(Shared {
@@ -97,7 +98,12 @@ fn main() -> Result<()> {
         };
         shared.lock().unwrap().text = text;
         unsafe {
-            let _ = PostMessageW(Some(HWND(hwnd_raw as *mut _)), WM_DONE, WPARAM(code), LPARAM(0));
+            let _ = PostMessageW(
+                Some(HWND(hwnd_raw as *mut _)),
+                WM_DONE,
+                WPARAM(code),
+                LPARAM(0),
+            );
         }
     });
     unsafe {
@@ -156,7 +162,11 @@ fn run(
         .ok_or_else(|| format!("release {} has no {ASSET_EXE}", release.tag))?;
     let size = asset.size;
     set(
-        format!("Downloading SpectreNotes {} ({})...", release.version, human_bytes(size)),
+        format!(
+            "Downloading SpectreNotes {} ({})...",
+            release.version,
+            human_bytes(size)
+        ),
         Some(0),
     );
     let dir = std::env::temp_dir().join("SpectreNotes-Setup");
@@ -182,7 +192,8 @@ fn run(
         .fetch_verified(&release, ASSET_EXE, &dest, &mut progress)
         .map_err(|e| e.to_string())?;
     set("Installing...".into(), Some(1000));
-    let code = install::run_and_wait(&dest, &["--install".to_string()]).map_err(|e| e.to_string())?;
+    let code =
+        install::run_and_wait(&dest, &["--install".to_string()]).map_err(|e| e.to_string())?;
     if code != 0 {
         return Err(format!("installer exited with code {code}"));
     }
@@ -226,28 +237,43 @@ fn create_window() -> Result<HWND> {
             None,
         )?;
         let font = ui_font(k);
-        let make = |cls: &str, text: &str, style: u32, x: f32, y: f32, cw: f32, ch: f32, id: isize| {
-            let cls_w = wide(cls);
-            let text_w = wide(text);
-            let h = CreateWindowExW(
-                WINDOW_EX_STYLE(0),
-                PCWSTR(cls_w.as_ptr()),
-                PCWSTR(text_w.as_ptr()),
-                WINDOW_STYLE(style) | WS_CHILD | WS_VISIBLE,
-                px(x),
-                px(y),
-                px(cw),
-                px(ch),
-                Some(hwnd),
-                Some(HMENU(id as *mut _)),
-                Some(hinst.into()),
-                None,
-            )
-            .unwrap_or_default();
-            SendMessageW(h, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
-            h
-        };
-        make("STATIC", "Starting...", 0x0080 /* SS_NOPREFIX */, 16.0, 14.0, 428.0, 40.0, ID_LABEL);
+        let make =
+            |cls: &str, text: &str, style: u32, x: f32, y: f32, cw: f32, ch: f32, id: isize| {
+                let cls_w = wide(cls);
+                let text_w = wide(text);
+                let h = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    PCWSTR(cls_w.as_ptr()),
+                    PCWSTR(text_w.as_ptr()),
+                    WINDOW_STYLE(style) | WS_CHILD | WS_VISIBLE,
+                    px(x),
+                    px(y),
+                    px(cw),
+                    px(ch),
+                    Some(hwnd),
+                    Some(HMENU(id as *mut _)),
+                    Some(hinst.into()),
+                    None,
+                )
+                .unwrap_or_default();
+                SendMessageW(
+                    h,
+                    WM_SETFONT,
+                    Some(WPARAM(font.0 as usize)),
+                    Some(LPARAM(1)),
+                );
+                h
+            };
+        make(
+            "STATIC",
+            "Starting...",
+            0x0080, /* SS_NOPREFIX */
+            16.0,
+            14.0,
+            428.0,
+            40.0,
+            ID_LABEL,
+        );
         let bar = make(
             &String::from_utf16_lossy(PROGRESS_CLASSW.as_wide()),
             "",
@@ -259,7 +285,16 @@ fn create_window() -> Result<HWND> {
             ID_BAR,
         );
         SendMessageW(bar, PBM_SETRANGE32, Some(WPARAM(0)), Some(LPARAM(1000)));
-        make("BUTTON", "Cancel", BS_PUSHBUTTON as u32, 348.0, 86.0, 96.0, 28.0, ID_BUTTON);
+        make(
+            "BUTTON",
+            "Cancel",
+            BS_PUSHBUTTON as u32,
+            348.0,
+            86.0,
+            96.0,
+            28.0,
+            ID_BUTTON,
+        );
         Ok(hwnd)
     }
 }

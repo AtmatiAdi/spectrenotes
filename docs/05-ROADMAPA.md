@@ -40,6 +40,25 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       scroll 3,4 → 1,4 ms; zimny rebuild ~0,4 ms/kreskę (podłoga teselacji D2D,
       płacona raz — przy otwarciu notatki). Pen-up przerysowuje prostokąt kreski
       z tej samej geometrii; undo/redo to repaint regionu, nie pełny rebuild
+- [x] **Mokra kreska = zatwierdzona kreska** (16 IX 2026). Od wprowadzenia realizacji
+      mokra kreska szła `DrawLine` per odcinek: każda kapsuła antyaliasowana osobno,
+      sąsiednie zachodziły na piksele krawędzi 2–3 razy i alfa się sumowała — kreska
+      w trakcie była ~0,5 px grubsza niż po puszczeniu i „chudła" przy oderwaniu
+      rysika. Teraz mokra kreska to ta sama wstęga (`geometry::build`) co w dokumencie:
+      odcinki ostateczne wypalane do warstwy suchej porcjami po 96 (`WET_BURN_SEGS`),
+      reszta + czubek rysowana co klatkę jako jedna figura. Zmierzone: 1,24 → 0,88 px
+      przed, 1,0 = 1,0 po; gruba 3,02 → 2,51 przed, 3,0 = 3,0 po
+- [x] **Cienkie kreski bez realizacji** (`d2d::Shape`): realizacja D2D antyaliasuje
+      obwódką mesha i poniżej ~1,5 px na ekranie obwódki obu krawędzi nachodzą na siebie
+      (kreska 0,94 px dawała 1,06, a na 60-px odcinku przed łukiem 1,53 — geometria
+      była poprawna, sprawdzone testem: winding 1, bez samoprzecięć). Kreski cieńsze niż
+      `THIN_PX` idą `FillGeometry` (pokrycie analityczne, dokładne) z luźniejszym
+      uproszczeniem 0,15 px. Koszt: rebuild 456 widocznych cienkich kresek 9,5 → 46 ms
+      (tylko zoom/resize); scroll 0,8 ms, repaint 1,5 ms bez zmian. Bench ma przypadek
+      „grubość 1.2" i czyści cache między przypadkami (wcześniej mierzył stary cache)
+- [ ] Zoom bez pełnego rebuildu co ząbek kółka: podgląd skalowaniem warstwy suchej,
+      rebuild po ustaniu gestu — zdejmie z zoomu zarówno 46 ms cienkich, jak i zimne
+      budowanie obrysów (0,7 s na gęstej stronie przy każdym kroku 1,5×)
 - [~] Cache kafli — niepotrzebny: po realizacjach geometrii i indeksie pasów
       przewijanie przyrostowe mieści się w budżecie z dużym zapasem
 - [x] Ochrona AMOLED po bezczynności: **fale lokalnego przyciemnienia** (`amoled.rs`) —

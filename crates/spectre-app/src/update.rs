@@ -174,9 +174,9 @@ impl Updater {
     /// Czy jest nowa wersja (do wskaznika poza menu).
     pub fn available(&self) -> Option<&Info> {
         match &self.state {
-            State::Available(i) | State::Downloading { info: i, .. } | State::Ready { info: i, .. } => {
-                Some(i)
-            }
+            State::Available(i)
+            | State::Downloading { info: i, .. }
+            | State::Ready { info: i, .. } => Some(i),
             _ => None,
         }
     }
@@ -196,7 +196,10 @@ fn wake(hwnd_raw: isize) {
 fn info_of(r: &Release) -> Info {
     Info {
         version: r.version.to_string(),
-        size: r.asset(spectre_update::ASSET_EXE).map(|a| a.size).unwrap_or(0),
+        size: r
+            .asset(spectre_update::ASSET_EXE)
+            .map(|a| a.size)
+            .unwrap_or(0),
         headline: r.headline(),
         html_url: r.html_url.clone(),
     }
@@ -248,7 +251,10 @@ fn download(ctx: &Ctx, client: &Client, r: &Release, events: &Sender<Event>) -> 
         .updates_dir
         .join(format!("spectrenotes-{}.exe", r.version));
     let mut last = Instant::now() - Duration::from_secs(1);
-    let size = r.asset(spectre_update::ASSET_EXE).map(|a| a.size).unwrap_or(0);
+    let size = r
+        .asset(spectre_update::ASSET_EXE)
+        .map(|a| a.size)
+        .unwrap_or(0);
     let mut progress = |done: u64, total: Option<u64>| -> bool {
         if ctx.cancel.load(Ordering::Relaxed) {
             return false;
@@ -307,7 +313,14 @@ mod tests {
             })
             .unwrap();
         u.poll();
-        assert!(matches!(u.state, State::Downloading { done: 50, total: 100, .. }));
+        assert!(matches!(
+            u.state,
+            State::Downloading {
+                done: 50,
+                total: 100,
+                ..
+            }
+        ));
 
         // Anulowanie: stan wraca od razu, pozniejszy "cancelled" z watku go nie rusza.
         u.cancel();

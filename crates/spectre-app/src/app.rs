@@ -28,8 +28,8 @@ use crate::lan::LanConfig;
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, SyncWorker, WM_SYNC};
-use crate::update::{State as UpdateState, Updater, WM_UPDATE};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
+use crate::update::{State as UpdateState, Updater, WM_UPDATE};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
 const PALETTE: [Rgba; 6] = [
@@ -43,6 +43,9 @@ const PALETTE: [Rgba; 6] = [
 
 const WHEEL_STEP_PX: f32 = 80.0;
 const ERASER_RADIUS_PX: f32 = 14.0;
+/// Co tyle odcinkow ostatecznych mokra kreska trafia do warstwy suchej
+/// (`wet_pending`); przy `max_seg_px` 1,5 to ~150 px kreski na jedna figure.
+const WET_BURN_SEGS: usize = 96;
 /// Po tylu ms ciszy robimy fsync - realizuje "utrata max 1 s pracy".
 const SYNC_IDLE_MS: u32 = 400;
 /// Po tylu ms bez rysika przy pasku pasek sie chowa (Z7: brak statycznego chrome).
@@ -128,6 +131,8 @@ enum Dirty {
 struct RemoteWet {
     builder: StrokeBuilder,
     color: Rgba,
+    /// Odcinki ostateczne jeszcze nie wypalone do warstwy suchej (jak `wet_pending`).
+    pending: Vec<Segment>,
 }
 
 impl Dirty {
@@ -271,6 +276,12 @@ pub struct App {
     show_requested: Option<Instant>,
 
     commit_buf: Vec<Segment>,
+    /// Odcinki ostateczne biezacej kreski, ktore czekaja na wypalenie do warstwy
+    /// suchej. Wypalamy porcjami po `WET_BURN_SEGS`, a do tego czasu rysujemy je
+    /// co klatke razem z czubkiem jako jedna wstege: kazde wypalenie to osobna
+    /// figura z zaokraglonymi koncami, wiec na styku porcji piksele krawedzi
+    /// sumuja alfe (jak kiedys na kazdym odcinku) - im rzadsze styki, tym lepiej.
+    wet_pending: Vec<Segment>,
     tail_buf: Vec<Segment>,
     hit_buf: Vec<StrokeId>,
     hit_bbox: Option<Bbox>,
@@ -505,6 +516,7 @@ impl App {
             hidden: false,
             show_requested: None,
             commit_buf: Vec::with_capacity(4096),
+            wet_pending: Vec::with_capacity(256),
             tail_buf: Vec::with_capacity(256),
             hit_buf: Vec::new(),
             hit_bbox: None,
@@ -770,6 +782,7 @@ impl App {
 
     fn begin_stroke(&mut self, batch: &PenBatch) {
         self.stroke.clear();
+        self.wet_pending.clear();
         self.mode = Mode::Draw;
         self.wet_seq = 0;
         self.feed(batch);
@@ -806,6 +819,9 @@ impl App {
     fn end_stroke(&mut self) {
         let samples = self.stroke.samples().to_vec();
         self.stroke.clear();
+        // Niewypalone odcinki nie sa juz potrzebne: `repaint` prostokata kreski
+        // rysuje ja cala z dokumentu jako jedna figure.
+        self.wet_pending.clear();
         if samples.is_empty() {
             return;
         }
@@ -1649,9 +1665,8 @@ impl App {
     fn update_view(&self) -> menu::UpdateView {
         use spectre_update::human_bytes;
         // Naglowek opisu wydania w osobnej linii; panel ma ~40 znakow szerokosci.
-        let headline = |i: &crate::update::Info| {
-            (!i.headline.is_empty()).then(|| one_line(&i.headline, 40))
-        };
+        let headline =
+            |i: &crate::update::Info| (!i.headline.is_empty()).then(|| one_line(&i.headline, 40));
         let checked = |m: Option<Mark>| match m {
             Some(m) => format!("checked {}", menu::human_age(m.age_s())),
             None => "not checked yet".to_string(),
@@ -1817,9 +1832,11 @@ impl App {
                     let w = self.remote_wet.entry(author).or_insert_with(|| RemoteWet {
                         builder: StrokeBuilder::new(InkConfig::default()),
                         color: data.color,
+                        pending: Vec::new(),
                     });
                     if seq == 0 {
                         w.builder.clear();
+                        w.pending.clear();
                     }
                     let mut cfg = *w.builder.config();
                     if (cfg.base_width - data.base_width).abs() > 1e-3 {
@@ -2634,16 +2651,22 @@ impl App {
         }
         self.dirty = Dirty::Clean;
 
+        // Mokra kreska: odcinki ostateczne zbieraja sie w `wet_pending` i ida do
+        // warstwy suchej porcjami; wszystko niewypalone plus czubek rysujemy co
+        // klatke jako jedna wstege - te sama figure, ktora dostanie dokument.
         self.commit_buf.clear();
         self.tail_buf.clear();
         if self.mode == Mode::Draw {
             self.stroke.commit(&mut self.commit_buf);
+            self.wet_pending.extend_from_slice(&self.commit_buf);
+            if self.wet_pending.len() >= WET_BURN_SEGS {
+                let _ = self
+                    .renderer
+                    .commit(&self.wet_pending, self.color(), &self.cam);
+                self.wet_pending.clear();
+            }
+            self.tail_buf.extend_from_slice(&self.wet_pending);
             self.stroke.tail(&mut self.tail_buf);
-        }
-        if !self.commit_buf.is_empty() {
-            let segs = std::mem::take(&mut self.commit_buf);
-            let _ = self.renderer.commit(&segs, self.color(), &self.cam);
-            self.commit_buf = segs;
         }
         // Mokre kreski peerow: tak samo jak wlasna - odcinki ostateczne do
         // warstwy suchej, czubek na wierzch klatki.
@@ -2652,11 +2675,13 @@ impl App {
         for w in self.remote_wet.values_mut() {
             self.commit_buf.clear();
             w.builder.commit(&mut self.commit_buf);
-            if !self.commit_buf.is_empty() {
-                let _ = self.renderer.commit(&self.commit_buf, w.color, &self.cam);
+            w.pending.extend_from_slice(&self.commit_buf);
+            if w.pending.len() >= WET_BURN_SEGS {
+                let _ = self.renderer.commit(&w.pending, w.color, &self.cam);
+                w.pending.clear();
             }
             let mut t = WetTail {
-                segs: Vec::new(),
+                segs: w.pending.clone(),
                 color: w.color,
             };
             w.builder.tail(&mut t.segs);
