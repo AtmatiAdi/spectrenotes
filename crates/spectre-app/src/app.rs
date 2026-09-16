@@ -65,7 +65,9 @@ const PARTNER_HOLD_MS: u32 = 30_000;
 /// tylko przy otwartym menu i gasnie z nim (Z7: w tle zero wybudzen).
 const TIMER_MENU_CLOCK: usize = 6;
 const MENU_CLOCK_MS: u32 = 1000;
-/// Miniatury notatek do listy w menu buduja sie po kolei, z budzetem na klatke:
+/// Miniatury notatek do listy w menu buduja sie po kolei, z budzetem na klatke,
+/// od startu aplikacji w tle (rysik w zasiegu wstrzymuje), a nie dopiero przy
+/// pierwszym otwarciu menu:
 /// wczytanie cudzej notatki to odczyt z dysku, a panel ma sie otworzyc od razu.
 const TIMER_THUMBS: usize = 7;
 /// Sprawdzenie wydan na GitHubie (`update.rs`): chwile po starcie (nie w tym
@@ -329,6 +331,8 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
             app.arm_partner_timer();
         }
         app.sync.send(SyncJob::Status);
+        // Miniatury do menu gotowe, zanim ktos je otworzy pierwszy raz.
+        app.arm_thumbs(true);
     }
     Ok(())
 }
@@ -1454,6 +1458,13 @@ impl App {
         self.end_action();
         self.commit_title();
         self.sync_now();
+        // Opuszczana notatka rysowana przy zamknietym menu ma miniature sprzed
+        // kresek - zamknieta notatka nie jest juz sprawdzana po lamporcie.
+        let old = &self.notes[self.note_idx].id;
+        if self.thumbs.get(old) != Some(&self.doc.lamport()) {
+            self.thumbs.remove(old);
+            self.arm_thumbs(true);
+        }
         match open_note(&self.space, &self.notes[idx].id, &self.author) {
             Ok((store, doc)) => {
                 self.store = store;
@@ -1763,6 +1774,11 @@ impl App {
         if ids.contains(&current) {
             self.reload_current();
         }
+        // Zmienione z zewnatrz notatki maja nieaktualne miniatury - do przebudowy w tle.
+        for id in &ids {
+            self.thumbs.remove(id);
+        }
+        self.arm_thumbs(true);
     }
 
     // ----- live (Etap 6) -----------------------------------------------------
@@ -1923,6 +1939,7 @@ impl App {
             }
             self.note_idx = self.notes.iter().position(|e| e.id == current).unwrap_or(0);
             self.folders = self.space.list_folders();
+            self.arm_thumbs(true);
             repaint = true;
         }
         if repaint || self.menu.open || self.show_hud {
@@ -2436,11 +2453,23 @@ impl App {
         }
     }
 
+    /// Przy otwartym menu miniatury powstaja w klatce (widac, jak sie
+    /// pojawiaja). Przy zamknietym to rozgrzewka w tle - po starcie i po
+    /// zmianie listy notatek - zeby pierwsze otwarcie menu nie mialo czego
+    /// doczytywac. Rysik w zasiegu = nic nie robimy (latencja pierwszej probki
+    /// wazniejsza niz miniatury); tik wraca za 16 ms.
     fn thumbs_tick(&mut self) {
         if self.menu.open && self.waves.is_none() && !self.hidden {
             self.render();
-        } else {
-            self.arm_thumbs(false);
+        } else if self.mode == Mode::Idle && !self.hover {
+            self.ensure_thumbs();
+            if !self.thumbs_pending {
+                eprintln!(
+                    "thumbs: {} ready, {:.0} ms after start",
+                    self.thumbs.len(),
+                    self.started.elapsed().as_secs_f32() * 1000.0
+                );
+            }
         }
     }
 

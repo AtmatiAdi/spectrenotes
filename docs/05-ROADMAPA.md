@@ -281,6 +281,11 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       `UiPrim::Thumb`), budowane po kolei z budżetem na klatkę, bo wczytanie
       cudzej notatki to odczyt z dysku. Notatki z LAN mają te same kafelki,
       miniaturę po otwarciu (wcześniej nie mamy treści).
+      Od 2026-09-16 budowane **od startu w tle** (ten sam timer i budżet,
+      rysik w zasięgu wstrzymuje), nie przy pierwszym otwarciu menu — 12 notatek
+      gotowych 260 ms po starcie. Bieżąca notatka odświeża się po lamporcie przy
+      otwarciu menu; notatki zmienione przez sync i opuszczona notatka rysowana
+      przy zamkniętym menu wracają do kolejki.
 
 Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,
