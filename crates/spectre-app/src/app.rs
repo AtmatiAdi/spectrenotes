@@ -3303,6 +3303,14 @@ pub unsafe extern "system" fn wndproc(
             let _ = DestroyWindow(hwnd);
             LRESULT(0)
         }
+        spectre_shell_win::instance::WM_SHOW_APP => {
+            // Druga instancja (klik w ikone) prosi o pokazanie tego okna.
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            app.show();
+            LRESULT(0)
+        }
         WM_SYNC => {
             app.on_sync_events();
             LRESULT(0)
@@ -3393,6 +3401,9 @@ pub unsafe extern "system" fn wndproc(
         WM_ERASEBKGND => LRESULT(1),
         WM_DESTROY => {
             tray::unregister_toggle_hotkey(hwnd);
+            // Przed restartem po aktualizacji: nowy proces startuje, gdy to okno
+            // jeszcze istnieje - bez znacznika nie wezmie nas za dzialajaca instancje.
+            spectre_shell_win::instance::unmark(hwnd);
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             if !ptr.is_null() {

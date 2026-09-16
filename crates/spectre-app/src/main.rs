@@ -28,7 +28,7 @@ mod update;
 
 use std::path::PathBuf;
 
-use spectre_shell_win::{install, window};
+use spectre_shell_win::{install, instance, window};
 
 fn main() -> windows::core::Result<()> {
     if std::env::args().any(|a| a == "--bench" || a == "--fill-white" || a == "--console") {
@@ -74,7 +74,24 @@ fn main() -> windows::core::Result<()> {
     // `--tray` (autostart z systemem): start schowany, okno na Win+Shift+N.
     let start_hidden = std::env::args().any(|a| a == spectre_shell_win::autostart::TRAY_ARG);
 
+    // Jedna instancja na space: klik w ikone przy dzialajacej aplikacji pokazuje
+    // jej okno, zamiast otwierac drugi proces na tym samym op-logu. Debug i testy
+    // (`--new-instance`, wejscie testowe) dostaja osobny proces.
+    let tag = instance::space_tag(&space_dir);
+    let multi = std::env::args().any(|a| a == instance::NEW_INSTANCE_ARG)
+        || std::env::var_os("SPECTRENOTES_TEST_INPUT").is_some();
+    if !multi {
+        if let Some(running) = instance::find_running(tag) {
+            // Autostart trafil na dzialajaca instancje: nic nie wyskakuje.
+            if !start_hidden {
+                instance::show_running(running);
+            }
+            return Ok(());
+        }
+    }
+
     let hwnd = window::create_window("SpectreNotes", "SpectreNotes", app::wndproc, 1400, 900)?;
+    instance::mark(hwnd, tag);
     app::install(hwnd, &space_dir, start_hidden)?;
     window::run_message_loop();
     Ok(())

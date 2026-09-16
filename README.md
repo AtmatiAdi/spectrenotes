@@ -51,10 +51,16 @@ Aplikacja **żyje w tray'u**: `Esc`, zamknięcie okna i `Win+Shift+N` chowają j
 `Ctrl+Q` albo prawy klik na ikonie → Quit. **Interfejs jest po angielsku** (menu,
 HUD, komunikaty); dokumentacja i komentarze w kodzie zostają po polsku.
 
+**Jedna instancja na space**: ponowne uruchomienie (ikona, skrót, autostart) przy
+działającej aplikacji pokazuje jej okno i kończy się — dwa procesy pisałyby do tego
+samego op-logu. Inny katalog space'u to osobna instancja; `--new-instance` (debug,
+testy) wyłącza sprawdzanie. Kod: `spectre-shell-win::instance` (własność okna
+`SetPropW` ze skrótem ścieżki space'u, komunikat `WM_SHOW_APP`).
+
 Binarka jest aplikacją okienkową — **bez okna konsoli**. Argumenty: `--tray` (start
-schowany do traya; tak startuje autostart), `--console` (dołącz do konsoli terminala,
-z którego uruchomiono — logi), `--bench`, `--fill-white` (tryby wierszowe, same
-dołączają konsolę).
+schowany do traya; tak startuje autostart), `--new-instance` (patrz wyżej), `--console`
+(dołącz do konsoli terminala, z którego uruchomiono — logi), `--bench`, `--fill-white`
+(tryby wierszowe, same dołączają konsolę).
 
 **Współpraca ze Spectre** (`C:\Projects\Spectre` — presety ekranów i czarna nakładka
 AMOLED na panel laptopa): gdy SpectreNotes jest widoczne na panelu i ma włączoną własną

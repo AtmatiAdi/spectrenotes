@@ -10,6 +10,7 @@ pub mod hash;
 pub mod http;
 pub mod image;
 pub mod install;
+pub mod instance;
 pub mod pen;
 pub mod secret;
 pub mod shield;

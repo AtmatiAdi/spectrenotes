@@ -136,6 +136,11 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       panelu). Spectre: `BEHAVIOR.md` S10, D-11
 - [x] Bez okna konsoli (`windows_subsystem = "windows"`); `--console` i tryby wierszowe
       dołączają się do konsoli terminala
+- [x] **Jedna instancja na space** (2026-09-16): drugie uruchomienie pokazuje okno
+      działającej (także z traya; `--tray` przy działającej kończy się po cichu),
+      inny space = osobny proces, `--new-instance` dla debugowania i testów.
+      Rozpoznanie po własności okna (`SetPropW`/`GetPropW`, skrót ścieżki space'u),
+      bez muteksów i IPC; `spectre-shell-win::instance`
 - [x] **Interfejs po angielsku** — menu, HUD, komunikaty synchronizacji i błędów;
       dokumentacja i komentarze po polsku. Bez warstwy i18n (jeden język, prosto)
 
