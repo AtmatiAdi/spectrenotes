@@ -14,6 +14,7 @@
 
 use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
+use std::time::Instant;
 
 // Wymiary ponizej (i w `menu.rs`) sa w **pikselach logicznych** (96 DPI), jak
 // w Windows. Uklad liczy z nich fizyczne piksele raz, przy `layout`, mnozac
@@ -32,6 +33,10 @@ pub fn px(v: f32, scale: f32) -> f32 {
 pub const BAR_THICK: f32 = 48.0;
 /// Strefa przy krawedzi, ktora odslania pasek.
 pub const EDGE_ZONE: f32 = 16.0;
+/// Czas chowania paska: wsuwa sie w swoja krawedz i blednie. Krotko - to ma
+/// byc "znikniecie, ktore widac", nie animacja, na ktora sie czeka; pasek
+/// wraca natychmiast, gdy rysik wroci do krawedzi.
+pub const HIDE_MS: f32 = 220.0;
 pub const ITEM_LEN: f32 = 38.0;
 pub const COLOR_LEN: f32 = 26.0;
 pub const GRIP_LEN: f32 = 19.0;
@@ -176,6 +181,10 @@ struct Item {
 pub struct Toolbar {
     pub dock: Dock,
     pub visible: bool,
+    /// Poczatek chowania: przez `HIDE_MS` po tym pasek (i zakladki w pelnym
+    /// ekranie) jeszcze sie rysuje - wsuwany w krawedz i coraz bledszy - ale
+    /// juz nie przyjmuje dotkniec. `None` = nic sie nie chowa.
+    hiding: Option<Instant>,
     /// Ustawienie: pasek nie chowa sie po bezczynnosci (swiadome odstepstwo od Z7).
     pub pinned: bool,
     items: Vec<Item>,
@@ -210,6 +219,7 @@ impl Toolbar {
         Self {
             dock,
             visible: false,
+            hiding: None,
             pinned: false,
             items: Vec::new(),
             hot: None,
@@ -237,7 +247,35 @@ impl Toolbar {
     /// bezczynnosci znikaja - inaczej z pelnego ekranu nie dalo by sie wyjsc
     /// niczym poza klawiatura.
     fn tabs_shown(&self) -> bool {
-        !self.absorbs() && (self.chrome || self.visible)
+        !self.absorbs() && (self.chrome || self.visible || self.hide_progress().is_some())
+    }
+
+    /// Postep chowania 0..1, gdy trwa; `None` = pasek stoi albo juz go nie ma.
+    fn hide_progress(&self) -> Option<f32> {
+        // `visible` ustawiane wprost (np. po upuszczeniu paska) tez przerywa chowanie.
+        if self.visible {
+            return None;
+        }
+        let t = self.hiding?.elapsed().as_secs_f32() * 1000.0 / HIDE_MS;
+        (t < 1.0).then_some(t)
+    }
+
+    /// Czy trwa animacja chowania - wtedy klatki trzeba rysowac bez wejscia.
+    pub fn animating(&self) -> bool {
+        self.hide_progress().is_some()
+    }
+
+    /// Schowanie paska od zaraz, z animacja (bezczynnosc, start ochrony AMOLED).
+    /// Zwraca, czy bylo co chowac.
+    pub fn begin_hide(&mut self) -> bool {
+        if !self.visible {
+            return false;
+        }
+        self.visible = false;
+        self.hiding = Some(Instant::now());
+        self.hot = None;
+        self.title_hot = None;
+        true
     }
 
     /// `w`, `h` - rozmiar okna w pikselach, `scale` - DPI monitora / 96.
@@ -619,6 +657,7 @@ impl Toolbar {
         let was_visible = self.visible;
         if self.in_edge_zone(x, y) {
             self.visible = true;
+            self.hiding = None;
         }
         let hot = if self.visible && self.bar_rect().contains(x, y) {
             self.hit_at(x, y)
@@ -642,14 +681,8 @@ impl Toolbar {
         if self.pinned {
             return false;
         }
-        if self.visible
-            && self.dragging.is_none()
-            && !self.bar_rect().contains(pointer.0, pointer.1)
-        {
-            self.visible = false;
-            self.hot = None;
-            self.title_hot = None;
-            true
+        if self.dragging.is_none() && !self.bar_rect().contains(pointer.0, pointer.1) {
+            self.begin_hide()
         } else {
             false
         }
@@ -692,17 +725,39 @@ impl Toolbar {
     // ----- rysowanie ---------------------------------------------------------
 
     pub fn build(&self, s: &UiState, out: &mut Vec<UiPrim>) {
+        let hide = self.hide_progress();
+        // Chowanie: ruch przyspiesza w strone krawedzi (kwadrat postepu), kolor
+        // blednie liniowo - koniec ruchu zbiega sie z ostatnimi widocznymi pikselami.
+        let slide = hide.map_or(0.0, |p| p * p);
+        let alpha = hide.map_or(1.0, |p| 1.0 - p);
         if self.tabs_shown() {
+            let start = out.len();
             self.build_tabs(s, out);
+            // W pelnym ekranie zakladki chodza z paskiem: wsuwaja sie w gorna krawedz.
+            if !self.chrome && hide.is_some() {
+                let up = self.px(TAB_H) + 10.0 * self.scale;
+                shift_fade(&mut out[start..], 0.0, -slide * up, alpha);
+            }
         }
         if let Some((dx, dy)) = self.dragging {
             self.build_drag_ghost(dx, dy, out);
             return;
         }
-        if !self.visible {
+        if !self.visible && hide.is_none() {
             return;
         }
+        let start = out.len();
         self.build_toolbar(s, out);
+        if hide.is_some() {
+            let d = slide * self.thickness();
+            let (dx, dy) = match self.dock {
+                Dock::Left => (-d, 0.0),
+                Dock::Right => (d, 0.0),
+                Dock::Top => (0.0, -d),
+                Dock::Bottom => (0.0, d),
+            };
+            shift_fade(&mut out[start..], dx, dy, alpha);
+        }
     }
 
     /// Zakladki nad canvasem: tlo z zaokraglonym dolem, jak wywieszki.
@@ -1132,11 +1187,94 @@ fn grip_dots(g: Rect, color: Rgba, k: f32, out: &mut Vec<UiPrim>) {
     }
 }
 
+/// Przesuwa gotowe prymitywy o `(dx, dy)` i mnozy ich krycie przez `alpha`
+/// (0..1). Tak animuje sie chowanie: uklad liczy pasek raz, w miejscu
+/// spoczynku, a klatka przesuwa go i blednie juz po fakcie - bez drugiego
+/// `layout` i bez wiedzy o animacji w kodzie rysujacym elementy.
+fn shift_fade(prims: &mut [UiPrim], dx: f32, dy: f32, alpha: f32) {
+    let fade = |c: &mut Rgba| c.a = (c.a as f32 * alpha.clamp(0.0, 1.0)).round() as u8;
+    for p in prims {
+        match p {
+            UiPrim::Rect { x, y, color, .. } | UiPrim::Outline { x, y, color, .. } => {
+                *x += dx;
+                *y += dy;
+                fade(color);
+            }
+            UiPrim::Circle { x, y, color, .. } | UiPrim::Text { x, y, color, .. } => {
+                *x += dx;
+                *y += dy;
+                fade(color);
+            }
+            UiPrim::Thumb { x, y, .. }
+            | UiPrim::Avatar { x, y, .. }
+            | UiPrim::Clip { x, y, .. } => {
+                *x += dx;
+                *y += dy;
+            }
+            UiPrim::Unclip => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const S: f32 = 1.25;
+
+    /// Chowanie to animacja: zaraz po `idle` pasek jeszcze sie rysuje - wsuniety
+    /// w swoja krawedz i bledszy - ale nie przyjmuje juz dotkniec; hover przy
+    /// krawedzi przerywa chowanie od razu.
+    #[test]
+    fn chowanie_wsuwa_pasek_w_krawedz_i_blednie() {
+        let mut t = Toolbar::new(Dock::Left);
+        t.layout(1000.0, 800.0, S, 1);
+        t.visible = true;
+        let st = UiState {
+            palette: &[Rgba::rgb(255, 255, 255)],
+            color_idx: 0,
+            eraser: false,
+            width: 1.0,
+            can_undo: false,
+            can_redo: false,
+            title: "t",
+            zoom: 1.0,
+            view_locked: false,
+            maximized: false,
+            fullscreen: false,
+            menu_open: false,
+        };
+        let mut shown = Vec::new();
+        t.build(&st, &mut shown);
+        // Tlo paska: prostokat w kolorze BG (zakladki maja BG_TAB).
+        let is_bar = |p: &&UiPrim| matches!(p, UiPrim::Rect { color, .. } if (color.r, color.g, color.b) == (BG.r, BG.g, BG.b));
+        let bar_x = |prims: &[UiPrim]| match prims.iter().find(is_bar) {
+            Some(UiPrim::Rect { x, color, .. }) => (*x, color.a),
+            _ => panic!("brak tla paska"),
+        };
+        assert_eq!(bar_x(&shown), (0.0, 255));
+
+        assert!(t.idle((500.0, 400.0)));
+        assert!(!t.visible && t.animating());
+        assert_eq!(t.hit(10.0, 300.0), None);
+        // W polowie czasu: przesuniety w lewo i pol-przezroczysty.
+        t.hiding = Some(Instant::now() - std::time::Duration::from_millis(HIDE_MS as u64 / 2));
+        let mut mid = Vec::new();
+        t.build(&st, &mut mid);
+        let (x, a) = bar_x(&mid);
+        assert!(x < -0.2 * t.thickness() && x > -t.thickness(), "x = {x}");
+        assert!(a > 100 && a < 160, "alpha = {a}");
+        // Po czasie: nic sie nie rysuje.
+        t.hiding = Some(Instant::now() - std::time::Duration::from_millis(HIDE_MS as u64 + 50));
+        let mut gone = Vec::new();
+        t.build(&st, &mut gone);
+        assert!(!t.animating());
+        assert!(gone.iter().find(is_bar).is_none());
+        // Hover przy krawedzi wraca natychmiast.
+        t.hiding = Some(Instant::now());
+        assert!(t.hover(5.0, 300.0));
+        assert!(t.visible && !t.animating());
+    }
 
     /// Uklad jest w pikselach fizycznych policzonych ze skali DPI: uchwyty
     /// zakladek, przyciski okna i puste miejsce paska musza trafiac tam, gdzie

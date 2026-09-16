@@ -101,6 +101,16 @@ zapisuje się położenie sprzed pełnego ekranu — prostokąt monitora nie jes
 wyborem. Wejście i wyjście meldujemy powłoce przez `ITaskbarList2::MarkFullscreenWindow`,
 więc pasek zadań ustępuje od razu, zamiast czekać na heurystykę powłoki (ta wymaga
 pierwszego planu i zauważa rzecz po sekundzie czy dwóch).
+Technicznie pełny ekran to **maksymalizacja do całego monitora**: okno (bez
+`WS_CAPTION`, ale z `WS_THICKFRAME` — snap i Win+strzałki działają) odpowiada na
+`WM_GETMINMAXINFO` obszarem roboczym, a w pełnym ekranie prostokątem monitora.
+Zmaksymalizowane okno zajmuje więc dokładnie obszar roboczy od (0,0) — bez ramki
+wysuniętej 9 px poza ekran — i przejście do pełnego ekranu to tylko dolna krawędź
+rosnąca o pasek zadań; treść nie drga. Ze zwykłego okna wejście i wyjście grają
+systemowe animacje maksymalizacji i przywracania. Pasek narzędzi (i zakładki
+w pełnym ekranie) nie znika w jednej klatce: wsuwa się w swoją krawędź i blednie
+przez ~200 ms — także gdy chowa go ochrona AMOLED; podjazd rysika do krawędzi
+przerywa to od razu.
 Gdy pasek narzędzi jest zadokowany u góry, **wchłania** oba pola — tytuł,
 uchwyt i przyciski stają się jego elementami i znikają razem z nim; tytuł ma wtedy tę
 samą szerokość i to samo miejsce co zakładka (środek okna), nie rozciąga się na wolne

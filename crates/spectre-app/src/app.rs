@@ -78,6 +78,11 @@ const UPDATE_FIRST_MS: u32 = 5_000;
 const UPDATE_EVERY_MS: u32 = 10 * 60 * 1000;
 const THUMBS_TICK_MS: u32 = 16;
 const THUMB_BUDGET_MS: f32 = 5.0;
+/// Klatki animacji chowania paska (`ui::HIDE_MS`): chodzi tylko przez te
+/// ~200 ms i gasnie z ostatnia klatka. Podczas rysowania nie renderuje sam -
+/// klatki i tak ida z kazdym zdarzeniem rysika, a dodatkowe tylko by je opoznialy.
+const TIMER_ANIM: usize = 9;
+const ANIM_TICK_MS: u32 = 16;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -1029,6 +1034,25 @@ impl App {
     fn arm_ui_timer(&self) {
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_UI, UI_HIDE_MS, None);
+        }
+    }
+
+    /// Pasek zaczal sie chowac: klatki animacji do jej konca.
+    fn arm_anim(&self) {
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_ANIM, ANIM_TICK_MS, None);
+        }
+    }
+
+    fn anim_tick(&mut self) {
+        if !self.toolbar.animating() {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
+            }
+        }
+        // Ostatnia klatka (bez paska) tez stad; w trakcie rysowania klatki daje rysik.
+        if self.mode != Mode::Draw {
+            self.render();
         }
     }
 
@@ -2524,6 +2548,10 @@ impl App {
         if self.menu.open {
             self.toggle_menu();
         }
+        // Pasek nie znika w jednej klatce - wsuwa sie w krawedz pod wjezdzajacymi falami.
+        if self.toolbar.begin_hide() {
+            self.arm_anim();
+        }
         if !self.fullscreen.is_active() {
             self.toggle_fullscreen();
             self.waves_fullscreen = true;
@@ -2742,7 +2770,8 @@ impl App {
         let mut st = self.ui_state();
         st.title = &title;
         // Podczas ochrony AMOLED zadnego chrome: ekran to sama notatka pod pasami.
-        if self.waves.is_none() {
+        // Wyjatek: pasek, ktory wlasnie sie chowa, konczy swoj zjazd pod falami.
+        if self.waves.is_none() || self.toolbar.animating() {
             self.toolbar.build(&st, &mut prims);
         }
         self.arm_menu_clock(self.menu.open && self.waves.is_none());
@@ -3275,6 +3304,19 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_NCCALCSIZE => window::nc_calc_size(hwnd, wparam, lparam),
+        // Zmaksymalizowane okno = obszar roboczy; w pelnym ekranie = caly monitor.
+        WM_GETMINMAXINFO => window::min_max_info(hwnd, lparam, app.fullscreen.is_active()),
+        WM_SYSCOMMAND => {
+            // Pelny ekran jest maksymalizacja, wiec systemowe "przywroc" (Win+Dol,
+            // menu okna) najpierw z niego wychodzi - do stanu sprzed wejscia -
+            // zamiast zostawic okno przywrocone z wciaz aktywna flaga.
+            if (wparam.0 & 0xfff0) == SC_RESTORE as usize && app.fullscreen.is_active() {
+                app.toggle_fullscreen();
+                app.render();
+                return LRESULT(0);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_NCHITTEST => {
             let (x, y) = window::nc_point_to_client(hwnd, lparam);
             if let Some(ht) = window::resize_hit(hwnd, x, y) {
@@ -3349,11 +3391,13 @@ pub unsafe extern "system" fn wndproc(
                     // Otwarte menu trzyma pasek na ekranie: panel wychodzi
                     // z przycisku ☰ i tym samym przyciskiem ma sie zamykac.
                     if !app.menu.open && app.toolbar.idle(app.last_screen) {
+                        app.arm_anim();
                         app.render();
                     } else if app.toolbar.visible {
                         app.arm_ui_timer();
                     }
                 }
+                TIMER_ANIM => app.anim_tick(),
                 _ => {}
             }
             LRESULT(0)

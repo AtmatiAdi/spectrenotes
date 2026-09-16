@@ -87,11 +87,19 @@ pub fn create_window(class: &str, title: &str, wndproc: WndProc, w: i32, h: i32)
             ));
         }
         let title = wide(title);
+        // `WS_OVERLAPPEDWINDOW` bez `WS_CAPTION`: pasek tytulowy rysuje aplikacja,
+        // a okno **z** `WS_CAPTION` Windows maksymalizuje po swojemu - na obszar
+        // roboczy z ramka wysunieta poza monitor (okno w (-9,-9)), ignorujac
+        // `WM_GETMINMAXINFO`, gdy ten prosi o caly obszar roboczy albo wiecej.
+        // Bez `WS_CAPTION` prostokat maksymalizacji jest dokladnie ten, ktory
+        // podamy (`min_max_info`): obszar roboczy, a w pelnym ekranie caly
+        // monitor. `WS_THICKFRAME` i `WS_MAXIMIZEBOX` zostaja - to one daja
+        // snap, Win+strzalki i animacje DWM.
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             PCWSTR(class_name.as_ptr()),
             PCWSTR(title.as_ptr()),
-            WS_OVERLAPPEDWINDOW,
+            WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             w,
@@ -196,19 +204,69 @@ fn mark_fullscreen(hwnd: HWND, on: bool) {
     }
 }
 
-/// Borderless fullscreen o rozmiarze monitora. Przy dokladnym dopasowaniu do
-/// trybu pulpitu DWM oddaje swapchain wprost do skanowania (independent flip).
+/// Monitor okna: caly prostokat i obszar roboczy (bez paska zadan).
+fn monitor_rects(hwnd: HWND) -> Option<(RECT, RECT)> {
+    unsafe {
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        GetMonitorInfoW(mon, &mut mi)
+            .as_bool()
+            .then_some((mi.rcMonitor, mi.rcWork))
+    }
+}
+
+/// Obsluga WM_GETMINMAXINFO: polozenie i rozmiar okna **zmaksymalizowanego**.
 ///
-/// Pelny ekran jest **trybem nad stanem okna**, nie trzecim stanem obok zwyklego
-/// i zmaksymalizowanego. Zapamietujemy wiec cale `WINDOWPLACEMENT` - a w nim i to,
-/// czy okno bylo zmaksymalizowane, i jego prostokat sprzed maksymalizacji - a
-/// wyjscie oddaje dokladnie ten stan. Sam prostokat nie wystarczal: okno wracalo
-/// "recznie ustawione" na rozmiar maksymalizacji, z `IsZoomed` mowiacym co innego
-/// niz wyglad i ze zgubionym prostokatem przywrocenia.
+/// Domyslnie Windows maksymalizuje okno z `WS_THICKFRAME` na obszar roboczy
+/// powiekszony o ramke, wysunieta poza monitor (okno w (-9,-9)). Nasza ramke
+/// rysuje aplikacja i `WM_NCCALCSIZE` oddaje caly prostokat jako klienta, wiec
+/// to wysuniecie tylko szkodzilo: tresc trzeba bylo odcinac, a przy wejsciu
+/// w pelny ekran poczatek okna przeskakiwal z (-9,-9) do (0,0) - DWM pokazywal
+/// stara klatke przesunieta o te 9 px, zanim aplikacja narysowala nowa.
+///
+/// Tu zmaksymalizowane okno zajmuje **dokladnie obszar roboczy**, a w pelnym
+/// ekranie (`fullscreen`) caly monitor. Wspolrzedne w `MINMAXINFO` sa
+/// wzgledem lewego gornego rogu monitora, na ktorym okno jest maksymalizowane
+/// (tak robi np. GLFW dla okien bez ramki).
+pub fn min_max_info(hwnd: HWND, lparam: LPARAM, fullscreen: bool) -> LRESULT {
+    if let Some((mon, work)) = monitor_rects(hwnd) {
+        let r = if fullscreen { mon } else { work };
+        let mmi = lparam.0 as *mut MINMAXINFO;
+        unsafe {
+            (*mmi).ptMaxPosition = POINT {
+                x: r.left - mon.left,
+                y: r.top - mon.top,
+            };
+            (*mmi).ptMaxSize = POINT {
+                x: r.right - r.left,
+                y: r.bottom - r.top,
+            };
+        }
+    }
+    LRESULT(0)
+}
+
+/// Pelny ekran bez ramki, o rozmiarze monitora. Przy dokladnym dopasowaniu
+/// do trybu pulpitu DWM oddaje swapchain wprost do skanowania (independent flip).
+///
+/// Pelny ekran to **maksymalizacja do calego monitora**, nie osobny styl okna:
+/// okno zostaje przy swoim stylu z bitem `WS_MAXIMIZE`, a `min_max_info`
+/// odpowiada prostokatem monitora zamiast obszaru roboczego. Dzieki temu:
+/// - z okna zmaksymalizowanego to jedna zmiana prostokata bez ruchu poczatku
+///   (rosnie tylko dolna krawedz, o pasek zadan) - nic nie skacze;
+/// - ze zwyklego okna wejscie to systemowa maksymalizacja, wiec DWM gra swoja
+///   plynna animacje powiekszania, a wyjscie - animacje przywracania;
+/// - zadnej podmiany stylu w locie, po ktorej DWM budowal okno od nowa.
+///
+/// Zapamietujemy cale `WINDOWPLACEMENT` sprzed wejscia - a w nim to, czy okno
+/// bylo zmaksymalizowane, i prostokat sprzed maksymalizacji - i wyjscie oddaje
+/// dokladnie ten stan.
 #[derive(Default)]
 pub struct Fullscreen {
     active: bool,
-    saved_style: i32,
     saved_place: WINDOWPLACEMENT,
 }
 
@@ -230,57 +288,76 @@ impl Fullscreen {
         self.active.then(|| placement_str(&self.saved_place))
     }
 
+    /// Przelacza pelny ekran. `active` zmienia sie **przed** ruchem okna, bo
+    /// `WM_GETMINMAXINFO` i `WM_NCCALCSIZE` przychodza w trakcie i musza juz
+    /// widziec nowy stan.
     pub fn toggle(&mut self, hwnd: HWND) {
         unsafe {
             if !self.active {
-                self.saved_style = GetWindowLongW(hwnd, GWL_STYLE);
                 self.saved_place = WINDOWPLACEMENT {
                     length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
                     ..Default::default()
                 };
                 let _ = GetWindowPlacement(hwnd, &mut self.saved_place);
-                let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-                let mut mi = MONITORINFO {
-                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                    ..Default::default()
+                let Some((mon, _)) = monitor_rects(hwnd) else {
+                    return;
                 };
-                if GetMonitorInfoW(mon, &mut mi).as_bool() {
-                    SetWindowLongW(hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as i32);
-                    let r = mi.rcMonitor;
-                    // TOPMOST: system chowa pasek zadan tylko dla okna na pierwszym
-                    // planie. Przy kilku monitorach klikniecie w inny ekran odbiera
-                    // pierwszy plan i pasek wychodzilby nad notatke; nad oknem
-                    // "zawsze na wierzchu" nie wychodzi.
+                self.active = true;
+                // TOPMOST: system chowa pasek zadan tylko dla okna na pierwszym
+                // planie. Przy kilku monitorach klikniecie w inny ekran odbiera
+                // pierwszy plan i pasek wychodzilby nad notatke; nad oknem
+                // "zawsze na wierzchu" nie wychodzi.
+                if self.was_maximized() {
                     let _ = SetWindowPos(
                         hwnd,
                         Some(HWND_TOPMOST),
-                        r.left,
-                        r.top,
-                        r.right - r.left,
-                        r.bottom - r.top,
+                        mon.left,
+                        mon.top,
+                        mon.right - mon.left,
+                        mon.bottom - mon.top,
                         SWP_FRAMECHANGED,
                     );
-                    mark_fullscreen(hwnd, true);
-                    self.active = true;
+                } else {
+                    let _ = SetWindowPos(
+                        hwnd,
+                        Some(HWND_TOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE,
+                    );
+                    let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                 }
+                mark_fullscreen(hwnd, true);
             } else {
-                SetWindowLongW(hwnd, GWL_STYLE, self.saved_style);
-                // Prostokat i stan wracaja razem, jednym `SetWindowPlacement`:
-                // zmaksymalizowane okno wraca zmaksymalizowane i pamieta, do czego
-                // sie przywraca.
-                let _ = SetWindowPlacement(hwnd, &self.saved_place);
-                // Placement nie rusza z-order - "zawsze na wierzchu" zdejmujemy sami.
-                let _ = SetWindowPos(
-                    hwnd,
-                    Some(HWND_NOTOPMOST),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE,
-                );
-                mark_fullscreen(hwnd, false);
                 self.active = false;
+                if self.was_maximized() {
+                    if let Some((_, work)) = monitor_rects(hwnd) {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            Some(HWND_NOTOPMOST),
+                            work.left,
+                            work.top,
+                            work.right - work.left,
+                            work.bottom - work.top,
+                            SWP_FRAMECHANGED,
+                        );
+                    }
+                } else {
+                    // Placement nie rusza z-order - "zawsze na wierzchu" zdejmujemy sami.
+                    let _ = SetWindowPos(
+                        hwnd,
+                        Some(HWND_NOTOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE,
+                    );
+                    let _ = SetWindowPlacement(hwnd, &self.saved_place);
+                }
+                mark_fullscreen(hwnd, false);
             }
         }
     }
@@ -299,10 +376,11 @@ pub fn trim_working_set() {
 
 // ----- okno bez systemowej ramki --------------------------------------------
 //
-// Okno zostaje WS_OVERLAPPEDWINDOW (snap, Win+strzalki, animacje, przeciaganie
-// do krawedzi dzialaja), ale WM_NCCALCSIZE oddaje caly prostokat jako obszar
-// klienta, a WM_NCHITTEST mowi systemowi, gdzie jest uchwyt do przesuwania
-// i gdzie krawedzie do zmiany rozmiaru. Ramke i przyciski rysuje aplikacja.
+// Okno ma style ramki (WS_THICKFRAME, WS_MAXIMIZEBOX: snap, Win+strzalki,
+// animacje, przeciaganie do krawedzi dzialaja), ale bez WS_CAPTION (patrz
+// `create_window`); WM_NCCALCSIZE oddaje caly prostokat jako obszar klienta,
+// a WM_NCHITTEST mowi systemowi, gdzie jest uchwyt do przesuwania i gdzie
+// krawedzie do zmiany rozmiaru. Ramke i przyciski rysuje aplikacja.
 
 /// Czas od ostatniego wejscia uzytkownika w **calym systemie** (klawiatura,
 /// mysz, rysik), w milisekundach - takze wtedy, gdy trafilo do innej
@@ -355,23 +433,12 @@ pub fn is_maximized(hwnd: HWND) -> bool {
 pub fn lock_workstation() -> bool {
     unsafe { windows::Win32::System::Shutdown::LockWorkStation().is_ok() }
 }
-/// Obsluga WM_NCCALCSIZE: caly prostokat okna to obszar klienta. Przy
-/// zmaksymalizowanym oknie system wysuwa ramke poza monitor - wtedy trzeba
-/// ja odjac, inaczej tresc bylaby obcieta z czterech stron.
+/// Obsluga WM_NCCALCSIZE: caly prostokat okna to obszar klienta - takze
+/// zmaksymalizowanego, bo `min_max_info` trzyma je w obszarze roboczym
+/// zamiast wysuwac ramke poza monitor.
 pub fn nc_calc_size(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if wparam.0 == 0 {
         return unsafe { DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam) };
-    }
-    if is_maximized(hwnd) {
-        let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
-        let t = frame_thickness(hwnd);
-        unsafe {
-            let rc = &mut (*params).rgrc[0];
-            rc.left += t;
-            rc.top += t;
-            rc.right -= t;
-            rc.bottom -= t;
-        }
     }
     LRESULT(0)
 }

@@ -33,8 +33,8 @@ zależność nie zachodzi.
    w siatce co 12 px (~1 ms na 2880×1800, sama arytmetyka, bez libm) i rozciągana
    na okno jedną bitmapą z interpolacją kubiczną. Koszt: jedna tania klatka co
    60 ms, tylko gdy okno jest widoczne i tylko w bezczynności. Na czas ochrony
-   notatka między pasami też przygasa (jasność z ustawień, domyślnie 30 %), UI znika
-   (pasek narzędzi i tytuł to statyczny chrome), a okno przechodzi na pełny ekran
+   notatka między pasami też przygasa (jasność z ustawień, domyślnie 30 %), UI zjeżdża
+   w krawędź (pasek narzędzi i tytuł to statyczny chrome), a okno przechodzi na pełny ekran
    z `HWND_TOPMOST`, żeby pasy przeszły przez cały panel; po pierwszym wejściu wraca
    poprzedni rozmiar. **Wejście jest spokojne i powolne**: najpierw cała notatka
    przez ~25 s smoothstepem przygasa do jasności z ustawień, pasy śpią pierwsze

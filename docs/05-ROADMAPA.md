@@ -248,6 +248,19 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       do którego wróci; do `config.txt` idzie położenie sprzed pełnego ekranu.
       Zmierzone: zmaksymalizowane → F11 → F11 wraca na -9,-9-2889,1749
       (`IsZoomed`), ❐ w pełnym ekranie daje z powrotem okno 1400x1000.
+- [x] **Pełny ekran bez skoku, pasek chowany animacją** (2026-09-16). Skok przy
+      zmaksymalizowane → F11 to okno przechodzące z (-9,-9) do (0,0): DWM pokazywał
+      starą klatkę przesuniętą o 9 px, zanim aplikacja narysowała nową. Teraz okno
+      jest bez `WS_CAPTION` (z `WS_THICKFRAME`/`WS_MAXIMIZEBOX`), `WM_GETMINMAXINFO`
+      daje obszar roboczy (zmaksymalizowane = 0,0-2880,1740) albo monitor (pełny
+      ekran = 0,0-2880,1800), a pełny ekran jest maksymalizacją z flagą — bez
+      podmiany stylu; systemowe „przywróć" (Win+↓) w pełnym ekranie z niego
+      wychodzi. Zmierzone klatkami ekranu: zakładka tytułu w tym samym pikselu
+      przed i po, ze zwykłego okna animacja DWM. Pasek narzędzi i zakładki
+      w pełnym ekranie chowają się przez 220 ms (wsunięcie w krawędź + zanikanie,
+      `TIMER_ANIM` 16 ms tylko na czas animacji, bez klatek podczas rysowania),
+      także przy starcie ochrony AMOLED (pod wjeżdżającymi falami). Zmierzone:
+      8 klatek w ~190 ms.
 - [x] **Kłódka widoku**: zablokowany = kolumna wyśrodkowana (bezwzględny środek
       notatki), zoom wolno, scroll w bok nie; odblokowany = canvas nieskończony
       w osi X. Naprawia „odblokowanie" scrolla w bok przez rysowanie po oddaleniu.
