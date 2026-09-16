@@ -42,15 +42,41 @@ pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// Id zasobu ikony w binarce (`build.rs` -> `winresource::set_icon`, domyslnie 1).
+const APP_ICON_ID: u16 = 1;
+
+/// Ikona aplikacji z zasobow binarki w zadanym rozmiarze (px; 0 = systemowy
+/// domyslny). `None`, gdy binarka nie ma zasobu (np. test bez build.rs) - wtedy
+/// wolajacy zostaje przy ikonie systemowej.
+pub fn app_icon(size: i32) -> Option<HICON> {
+    unsafe {
+        let hinstance = GetModuleHandleW(None).ok()?;
+        let flags = if size == 0 { LR_DEFAULTSIZE } else { IMAGE_FLAGS(0) };
+        LoadImageW(
+            Some(hinstance.into()),
+            PCWSTR(APP_ICON_ID as usize as *const u16),
+            IMAGE_ICON,
+            size,
+            size,
+            flags,
+        )
+        .ok()
+        .map(|h| HICON(h.0))
+    }
+}
+
 pub fn create_window(class: &str, title: &str, wndproc: WndProc, w: i32, h: i32) -> Result<HWND> {
     unsafe {
         let hinstance = GetModuleHandleW(None)?;
         let class_name = wide(class);
+        // Duza ikona (Alt+Tab, pasek zadan) i mala (naglowek okna, lista okien).
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wndproc),
             hInstance: hinstance.into(),
+            hIcon: app_icon(GetSystemMetrics(SM_CXICON)).unwrap_or_default(),
+            hIconSm: app_icon(GetSystemMetrics(SM_CXSMICON)).unwrap_or_default(),
             hCursor: LoadCursorW(None, IDC_CROSS)?,
             lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()

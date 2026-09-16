@@ -12,7 +12,8 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW, SetForegroundWindow,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetSystemMetrics, LoadIconW,
+    SetForegroundWindow, SM_CXSMICON,
     TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_APP,
 };
@@ -35,7 +36,9 @@ impl Tray {
                 uID: 1,
                 uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
                 uCallbackMessage: WM_TRAY,
-                hIcon: LoadIconW(None, IDI_APPLICATION)?,
+                // Rozmiar ikony traya wg DPI (SM_CXSMICON = 16 px przy 100%).
+                hIcon: crate::window::app_icon(GetSystemMetrics(SM_CXSMICON))
+                    .unwrap_or(LoadIconW(None, IDI_APPLICATION)?),
                 ..Default::default()
             };
             for (i, u) in tip.encode_utf16().take(127).enumerate() {

@@ -24,3 +24,6 @@ features = [
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+[build-dependencies]
+winresource = "0.1"

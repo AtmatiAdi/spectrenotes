@@ -307,7 +307,7 @@ crates/
   spectre-render     Direct2D na DXGI flip-model, przewijanie przyrostowe          [dziala]
   spectre-shell-win  okno Win32, WM_POINTER, DPI, feedback piora, pelny ekran, WinHTTP, instalacja  [dziala]
   spectre-update     wydania GitHub: wersje, pobieranie z weryfikacja SHA-256           [dziala]
-  spectre-app        binarka `spectrenotes`                                       [dziala]
+  spectre-app        binarka `spectrenotes`; ikona `icon.ico` (generator `icon/make-icon.ps1`), zasoby Win32 przez `build.rs` [dziala]
 tools/
   inkdemo            demo odczucia piora (Etap 0)                                 [dziala]
   setup              SpectreNotes-Setup.exe: pobiera i instaluje najnowsze wydanie [dziala]
@@ -340,7 +340,7 @@ idempotencja).
 ## Wymagania budowania
 
 - Rust stable (MSVC), Windows 10 1809+ / Windows 11
-- VS Build Tools z workloadem C++ oraz Windows SDK 10
+- VS Build Tools z workloadem C++ oraz Windows SDK 10 (`rc.exe` z SDK kompiluje zasoby: ikonę i blok wersji)
 
 ## Licencja
 
