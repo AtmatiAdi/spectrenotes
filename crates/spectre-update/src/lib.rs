@@ -188,7 +188,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotFound => write!(f, "no release found (or no access to the repository)"),
+            Error::NotFound => write!(f, "no release found (private repo? sign in)"),
             Error::Auth => write!(f, "GitHub rejected the token"),
             Error::RateLimited => write!(f, "GitHub rate limit - try again later"),
             Error::Http(s) => write!(f, "{s}"),

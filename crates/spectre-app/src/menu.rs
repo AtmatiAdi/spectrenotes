@@ -1020,7 +1020,7 @@ impl Menu {
                 y: r.y,
                 w: r.w - PAD * 2.0 * k - 90.0 * k,
                 h: r.h,
-                text: "Check for updates automatically".to_string(),
+                text: "Check automatically".to_string(),
                 color: FG,
                 font: UiFont::Ui,
             });

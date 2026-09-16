@@ -1683,7 +1683,7 @@ impl App {
                 notes: true,
             },
             UpdateState::Error(e) => menu::UpdateView {
-                line: format!("error: {}", one_line(e, 70)),
+                line: format!("error: {}", one_line(e, 46)),
                 action: Some("Try again"),
                 progress: None,
                 notes: false,
