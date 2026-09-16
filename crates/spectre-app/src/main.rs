@@ -52,7 +52,8 @@ fn main() -> windows::core::Result<()> {
     // i wpis odinstalowania, uruchom zainstalowana kopie. Uzywa go instalator
     // (`SpectreNotes-Setup.exe`) po pobraniu wydania; dziala tez recznie.
     if std::env::args().any(|a| a == "--install") {
-        return match install::install_self(spectre_update::CURRENT) {
+        let about = format!("https://github.com/{}", spectre_update::default_repo());
+        return match install::install_self(spectre_update::CURRENT, &about) {
             Ok(exe) => install::spawn(&exe, &[]).map_err(io_fail),
             Err(e) => Err(io_fail(e)),
         };

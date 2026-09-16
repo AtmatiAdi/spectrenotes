@@ -20,9 +20,10 @@ Kod: `spectre-shell-win::install`.
 
 ## Wydania (GitHub Releases)
 
-Wydanie to tag `vX.Y.Z` w repozytorium (`repository` w `Cargo.toml` — jedno
-źródło prawdy, z niego bierze adres i aplikacja, i skrypt) z trzema zasobami
-o **stałych nazwach**, żeby `releases/latest/download/<nazwa>` był trwałym adresem:
+Wydania żyją w **osobnym, publicznym repozytorium** `AtmatiAdi/spectrenotes-releases`
+(stała `RELEASES_REPO` w `spectre-update` — jedno źródło prawdy, z niego bierze
+adres i aplikacja, i instalator, i `release.ps1`); źródła zostają prywatne. Wydanie
+to tag `vX.Y.Z` z trzema zasobami o **stałych nazwach**, żeby `releases/latest/download/<nazwa>` był trwałym adresem:
 
 | zasób | co to |
 |---|---|
@@ -58,7 +59,7 @@ repozytorium, `--token` (albo `GITHUB_TOKEN`) daje dostęp do prywatnego.
 ## Aktualizacje w aplikacji
 
 ```
-start + 20 s, potem co 6 h (albo przycisk w menu)
+start + 5 s, potem co 10 min (albo przycisk w menu)
    → GET /repos/<repo>/releases/latest   (spectre-update, WinHTTP, bez zależności)
    → nowsza wersja?  → Settings → Application: "version X available (2.3 MB)  [Download]"
    → Download        → pasek postępu, anulowanie; plik w %LOCALAPPDATA%\SpectreNotes\updates\
@@ -83,14 +84,14 @@ Wyłączenie automatu: `Check for updates automatically` w Settings
 Jeśli aplikacja uruchomiona jest spoza katalogu instalacji (np. `target\release`),
 aktualizacja podmienia **ten** plik — updater nie przenosi aplikacji.
 
-## Prywatne repozytorium a inni użytkownicy
+## Dlaczego osobne publiczne repo wydań
 
 Zasoby wydań w **prywatnym** repozytorium wymagają tokenu — anonimowe zapytanie
-dostaje 404. Aplikacja używa tokenu logowania GitHub (Account → Sign in), jeśli
-jest; instalator — `--token`. Żeby inne osoby mogły instalować i aktualizować
-bez tokenu, wydania muszą być publiczne: albo publiczne repozytorium źródeł,
-albo osobne publiczne repozytorium tylko na wydania (`release.ps1` i aplikacja
-przyjmują `owner/repo`; w aplikacji `update_repo=`). Dołączenie kogoś do
+dostaje 404, a token logowania w aplikacji to PAT ograniczony do repo notatek
+(16 IX 2026: właściciel dostawał 404 na własne wydania). Publiczne repo tylko
+na binarki rozwiązuje to dla wszystkich bez żadnego tokenu, a źródła zostają
+prywatne. Prywatne repo wydań nadal działa (`update_repo=owner/repo` +
+token logowania z dostępem, albo `GITHUB_TOKEN`; instalator: `--repo`, `--token`). Dołączenie kogoś do
 **space'u** to osobna sprawa (03-FORMAT-I-SYNC): dostęp do jego prywatnego repo
 notatek i węzeł w tej samej sieci Tailscale dla warstwy live.
 

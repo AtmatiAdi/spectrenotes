@@ -65,11 +65,12 @@ const MENU_CLOCK_MS: u32 = 1000;
 /// Miniatury notatek do listy w menu buduja sie po kolei, z budzetem na klatke:
 /// wczytanie cudzej notatki to odczyt z dysku, a panel ma sie otworzyc od razu.
 const TIMER_THUMBS: usize = 7;
-/// Sprawdzenie wydan na GitHubie (`update.rs`): pierwsze chwile po starcie
-/// (nie w tym samym momencie co sync startowy), potem co kilka godzin.
+/// Sprawdzenie wydan na GitHubie (`update.rs`): chwile po starcie (nie w tym
+/// samym momencie co sync startowy), potem co 10 min - anonimowy limit API
+/// to 60 zapytan/h, wiec 6/h zostawia zapas.
 const TIMER_UPDATE: usize = 8;
-const UPDATE_FIRST_MS: u32 = 20_000;
-const UPDATE_EVERY_MS: u32 = 6 * 3600 * 1000;
+const UPDATE_FIRST_MS: u32 = 5_000;
+const UPDATE_EVERY_MS: u32 = 10 * 60 * 1000;
 const THUMBS_TICK_MS: u32 = 16;
 const THUMB_BUDGET_MS: f32 = 5.0;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
@@ -603,7 +604,7 @@ impl App {
                 // jak zwykle - bez drugiego tapniecia.
                 self.commit_folder_edit();
                 if !menu_btn {
-                    self.menu.toggle();
+                    self.toggle_menu();
                 }
             }
             if on_bar {
@@ -989,6 +990,22 @@ impl App {
         }
     }
 
+    /// Jedyne miejsce otwierania/zamykania menu. Otwarte menu trzyma pasek
+    /// narzedzi na ekranie niezaleznie od "Always visible": panel wychodzi
+    /// z przycisku ☰ i tym samym przyciskiem ma sie zamykac, a przy doku
+    /// z lewej lezy tuz obok paska - bez paska zostalaby dziura. Chowanie
+    /// (`TIMER_UI`) i tak omija otwarte menu; tu zalatwiamy przypadek, gdy
+    /// menu otwiera sie przy juz schowanym pasku (klawisz M, logowanie).
+    fn toggle_menu(&mut self) {
+        self.menu.toggle();
+        if self.menu.open {
+            self.toolbar.visible = true;
+        } else if !self.toolbar.pinned {
+            // Po zamknieciu pasek zyje jak zwykle: znika po chwili bez rysika.
+            self.arm_ui_timer();
+        }
+    }
+
     fn arm_ui_timer(&self) {
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_UI, UI_HIDE_MS, None);
@@ -1006,7 +1023,7 @@ impl App {
                 self.mode = Mode::DragBar;
                 self.toolbar.drag_to(x, y);
             }
-            Action::Menu => self.menu.toggle(),
+            Action::Menu => self.toggle_menu(),
             Action::Pen => self.eraser_tool = false,
             Action::Eraser => self.eraser_tool = true,
             Action::Color(i) => {
@@ -1521,7 +1538,7 @@ impl App {
                 SyncEvent::DeviceCode { code, url } => {
                     self.sync.last = format!("enter code {code} at {url}");
                     if !self.menu.open {
-                        self.menu.toggle();
+                        self.toggle_menu();
                     }
                     self.menu.set_tab(crate::menu::Tab::Account);
                     repaint = true;
@@ -2459,7 +2476,7 @@ impl App {
         self.waves = Some(wv);
         self.waves_tick = Instant::now();
         if self.menu.open {
-            self.menu.toggle();
+            self.toggle_menu();
         }
         if !self.fullscreen.is_active() {
             self.toggle_fullscreen();
@@ -3108,7 +3125,7 @@ pub unsafe extern "system" fn wndproc(
             }
             match vk.0 {
                 // M
-                0x4D => app.menu.toggle(),
+                0x4D => app.toggle_menu(),
                 // 0 - dopasuj szerokosc kolumny do okna
                 0x30 => app.fit_width(),
                 // W - fale przyciemnienia od razu (podglad bez czekania 3 min)
@@ -3155,7 +3172,7 @@ pub unsafe extern "system" fn wndproc(
                         app.toggle_fullscreen();
                     } else if vk == VK_ESCAPE {
                         if app.menu.open {
-                            app.menu.toggle();
+                            app.toggle_menu();
                         } else if app.fullscreen.is_active() {
                             app.toggle_fullscreen();
                         } else {
@@ -3254,7 +3271,7 @@ pub unsafe extern "system" fn wndproc(
                 TIMER_MENU_CLOCK => app.menu_clock_tick(),
                 TIMER_THUMBS => app.thumbs_tick(),
                 TIMER_UPDATE => {
-                    // Pierwszy raz po 20 s, potem co 6 h - ten sam timer, nowy odstep.
+                    // Pierwszy raz po 5 s, potem co 10 min - ten sam timer, nowy odstep.
                     SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_EVERY_MS, None);
                     // `.old.exe` po aktualizacji: na starcie stary proces mogl jeszcze
                     // zyc (konczy sync) - druga proba, gdy juz na pewno go nie ma.

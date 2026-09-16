@@ -26,13 +26,13 @@ do oglądania fal AMOLED).
 
 ## Instalacja i aktualizacje
 
-Gotowa aplikacja: [najnowsze wydanie](https://github.com/AtmatiAdi/spectrenotes/releases/latest)
+Gotowa aplikacja: [najnowsze wydanie](https://github.com/AtmatiAdi/spectrenotes-releases/releases/latest)
 → `SpectreNotes-Setup.exe`. Instalator sam nic nie zawiera — pobiera bieżącą
 wersję, sprawdza sumę SHA-256 i instaluje ją dla użytkownika
 (`%LOCALAPPDATA%\SpectreNotes\app`, skrót w menu Start, wpis w „Zainstalowane
 aplikacje"; notatki są osobno w `%APPDATA%\SpectreNotes` i odinstalowanie ich nie rusza).
 
-Zainstalowana aplikacja sprawdza wydania 20 s po starcie i co 6 h; gdy jest nowsza,
+Zainstalowana aplikacja sprawdza wydania 5 s po starcie i co 10 min; gdy jest nowsza,
 Settings → **Application** pokazuje „version X available" z przyciskiem Download,
 paskiem postępu i „Install and restart". Nic nie pobiera się ani nie podmienia bez
 kliknięcia. `spectrenotes.exe --install` / `--uninstall` robią to samo z linii poleceń.

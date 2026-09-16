@@ -26,6 +26,9 @@
   Opis wydania (markdown). Domyslnie: lista commitow od poprzedniego tagu v*.
 .PARAMETER Keep
   Ile ostatnich wydan zostawic na GitHubie (domyslnie 3).
+.PARAMETER Repo
+  Repozytorium wydan `owner/repo`. Domyslnie RELEASES_REPO z spectre-update
+  (publiczne repo tylko na wydania - zrodla zostaja prywatne).
 .PARAMETER DryRun
   Wszystko lokalnie (wersja, build, sumy), bez commitu, pushu i release'u.
 
@@ -39,6 +42,7 @@ param(
     [string]$Bump,
     [string]$Notes,
     [int]$Keep = 3,
+    [string]$Repo,
     [switch]$SkipTests,
     [switch]$DryRun
 )
@@ -72,9 +76,14 @@ if (-not $Version) { Fail 'podaj -Version X.Y.Z albo -Bump patch|minor|major' }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "wersja `"$Version`" nie jest X.Y.Z" }
 $tag = "v$Version"
 
-$repoUrl = [regex]::Match($toml, '(?m)^repository\s*=\s*"([^"]+)"').Groups[1].Value
-$repo = ($repoUrl -replace '^https://github\.com/', '') -replace '\.git$', ''
-if (-not $repo) { Fail 'brak repository w Cargo.toml' }
+# Repozytorium WYDAN (publiczne) - inne niz zrodla. Jedno zrodlo prawdy:
+# stala RELEASES_REPO w spectre-update, ta sama, ktora ma w sobie aplikacja.
+if (-not $Repo) {
+    $lib = Get-Content (Join-Path $root 'crates\spectre-update\src\lib.rs') -Raw
+    $Repo = [regex]::Match($lib, '(?m)^pub const RELEASES_REPO: &str = "([^"]+)";').Groups[1].Value
+}
+$repo = $Repo
+if (-not $repo) { Fail 'brak RELEASES_REPO w spectre-update' }
 
 Write-Host "SpectreNotes $cur -> $Version  ($repo, tag $tag)" -ForegroundColor Green
 

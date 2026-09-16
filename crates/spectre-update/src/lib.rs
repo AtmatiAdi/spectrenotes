@@ -32,9 +32,14 @@ const UA: &str = concat!("User-Agent: SpectreNotes/", env!("CARGO_PKG_VERSION"))
 const ACCEPT_API: &str = "Accept: application/vnd.github+json";
 const ACCEPT_BIN: &str = "Accept: application/octet-stream";
 
-/// `owner/repo` z pola `repository` w Cargo.toml - jedno zrodlo prawdy.
+/// Publiczne repozytorium **wydan** - osobne od prywatnych zrodel (`repository`
+/// w Cargo.toml), zeby instalator i aktualizacje dzialaly bez tokenu u kazdego.
+/// Jedno zrodlo prawdy: `release.ps1` czyta te stala z tego pliku.
+pub const RELEASES_REPO: &str = "AtmatiAdi/spectrenotes-releases";
+
+/// `owner/repo`, z ktorego bierzemy wydania.
 pub fn default_repo() -> &'static str {
-    repo_from_url(env!("CARGO_PKG_REPOSITORY")).unwrap_or("AtmatiAdi/spectrenotes")
+    RELEASES_REPO
 }
 
 /// `https://github.com/owner/repo[.git][/]` -> `owner/repo`.
@@ -417,7 +422,8 @@ mod tests {
             Some("A/b")
         );
         assert_eq!(repo_from_url("https://gitlab.com/a/b"), None);
-        assert_eq!(default_repo(), "AtmatiAdi/spectrenotes");
+        assert_eq!(default_repo(), "AtmatiAdi/spectrenotes-releases");
+        assert!(repo_from_url(&format!("https://github.com/{RELEASES_REPO}")).is_some());
     }
 
     #[test]

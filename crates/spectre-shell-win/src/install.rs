@@ -92,7 +92,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// Instalacja tej binarki: zamyka dzialajaca instancje, kopiuje plik do
 /// `app_dir`, robi skrot i wpis odinstalowania. Zwraca sciezke
 /// zainstalowanej binarki (do uruchomienia).
-pub fn install_self(version: &str) -> std::io::Result<PathBuf> {
+pub fn install_self(version: &str, about_url: &str) -> std::io::Result<PathBuf> {
     let src = current_exe().ok_or_else(|| std::io::Error::other("executable path"))?;
     let dir = app_dir();
     std::fs::create_dir_all(&dir)?;
@@ -112,7 +112,7 @@ pub fn install_self(version: &str) -> std::io::Result<PathBuf> {
     }
     create_shortcut(&shortcut_path(), &dest, "", "SpectreNotes - pen notes")?;
     let size_kb = std::fs::metadata(&dest).map(|m| m.len() / 1024).unwrap_or(0) as u32;
-    register_uninstall(version, &dest, size_kb)?;
+    register_uninstall(version, about_url, &dest, size_kb)?;
     Ok(dest)
 }
 
@@ -282,7 +282,12 @@ fn set_dword(h: HKEY, name: &str, value: u32) -> std::io::Result<()> {
 }
 
 /// Wpis w "Zainstalowane aplikacje" (Ustawienia -> Aplikacje).
-pub fn register_uninstall(version: &str, exe: &Path, size_kb: u32) -> std::io::Result<()> {
+pub fn register_uninstall(
+    version: &str,
+    about_url: &str,
+    exe: &Path,
+    size_kb: u32,
+) -> std::io::Result<()> {
     let key = wide(UNINSTALL_KEY);
     let mut h = HKEY::default();
     let rc = unsafe {
@@ -313,7 +318,7 @@ pub fn register_uninstall(version: &str, exe: &Path, size_kb: u32) -> std::io::R
         set_sz(h, "InstallLocation", &dir_s)?;
         set_sz(h, "DisplayIcon", &exe_s)?;
         set_sz(h, "UninstallString", &format!("\"{exe_s}\" --uninstall"))?;
-        set_sz(h, "URLInfoAbout", env!("CARGO_PKG_REPOSITORY"))?;
+        set_sz(h, "URLInfoAbout", about_url)?;
         set_dword(h, "NoModify", 1)?;
         set_dword(h, "NoRepair", 1)?;
         set_dword(h, "EstimatedSize", size_kb)

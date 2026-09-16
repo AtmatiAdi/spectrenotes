@@ -283,7 +283,7 @@ Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [x] Instalator `SpectreNotes-Setup.exe` (pobiera najnowsze wydanie, SHA-256, `--install`)
 - [x] Updater w aplikacji: sprawdzanie w tle, Download z postępem, „Install and restart"
       (podmiana przez rename działającej binarki — 06-DYSTRYBUCJA)
-- [ ] Publiczne repozytorium wydań (żeby inni instalowali bez tokenu)
+- [x] Publiczne repozytorium wydań `spectrenotes-releases` (instalacja i aktualizacje bez tokenu)
 - Podpis kodu (patrz niżej — otwarty problem)
 - Instrukcja dołączenia kogoś do space'u
 
