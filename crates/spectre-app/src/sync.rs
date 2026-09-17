@@ -29,16 +29,32 @@ use crate::github;
 /// Watek sync -> okno: "sa zdarzenia do odebrania" (`SyncWorker::poll`).
 pub const WM_SYNC: u32 = WM_APP + 2;
 
+/// Ktore repozytorium: kazdy space ma wlasne. `owner` = login wlasciciela
+/// dla space'u cudzego (zaproszenie do jego repo); `None` = nasze konto,
+/// repo wykrywane albo zakladane przez `ensure_repo`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoRef {
+    /// Indeks space'u w aplikacji - wraca w zdarzeniach.
+    pub space: usize,
+    pub root: PathBuf,
+    /// Nazwa repo (`spectrenotes-<space>`).
+    pub name: String,
+    pub owner: Option<String>,
+}
+
 pub enum Job {
-    /// Odczyt stanu bez zmian.
-    Status,
-    /// Commit + (gdy zalogowany) fetch + merge + push. `force` omija
-    /// minimalny odstep miedzy cyklami, ale nie odczekanie po odmowie.
+    /// Odczyt stanu repozytorium jednego space'u bez zmian.
+    Status(RepoRef),
+    /// Stan konta (login, budzet) bez dotykania repozytoriow.
+    Account,
+    /// Commit + (gdy zalogowany) fetch + merge + push jednego space'u. `force`
+    /// omija minimalny odstep miedzy cyklami, ale nie odczekanie po odmowie.
     Sync {
+        repo: RepoRef,
         message: String,
         force: bool,
     },
-    /// Device Flow w osobnym watku (blokuje do 15 min).
+    /// Logowanie w osobnym watku (przegladarka albo Device Flow; blokuje do 15 min).
     Login,
     /// Token wklejony recznie (PAT) - gdy nie ma client_id.
     SetToken(String),
@@ -68,8 +84,18 @@ impl Mark {
 }
 
 pub enum Event {
-    Status(Status),
-    Synced(SyncReport),
+    /// Stan repozytorium jednego space'u (po `Status` i po `Sync`) plus konto.
+    Status {
+        space: usize,
+        status: Status,
+        account: Account,
+    },
+    /// Stan konta bez repozytorium (po `Account`).
+    Account(Account),
+    Synced {
+        space: usize,
+        report: SyncReport,
+    },
     /// Kod do wpisania na GitHubie (przegladarka juz otwarta).
     DeviceCode {
         code: String,
@@ -96,19 +122,24 @@ pub enum Event {
     Skipped,
 }
 
-/// Stan repozytorium do pokazania w menu (Konto) i w HUD-zie.
+/// Stan repozytorium jednego space'u do pokazania w menu (Konto) i w HUD-zie.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Status {
     /// Repozytorium lokalne otwarte (libgit2 zawsze jest - to tylko blad I/O).
     pub repo_ok: bool,
     pub repo_name: String,
     pub remote: Option<String>,
-    pub login: Option<String>,
-    /// Logowanie przez Device Flow mozliwe (jest client_id).
-    pub device_flow: bool,
     pub head: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+}
+
+/// Stan konta GitHub - wspolny dla wszystkich space'ow.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Account {
+    pub login: Option<String>,
+    /// Logowanie przez przegladarke/Device Flow mozliwe (jest client_id).
+    pub device_flow: bool,
     pub budget: BudgetStatus,
 }
 
@@ -117,7 +148,9 @@ pub struct SyncWorker {
     rx: Receiver<Event>,
     /// Zadania wyslane, na ktore nie przyszla jeszcze odpowiedz.
     pub pending: u32,
-    pub status: Status,
+    /// Stan repozytorium kazdego space'u (indeks = space).
+    pub spaces: Vec<Status>,
+    pub account: Account,
     /// Ostatni wynik do pokazania: "wyslano 12:04", blad itp.
     pub last: String,
     /// Trwajace logowanie: kod do wpisania.
@@ -130,7 +163,6 @@ pub struct SyncWorker {
 
 /// Sciezki i ustawienia stale dla watku.
 struct Ctx {
-    root: PathBuf,
     author: AuthorName,
     token_path: PathBuf,
     budget_path: PathBuf,
@@ -138,14 +170,12 @@ struct Ctx {
     client_id: String,
     /// Pusty = bez logowania przegladarka (zostaje Device Flow).
     client_secret: String,
-    repo_name: String,
     hwnd_raw: isize,
 }
 
 impl SyncWorker {
     pub fn start(
         hwnd: HWND,
-        root: &Path,
         author: &AuthorName,
         data_dir: &Path,
         client_id: &str,
@@ -153,19 +183,13 @@ impl SyncWorker {
     ) -> Self {
         let (tx, jobs) = mpsc::channel::<Job>();
         let (events, rx) = mpsc::channel::<Event>();
-        let space_name = root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let ctx = Ctx {
-            root: root.to_path_buf(),
             author: author.clone(),
             token_path: data_dir.join("github.token"),
             budget_path: data_dir.join("traffic.txt"),
             avatar_path: data_dir.join("avatar.img"),
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
-            repo_name: github::repo_name(&space_name),
             // HWND to wskaznik - przenosimy jako liczbe, okno zyje dluzej niz watek.
             hwnd_raw: hwnd.0 as isize,
         };
@@ -177,7 +201,8 @@ impl SyncWorker {
             tx,
             rx,
             pending: 0,
-            status: Status::default(),
+            spaces: Vec::new(),
+            account: Account::default(),
             last: String::new(),
             device_code: None,
             browser_login: None,
@@ -191,18 +216,47 @@ impl SyncWorker {
         }
     }
 
+    /// Stan repozytorium space'u (domyslny, gdy jeszcze nic nie przyszlo).
+    pub fn status(&self, space: usize) -> &Status {
+        static EMPTY: Status = Status {
+            repo_ok: false,
+            repo_name: String::new(),
+            remote: None,
+            head: None,
+            ahead: 0,
+            behind: 0,
+        };
+        self.spaces.get(space).unwrap_or(&EMPTY)
+    }
+
+    pub fn login(&self) -> Option<&str> {
+        self.account.login.as_deref()
+    }
+
     /// Zdarzenia od ostatniego wywolania (po `WM_SYNC`). Kazde zadanie konczy sie
-    /// zdarzeniem `Status`, wiec na nim zdejmujemy licznik.
+    /// zdarzeniem `Status`/`Account` (albo `Skipped`), wiec na nich zdejmujemy licznik.
     pub fn poll(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
         while let Ok(ev) = self.rx.try_recv() {
             match &ev {
-                Event::Status(s) => {
-                    self.status = s.clone();
+                Event::Status {
+                    space,
+                    status,
+                    account,
+                } => {
+                    if self.spaces.len() <= *space {
+                        self.spaces.resize(*space + 1, Status::default());
+                    }
+                    self.spaces[*space] = status.clone();
+                    self.account = account.clone();
+                    self.pending = self.pending.saturating_sub(1);
+                }
+                Event::Account(a) => {
+                    self.account = a.clone();
                     self.pending = self.pending.saturating_sub(1);
                 }
                 Event::Skipped => self.pending = self.pending.saturating_sub(1),
-                Event::Synced(r) if r.transfer.remote_ops > 0 => {
+                Event::Synced { report, .. } if report.transfer.remote_ops > 0 => {
                     self.last_remote_ok = Some(Mark::now());
                 }
                 Event::DeviceCode { code, .. } => self.device_code = Some(code.clone()),
@@ -252,10 +306,15 @@ fn worker(ctx: Ctx, jobs: Receiver<Job>, events: Sender<Event>) {
                 Err(_) => return,
             }
         }
-        // Zgarniamy wszystko, co juz czeka, i sklejamy powtorzone `Sync`.
+        // Zgarniamy wszystko, co juz czeka, i sklejamy powtorzone `Sync`
+        // tego samego space'u.
         while let Ok(j) = jobs.try_recv() {
-            let dup = matches!(j, Job::Sync { .. })
-                && queue.iter().any(|q| matches!(q, Job::Sync { .. }));
+            let dup = match &j {
+                Job::Sync { repo, .. } => queue
+                    .iter()
+                    .any(|q| matches!(q, Job::Sync { repo: r, .. } if r.space == repo.space)),
+                _ => false,
+            };
             if dup {
                 if events.send(Event::Skipped).is_err() {
                     return;
@@ -291,25 +350,14 @@ fn run(
     job: Job,
     events: &Sender<Event>,
 ) -> Vec<Event> {
-    let login = &mut session.login;
     let mut out = Vec::new();
     let token = secret::load(&ctx.token_path);
-    let git = match Git::open_or_init(&ctx.root, &ctx.author) {
-        Ok(mut g) => {
-            g.set_token(token.clone());
-            Some(g)
-        }
-        Err(e) => {
-            out.push(Event::Error(format!("repository: {e}")));
-            None
-        }
-    };
     // Login znamy z tokenu; sprawdzamy raz (i po kazdej zmianie tokenu).
-    if login.is_none() {
+    if session.login.is_none() {
         if let Some(t) = &token {
             match github::user_info(t) {
                 Ok(u) => {
-                    *login = Some(u.login.clone());
+                    session.login = Some(u.login.clone());
                     if !session.avatar_sent {
                         session.avatar_sent = avatar(ctx, budget, &u, &mut out);
                     }
@@ -331,19 +379,27 @@ fn run(
     }
 
     match job {
-        Job::Status => {}
-        Job::Sync { message, force } => {
-            if let Some(g) = &git {
+        Job::Status(repo) => {
+            let git = open_git(ctx, &repo, token.as_deref(), &mut out);
+            out.push(status_event(ctx, session, budget, &repo, git.as_ref()));
+        }
+        Job::Sync {
+            repo,
+            message,
+            force,
+        } => {
+            if let Some(git) = open_git(ctx, &repo, token.as_deref(), &mut out) {
                 sync_cycle(
-                    ctx,
-                    g,
+                    &git,
+                    &repo,
                     budget,
-                    login,
+                    &session.login,
                     token.as_deref(),
                     &message,
                     force,
                     &mut out,
                 );
+                out.push(status_event(ctx, session, budget, &repo, Some(&git)));
             }
         }
         Job::Login => {
@@ -366,7 +422,7 @@ fn run(
                 if let Err(e) = secret::store(&ctx.token_path, Some(&t)) {
                     out.push(Event::Error(format!("saving token: {e}")));
                 } else {
-                    *login = Some(u.login.clone());
+                    session.login = Some(u.login.clone());
                     let _ = std::fs::remove_file(&ctx.avatar_path);
                     session.avatar_sent = avatar(ctx, budget, &u, &mut out);
                     out.push(Event::LoggedIn(u.login));
@@ -377,35 +433,63 @@ fn run(
         Job::Logout => {
             let _ = secret::store(&ctx.token_path, None);
             let _ = std::fs::remove_file(&ctx.avatar_path);
-            *login = None;
+            session.login = None;
             session.avatar_sent = false;
             out.push(Event::LoggedOut);
         }
+        Job::Account => out.push(Event::Account(account_status(ctx, session, budget))),
     }
-
-    let now = now_unix();
-    let (ahead, behind) = git
-        .as_ref()
-        .and_then(|g| g.ahead_behind().ok())
-        .unwrap_or((0, 0));
-    out.push(Event::Status(Status {
-        repo_ok: git.is_some(),
-        repo_name: ctx.repo_name.clone(),
-        remote: git.as_ref().and_then(|g| g.remote_url()),
-        login: login.clone(),
-        device_flow: !ctx.client_id.is_empty(),
-        head: git.as_ref().and_then(|g| g.head()),
-        ahead,
-        behind,
-        budget: budget.status(now),
-    }));
     out
+}
+
+/// Repozytorium space'u (libgit2 zawsze jest - blad to tylko I/O).
+fn open_git(ctx: &Ctx, repo: &RepoRef, token: Option<&str>, out: &mut Vec<Event>) -> Option<Git> {
+    match Git::open_or_init(&repo.root, &ctx.author) {
+        Ok(mut g) => {
+            g.set_token(token.map(str::to_string));
+            Some(g)
+        }
+        Err(e) => {
+            out.push(Event::Error(format!("repository {}: {e}", repo.name)));
+            None
+        }
+    }
+}
+
+fn account_status(ctx: &Ctx, session: &Session, budget: &Budget) -> Account {
+    Account {
+        login: session.login.clone(),
+        device_flow: !ctx.client_id.is_empty(),
+        budget: budget.status(now_unix()),
+    }
+}
+
+fn status_event(
+    ctx: &Ctx,
+    session: &Session,
+    budget: &Budget,
+    repo: &RepoRef,
+    git: Option<&Git>,
+) -> Event {
+    let (ahead, behind) = git.and_then(|g| g.ahead_behind().ok()).unwrap_or((0, 0));
+    Event::Status {
+        space: repo.space,
+        status: Status {
+            repo_ok: git.is_some(),
+            repo_name: repo.name.clone(),
+            remote: git.and_then(|g| g.remote_url()),
+            head: git.and_then(|g| g.head()),
+            ahead,
+            behind,
+        },
+        account: account_status(ctx, session, budget),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn sync_cycle(
-    ctx: &Ctx,
     git: &Git,
+    repo: &RepoRef,
     budget: &mut Budget,
     login: &Option<String>,
     token: Option<&str>,
@@ -414,10 +498,16 @@ fn sync_cycle(
     out: &mut Vec<Event>,
 ) {
     // Zdalne: automatycznie, gdy jest login i token, a jeszcze go nie ma.
+    // Wlasny space: repo wykryte albo zalozone; cudzy: repo wlasciciela,
+    // do ktorego jestesmy zaproszeni - niczego nie zakladamy.
     if git.remote_url().is_none() {
         if let (Some(l), Some(t)) = (login, token) {
             if budget.allowed(now_unix()) || force {
-                match github::ensure_repo(t, l, &ctx.repo_name) {
+                let url = match &repo.owner {
+                    Some(owner) => Ok(format!("https://github.com/{owner}/{}.git", repo.name)),
+                    None => github::ensure_repo(t, l, &repo.name),
+                };
+                match url {
                     Ok(url) => {
                         if let Err(e) = git.set_remote(&url) {
                             out.push(Event::Error(e.to_string()));
@@ -454,7 +544,10 @@ fn sync_cycle(
             if remote {
                 budget.record(now, report.transfer);
             }
-            out.push(Event::Synced(report));
+            out.push(Event::Synced {
+                space: repo.space,
+                report,
+            });
         }
         Err(GitError::RateLimited(m)) => {
             let until = budget.refused(now, Transfer::default());
@@ -464,12 +557,10 @@ fn sync_cycle(
         Err(GitError::Auth(m)) => {
             out.push(Event::Error(format!("GitHub rejected the token: {m}")));
         }
-        Err(e) => out.push(Event::Error(e.to_string())),
+        Err(e) => out.push(Event::Error(format!("{}: {e}", repo.name))),
     }
 }
 
-/// Device Flow na osobnym watku: kod -> przegladarka -> odpytywanie -> token
-/// na dysk -> zdarzenia. Watek sync w tym czasie normalnie commituje.
 /// Logowanie przegladarka (OAuth web flow, powrot na loopback). `false` = nie
 /// udalo sie zajac portu - wolajacy przechodzi na Device Flow.
 fn spawn_browser_login(ctx: &Ctx, events: Sender<Event>) -> bool {

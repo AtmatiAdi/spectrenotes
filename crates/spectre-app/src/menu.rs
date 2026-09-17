@@ -14,7 +14,7 @@ use spectre_render::{UiFont, UiPrim};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
-use crate::sync::{Mark, Status as SyncStatus};
+use crate::sync::{Account as SyncAccount, Mark, Status as SyncStatus};
 use crate::ui::{Dock, Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
@@ -150,6 +150,8 @@ pub enum MenuHit {
 /// Wpis na liscie - to, co aplikacja trzyma o kazdej notatce bez jej otwierania.
 #[derive(Debug, Clone)]
 pub struct NoteEntry {
+    /// Ktory space (indeks w `App::spaces`; 0 = domyslny).
+    pub space: usize,
     pub id: String,
     pub title: String,
     /// Pusty = korzen.
@@ -181,7 +183,9 @@ pub struct MenuState<'a> {
     pub waves_idle_s: u32,
     pub waves_dim_pct: u32,
     /// Stan gita (Etap 5) i ostatni komunikat synchronizacji.
+    /// Repozytorium space'u domyslnego i konto GitHub (wspolne dla space'ow).
     pub sync: &'a SyncStatus,
+    pub account: &'a SyncAccount,
     pub sync_last: &'a str,
     pub sync_busy: bool,
     /// Wersja tej kompilacji i stan aktualizacji (sekcja "Application").
@@ -212,6 +216,8 @@ pub struct MenuState<'a> {
     pub offers: &'a [OfferView],
     /// Stale adresy peerow (Tailscale), w kolejnosci `MenuHit::Peer(i)`.
     pub peers: &'a [String],
+    /// Nazwy space'ow (indeks = `NoteEntry::space`).
+    pub spaces: &'a [String],
 }
 
 /// Stan aktualizacji przetlumaczony na tekst (`app::update_view`).
@@ -621,7 +627,11 @@ impl Menu {
         } else {
             n.title.as_str()
         };
-        let sub = local_date(n.created_ms);
+        // Notatka ze space'u wspoldzielonego: jego nazwa zamiast daty.
+        let sub = match s.spaces.get(n.space) {
+            Some(name) if n.space != 0 => format!("in {name}"),
+            _ => local_date(n.created_ms),
+        };
         let c = Card {
             hit,
             active: i == s.note_idx,
@@ -1216,7 +1226,8 @@ impl Menu {
     fn build_header(&mut self, s: &MenuState, p: Rect, out: &mut Vec<UiPrim>) {
         let k = self.scale;
         let st = s.sync;
-        let logged = st.login.is_some();
+        let acct = s.account;
+        let logged = acct.login.is_some();
         let (ax, ay) = (p.x + (PAD * k), p.y + ((HEADER_H * k) - (AVATAR * k)) * 0.5);
         let (cx, cy) = (ax + (AVATAR * k) * 0.5, ay + (AVATAR * k) * 0.5);
         // Placeholder pod avatarem: kolko z inicjalem. Avatar (jesli jest) je zakryje.
@@ -1226,7 +1237,7 @@ impl Menu {
             radius: (AVATAR * k) * 0.5,
             color: if logged { ACTIVE } else { HOT },
         });
-        let initial = st
+        let initial = acct
             .login
             .as_deref()
             .unwrap_or(s.author)
@@ -1297,11 +1308,11 @@ impl Menu {
                 h: HEADER_H * k,
             },
         ));
-        let (name, name_color) = match &st.login {
+        let (name, name_color) = match &acct.login {
             Some(l) => (l.clone(), FG),
             None => ("not signed in".to_string(), FG),
         };
-        let b = &st.budget;
+        let b = &acct.budget;
         // Licznik tyka co sekunde (aplikacja przerysowuje otwarte menu timerem),
         // obok dokladna godzina - uzytkownik ma widziec, kiedy to bylo, a nie
         // zaokraglone "5 min temu".
@@ -1393,8 +1404,9 @@ impl Menu {
         y += 12.0 * k;
 
         let st = s.sync;
+        let acct = s.account;
         y += self.section(list, y, "GitHub", out);
-        match &st.login {
+        match &acct.login {
             Some(user) => {
                 y += self.line(list, y, &format!("signed in: {user}"), FG, out);
                 let repo = match &st.remote {
@@ -1469,7 +1481,7 @@ impl Menu {
                             FG_DIM,
                             out,
                         );
-                    } else if st.device_flow {
+                    } else if acct.device_flow {
                         y += self.button(list, y, MenuHit::Login, "Sign in with GitHub", FG, out);
                     }
                 }
@@ -1511,7 +1523,7 @@ impl Menu {
                         y,
                         MenuHit::PasteToken,
                         "Paste GitHub token (PAT)",
-                        if st.device_flow { FG_DIM } else { FG },
+                        if acct.device_flow { FG_DIM } else { FG },
                         out,
                     );
                 }
@@ -1520,7 +1532,7 @@ impl Menu {
         y += 12.0 * k;
 
         y += self.section(list, y, "Sync", out);
-        let b = &st.budget;
+        let b = &acct.budget;
         let state = if let Some(until) = b.backoff_until {
             format!(
                 "PAUSED until {} - GitHub reported a rate limit",

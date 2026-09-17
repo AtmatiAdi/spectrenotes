@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use spectre_core::hittest::stroke_hit;
@@ -27,7 +27,8 @@ use crate::config::Config;
 use crate::lan::LanConfig;
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
-use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, SyncWorker, WM_SYNC};
+use crate::spaces::{self, SpaceInfo};
+use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, RepoRef, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 use crate::update::{State as UpdateState, Updater, WM_UPDATE};
 
@@ -167,9 +168,20 @@ impl Dirty {
     }
 }
 
+/// Jeden space w aplikacji: katalog z notatkami i to, czyje jest jego repo.
+pub struct SpaceSlot {
+    pub info: spaces::SpaceInfo,
+    pub space: Space,
+}
+
 pub struct App {
     hwnd: HWND,
-    space: Space,
+    /// Space'y: `[0]` domyslny (prywatny), dalej wspoldzielone z rejestru.
+    spaces: Vec<SpaceSlot>,
+    /// `%APPDATA%\SpectreNotes`: config, token, rejestr space'ow.
+    data_dir: PathBuf,
+    /// Znajomi (loginy GitHub) z `friends.txt` space'u domyslnego.
+    friends: Vec<String>,
     author: AuthorName,
     notes: Vec<NoteEntry>,
     /// Foldery zadeklarowane jawnie (`folders.txt`); reszta wynika z notatek.
@@ -352,7 +364,10 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
             app.arm_amoled_timers();
             app.arm_partner_timer();
         }
-        app.sync.send(SyncJob::Status);
+        for slot in 0..app.spaces.len() {
+            let repo = app.repo_ref(slot);
+            app.sync.send(SyncJob::Status(repo));
+        }
         // Miniatury do menu gotowe, zanim ktos je otworzy pierwszy raz.
         app.arm_thumbs(true);
     }
@@ -361,16 +376,39 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
 
 impl App {
     fn new(hwnd: HWND, space_dir: &Path) -> std::io::Result<Self> {
+        let data_dir = Config::path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
         let space = Space::open_or_create(space_dir)?;
         let author = AuthorName::from_env();
-        let mut notes = load_entries(&space)?;
-        if notes.is_empty() {
-            notes.push(entry_for(&space, space.create_note()?));
+        // Domyslny space pierwszy; wspoldzielone z rejestru, w jego kolejnosci.
+        let mut spaces = vec![SpaceSlot {
+            info: SpaceInfo {
+                name: "default".to_string(),
+                root: space_dir.to_path_buf(),
+                owner: None,
+            },
+            space,
+        }];
+        for info in spaces::load(&data_dir, space_dir) {
+            match Space::open_or_create(&info.root) {
+                Ok(space) => spaces.push(SpaceSlot { info, space }),
+                Err(e) => eprintln!("space {}: {e}", info.name),
+            }
         }
-        let folders = space.list_folders();
+        let friends = spaces::load_friends(space_dir);
+        let mut notes = load_all_entries(&spaces);
+        if notes.is_empty() {
+            let id = spaces[0].space.create_note()?;
+            notes.push(entry_for(&spaces[0].space, 0, id));
+        }
+        let folders = all_folders(&spaces);
         let note_idx = notes.len() - 1;
-        let (store, doc) = open_note(&space, &notes[note_idx].id, &author)?;
-        refresh_entry(&space, &mut notes[note_idx], &doc);
+        let cur = &spaces[notes[note_idx].space].space;
+        let (store, doc) = open_note(cur, &notes[note_idx].id, &author)?;
+        refresh_entry(cur, &mut notes[note_idx], &doc);
+        let space = &spaces[0].space;
 
         let (w, h) = window::client_size(hwnd);
         let mut renderer = Renderer::new(hwnd, w, h)
@@ -417,10 +455,6 @@ impl App {
             toolbar.dock,
             toolbar.thickness(),
         );
-        let data_dir = Config::path()
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
         let client_id = config
             .get("github_client_id")
             .filter(|s| !s.is_empty())
@@ -431,14 +465,7 @@ impl App {
             .filter(|s| !s.is_empty())
             .unwrap_or(crate::github::CLIENT_SECRET)
             .to_string();
-        let sync = SyncWorker::start(
-            hwnd,
-            space.root(),
-            &author,
-            &data_dir,
-            &client_id,
-            &client_secret,
-        );
+        let sync = SyncWorker::start(hwnd, &author, &data_dir, &client_id, &client_secret);
         let update_repo = config
             .get("update_repo")
             .filter(|s| !s.is_empty())
@@ -451,6 +478,7 @@ impl App {
                 SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_FIRST_MS, None);
             }
         }
+        let partner_log_path = data_dir.join("partner.log");
         let live_enabled = config.get("live") != Some("0");
         let mut live = LiveWorker::start(hwnd, space.root(), &author, live_enabled);
         let space_name = space
@@ -483,7 +511,9 @@ impl App {
 
         Ok(Self {
             hwnd,
-            space,
+            spaces,
+            data_dir,
+            friends,
             author,
             notes,
             folders,
@@ -525,7 +555,7 @@ impl App {
             shield_ping: None,
             thumbs: HashMap::new(),
             thumbs_pending: false,
-            partner_log: data_dir.join("partner.log"),
+            partner_log: partner_log_path,
             test_input: std::env::var_os("SPECTRENOTES_TEST_INPUT").is_some(),
             started: Instant::now(),
             saved: None,
@@ -1462,10 +1492,11 @@ impl App {
             if name.is_empty() {
                 return;
             }
-            if let Err(e) = self.space.add_folder(&name) {
+            // Pusty folder zyje w space'ie biezacej notatki (tam, gdzie uzytkownik jest).
+            if let Err(e) = self.cur_space().add_folder(&name) {
                 self.status = format!("folder: {e}");
             }
-            self.folders = self.space.list_folders();
+            self.folders = all_folders(&self.spaces);
         }
     }
 
@@ -1518,7 +1549,47 @@ impl App {
 
     /// Po zmianie `Meta`: wpis na liscie i cache na dysku maja odzwierciedlac dokument.
     fn sync_entry(&mut self) {
-        refresh_entry(&self.space, &mut self.notes[self.note_idx], &self.doc);
+        let slot = self.notes[self.note_idx].space;
+        refresh_entry(
+            &self.spaces[slot].space,
+            &mut self.notes[self.note_idx],
+            &self.doc,
+        );
+    }
+
+    // ----- space'y -----------------------------------------------------------
+
+    /// Space biezacej notatki.
+    fn cur_space(&self) -> &Space {
+        &self.spaces[self.notes[self.note_idx].space].space
+    }
+
+    /// Space notatki z listy.
+    fn note_space(&self, idx: usize) -> &Space {
+        &self.spaces[self.notes[idx].space].space
+    }
+
+    /// Repozytorium space'u dla watku sync.
+    fn repo_ref(&self, slot: usize) -> RepoRef {
+        let info = &self.spaces[slot].info;
+        RepoRef {
+            space: slot,
+            root: info.root.clone(),
+            name: info.repo_name(),
+            owner: info.owner.clone(),
+        }
+    }
+
+    /// Lista notatek i folderow od nowa ze wszystkich space'ow; biezaca
+    /// notatka zostaje biezaca (po id), a gdy znikla - pierwsza z listy.
+    fn reload_entries(&mut self) {
+        let current = self.notes[self.note_idx].id.clone();
+        let notes = load_all_entries(&self.spaces);
+        if !notes.is_empty() {
+            self.notes = notes;
+        }
+        self.note_idx = self.notes.iter().position(|e| e.id == current).unwrap_or(0);
+        self.folders = all_folders(&self.spaces);
     }
 
     // ----- trwalosc ----------------------------------------------------------
@@ -1600,7 +1671,7 @@ impl App {
             self.thumbs.remove(old);
             self.arm_thumbs(true);
         }
-        match open_note(&self.space, &self.notes[idx].id, &self.author) {
+        match open_note(self.note_space(idx), &self.notes[idx].id, &self.author) {
             Ok((store, doc)) => {
                 self.store = store;
                 self.renderer.clear_geometry();
@@ -1627,7 +1698,11 @@ impl App {
         }
         self.reload_pending = false;
         self.sync_now();
-        match open_note(&self.space, &self.notes[self.note_idx].id, &self.author) {
+        match open_note(
+            self.cur_space(),
+            &self.notes[self.note_idx].id,
+            &self.author,
+        ) {
             Ok((store, doc)) => {
                 self.store = store;
                 self.renderer.clear_geometry();
@@ -1646,7 +1721,16 @@ impl App {
     /// omija minimalny odstep budzetu, ale nie odczekanie po odmowie serwera.
     fn git_sync(&mut self, force: bool) {
         self.sync_now();
+        for slot in 0..self.spaces.len() {
+            self.git_sync_space(slot, force);
+        }
+    }
+
+    /// Cykl jednego space'u (np. tylko tego, do ktorego wlasnie trafila notatka).
+    fn git_sync_space(&mut self, slot: usize, force: bool) {
+        let repo = self.repo_ref(slot);
         self.sync.send(SyncJob::Sync {
+            repo,
             message: format!("{}: save", self.author.dir_name()),
             force,
         });
@@ -1671,13 +1755,14 @@ impl App {
         let mut repaint = false;
         for ev in self.sync.poll() {
             match ev {
-                SyncEvent::Status(st) => {
-                    if !self.sync_booted && st.repo_ok {
+                SyncEvent::Status { status, .. } => {
+                    if !self.sync_booted && status.repo_ok {
                         self.sync_booted = true;
                         self.git_sync(false);
                     }
                 }
-                SyncEvent::Synced(report) => {
+                SyncEvent::Account(_) => {}
+                SyncEvent::Synced { space, report } => {
                     let now = menu::local_time_now();
                     self.sync.last = if !report.merged.is_empty() {
                         format!(
@@ -1687,13 +1772,13 @@ impl App {
                         )
                     } else if report.pushed {
                         format!("{now}: pushed")
-                    } else if self.sync.status.remote.is_some() {
+                    } else if self.sync.status(space).remote.is_some() {
                         format!("{now}: up to date")
                     } else {
                         format!("{now}: saved locally")
                     };
                     if !report.merged.is_empty() {
-                        self.apply_merged(&report.merged);
+                        self.apply_merged(space, &report.merged);
                         repaint = true;
                     }
                 }
@@ -1892,7 +1977,7 @@ impl App {
 
     /// Merge przyniosl pliki innych autorow: odswiez liste notatek (nowe notatki,
     /// tytuly, foldery) i biezaca notatke, jesli jej dotyczy.
-    fn apply_merged(&mut self, files: &[String]) {
+    fn apply_merged(&mut self, slot: usize, files: &[String]) {
         let mut ids = std::collections::BTreeSet::new();
         for f in files {
             if let Some(id) = f.strip_prefix("notes/").and_then(|r| r.split('/').next()) {
@@ -1904,19 +1989,16 @@ impl App {
             return;
         }
         for id in &ids {
-            self.space.invalidate_meta(id);
+            self.spaces[slot].space.invalidate_meta(id);
         }
         // Peerzy w LAN dostana to, co przyszlo z GitHuba (np. od maszyny bez live).
-        self.live
-            .send(LiveJob::Rescan(ids.iter().cloned().collect()));
-        let current = self.notes[self.note_idx].id.clone();
-        if let Ok(notes) = load_entries(&self.space) {
-            if !notes.is_empty() {
-                self.notes = notes;
-            }
+        // Warstwa live zna tylko space domyslny.
+        if slot == 0 {
+            self.live
+                .send(LiveJob::Rescan(ids.iter().cloned().collect()));
         }
-        self.note_idx = self.notes.iter().position(|e| e.id == current).unwrap_or(0);
-        self.folders = self.space.list_folders();
+        let current = self.notes[self.note_idx].id.clone();
+        self.reload_entries();
         if ids.contains(&current) {
             self.reload_current();
         }
@@ -1948,7 +2030,8 @@ impl App {
                     }
                     if note != current {
                         if ops.iter().any(|o| matches!(o.kind, OpKind::Meta { .. })) {
-                            self.space.invalidate_meta(&note);
+                            // Live pisze do space'u domyslnego.
+                            self.spaces[0].space.invalidate_meta(&note);
                             list_changed = true;
                         }
                         continue;
@@ -2077,14 +2160,7 @@ impl App {
             }
         }
         if list_changed {
-            let current = self.notes[self.note_idx].id.clone();
-            if let Ok(notes) = load_entries(&self.space) {
-                if !notes.is_empty() {
-                    self.notes = notes;
-                }
-            }
-            self.note_idx = self.notes.iter().position(|e| e.id == current).unwrap_or(0);
-            self.folders = self.space.list_folders();
+            self.reload_entries();
             self.arm_thumbs(true);
             repaint = true;
         }
@@ -2320,9 +2396,12 @@ impl App {
     /// w ktorej uzytkownik wlasnie jest.
     fn new_note(&mut self) {
         let folder = self.notes[self.note_idx].folder.clone();
-        match self.space.create_note() {
+        // ...i w jej space'ie: notatka obok notatki wspoldzielonej tez jest wspolna.
+        let slot = self.notes[self.note_idx].space;
+        match self.spaces[slot].space.create_note() {
             Ok(id) => {
-                self.notes.push(entry_for(&self.space, id));
+                self.notes
+                    .push(entry_for(&self.spaces[slot].space, slot, id));
                 let idx = self.notes.len() - 1;
                 self.switch_note(idx);
                 if self.note_idx == idx && !folder.is_empty() {
@@ -2584,7 +2663,11 @@ impl App {
                     l
                 }
                 None => {
-                    let Ok(ops) = spectre_sync::store::read_ops(&self.space, &id) else {
+                    let Some(slot) = self.notes.iter().find(|e| e.id == id).map(|e| e.space) else {
+                        continue;
+                    };
+                    let Ok(ops) = spectre_sync::store::read_ops(&self.spaces[slot].space, &id)
+                    else {
                         continue;
                     };
                     let mut doc = Document::new(self.author.id());
@@ -2927,6 +3010,8 @@ impl App {
             let author = self.author.dir_name();
             let live_line = self.live.status_line();
             let offers = self.offer_views();
+            let space_names: Vec<String> =
+                self.spaces.iter().map(|s| s.info.name.clone()).collect();
             let current = &self.notes[self.note_idx].id;
             let share = self.lan.shares.get(current).map(|k| k.is_some());
             let update_view = self.update_view();
@@ -2936,7 +3021,7 @@ impl App {
                 folders: &self.folders,
                 note_idx: self.note_idx,
                 author: &author,
-                space: self.space.root().to_str().unwrap_or("?"),
+                space: self.spaces[0].info.root.to_str().unwrap_or("?"),
                 gpu: self.renderer.adapter_name(),
                 vsync: self.vsync,
                 pan_tearing: self.pan_tearing,
@@ -2951,7 +3036,8 @@ impl App {
                 autostart: self.autostart,
                 waves_idle_s: self.waves_idle_s,
                 waves_dim_pct: self.waves_dim_pct,
-                sync: &self.sync.status,
+                sync: self.sync.status(0),
+                account: &self.sync.account,
                 sync_last: &self.sync.last,
                 sync_busy: self.sync.pending > 0,
                 version: spectre_update::CURRENT,
@@ -2969,6 +3055,7 @@ impl App {
                 share,
                 offers: &offers,
                 peers: &self.lan.peers,
+                spaces: &space_names,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -3083,16 +3170,16 @@ impl App {
     }
 
     fn git_hud(&self) -> String {
-        let st = &self.sync.status;
+        let st = self.sync.status(0);
         if !st.repo_ok {
             return "repository unavailable".to_string();
         }
-        let b = &st.budget;
+        let b = &self.sync.account.budget;
         let mut s = format!(
             "{}  {}  login: {}  +{} -{}  traffic: {}/h {}/d",
             st.head.as_deref().unwrap_or("-"),
             st.remote.as_deref().unwrap_or("no remote"),
-            st.login.as_deref().unwrap_or("-"),
+            self.sync.login().unwrap_or("-"),
             st.ahead,
             st.behind,
             b.ops_hour,
@@ -3140,9 +3227,10 @@ fn waves_delay(idle_ms: u32, want_ms: u32, forced: bool) -> Option<u32> {
     Some((want_ms - idle_ms).max(250))
 }
 
-fn entry_for(space: &Space, id: String) -> NoteEntry {
+fn entry_for(space: &Space, slot: usize, id: String) -> NoteEntry {
     let meta = space.note_meta(&id);
     NoteEntry {
+        space: slot,
         created_ms: spectre_sync::ulid::timestamp_ms(&id).unwrap_or(0),
         id,
         title: meta.title,
@@ -3150,12 +3238,28 @@ fn entry_for(space: &Space, id: String) -> NoteEntry {
     }
 }
 
-fn load_entries(space: &Space) -> std::io::Result<Vec<NoteEntry>> {
+fn load_entries(space: &Space, slot: usize) -> std::io::Result<Vec<NoteEntry>> {
     Ok(space
         .list_notes()?
         .into_iter()
-        .map(|id| entry_for(space, id))
+        .map(|id| entry_for(space, slot, id))
         .collect())
+}
+
+/// Notatki ze wszystkich space'ow, od najstarszej (ULID sortuje sie po czasie).
+/// Space, ktorego nie da sie odczytac, po prostu nie wnosi notatek.
+fn load_all_entries(spaces: &[SpaceSlot]) -> Vec<NoteEntry> {
+    let mut out: Vec<NoteEntry> = spaces
+        .iter()
+        .enumerate()
+        .flat_map(|(i, s)| load_entries(&s.space, i).unwrap_or_default())
+        .collect();
+    out.sort_by(|a, b| {
+        a.created_ms
+            .cmp(&b.created_ms)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    out
 }
 
 /// Otwarty dokument jest zrodlem prawdy: poprawia wpis na liscie i cache.
@@ -3692,4 +3796,18 @@ mod tests {
         assert_eq!(waves_delay(0, want, true), None);
         assert_eq!(waves_delay(0, 0, false), None);
     }
+}
+
+/// Foldery zadeklarowane jawnie we wszystkich space'ach (`folders.txt`),
+/// bez powtorzen, w kolejnosci space'ow.
+fn all_folders(spaces: &[SpaceSlot]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in spaces {
+        for f in s.space.list_folders() {
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    out
 }

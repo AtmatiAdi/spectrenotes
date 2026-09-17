@@ -22,6 +22,7 @@ mod github;
 mod lan;
 mod live;
 mod menu;
+mod spaces;
 mod sync;
 mod ui;
 mod update;
