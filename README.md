@@ -183,7 +183,7 @@ przeglądarkę, po „Authorize" wraca ona sama do aplikacji (OAuth na loopbacku
 `http://127.0.0.1:<port>/callback`), token zapisuje się i repo zakłada samo; zapasowo
 Device Flow (kod w schowku) i wklejony PAT. Aplikacja OAuth „SpectreNotes" jest
 zarejestrowana na koncie AtmatiAdi: Client ID w `github.rs`, sekret **poza repo** —
-`build.rs` wkleja go z `%USERPROFILE%.spectrenotes-oauth-secret` przy budowaniu
+`build.rs` wkleja go z `%USERPROFILE%\.spectrenotes-oauth-secret` przy budowaniu
 (bez pliku binarka umie tylko Device Flow). Dalej: stan synchronizacji i budżetu ruchu, „Synchronizuj teraz".
 Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go. **Nigdy nie zakrywa paska
 narzędzi**: przy lewej krawędzi staje obok niego, u góry i u dołu zaczyna się za nim

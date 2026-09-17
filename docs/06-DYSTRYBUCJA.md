@@ -42,7 +42,7 @@ Skrypt: podnosi `version` w `[workspace.package]`, `cargo test --workspace`,
 `gh release create`, a na końcu **kasuje wydania starsze niż 3 ostatnie** (tagi
 zostają — to tylko referencje do commitów, a zasoby starych wydań nie są do
 niczego potrzebne). Wymaga czystego drzewa na `main`, zalogowanego `gh` i pliku
-`%USERPROFILE%.spectrenotes-oauth-secret` (sekret OAuth App do logowania
+`%USERPROFILE%\.spectrenotes-oauth-secret` (sekret OAuth App do logowania
 przeglądarką — `build.rs` wkleja go do binarki; bez niego wydanie umie tylko
 Device Flow).
 Opis wydania domyślnie to lista commitów od poprzedniego tagu `v*`.
