@@ -912,7 +912,6 @@ impl Menu {
             }
             y += 8.0 * k;
         }
-        let mut y = list.y - self.scroll + 6.0 * k;
         let root: Vec<usize> = (0..s.notes.len())
             .filter(mine)
             .filter(|&i| s.notes[i].folder.is_empty())
