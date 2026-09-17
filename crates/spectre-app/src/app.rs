@@ -262,6 +262,8 @@ pub struct App {
     waves_fullscreen: bool,
     /// Ile szybkich odswiezen TOPMOST zostalo po wejsciu w pelny ekran.
     topmost_ticks: u32,
+    /// Kod logowania skopiowany dotknieciem (napis pod kodem).
+    code_copied: bool,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -533,6 +535,7 @@ impl App {
             waves_dim_pct,
             waves_fullscreen: false,
             topmost_ticks: 0,
+            code_copied: false,
             toolbar,
             menu,
             config,
@@ -1223,6 +1226,16 @@ impl App {
                     }
                 }
             }
+            MenuHit::CopyCode => {
+                if let Some(code) = self.sync.device_code.clone() {
+                    self.code_copied = clipboard_set_text(&code);
+                    self.sync.last = if self.code_copied {
+                        format!("code {code} copied")
+                    } else {
+                        "clipboard busy - try again".to_string()
+                    };
+                }
+            }
             MenuHit::PasteToken => {
                 self.menu.token_edit = Some(String::new());
                 unsafe {
@@ -1686,7 +1699,8 @@ impl App {
                 }
                 SyncEvent::DeviceCode { code, url } => {
                     // Kod od razu w schowku: w przegladarce zostaje Ctrl+V.
-                    self.sync.last = if clipboard_set_text(&code) {
+                    self.code_copied = clipboard_set_text(&code);
+                    self.sync.last = if self.code_copied {
                         format!("code {code} copied - paste it at {url}")
                     } else {
                         format!("enter code {code} at {url}")
@@ -1702,6 +1716,7 @@ impl App {
                     repaint = true;
                 }
                 SyncEvent::LoggedIn(user) => {
+                    self.code_copied = false;
                     self.sync.last = format!("signed in: {user}");
                     // Od razu: wykrycie/zalozenie repo i pierwszy pelny cykl.
                     self.git_sync(true);
@@ -2948,6 +2963,7 @@ impl App {
                 avatar: self.renderer.has_avatar(),
                 device_code: self.sync.device_code.as_deref(),
                 browser_login: self.sync.browser_login.is_some(),
+                code_copied: self.code_copied,
                 live: &live_line,
                 live_enabled: self.live.enabled,
                 share,

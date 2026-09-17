@@ -132,6 +132,8 @@ pub enum MenuHit {
     ReleaseNotes,
     /// Zaczyna wklejanie tokenu GitHub (PAT).
     PasteToken,
+    /// Kod Device Flow do schowka.
+    CopyCode,
     /// Biezaca notatka: udostepnij w sieci / cofnij.
     ShareToggle,
     /// Biezaca notatka: ustaw albo zdejmij haslo udostepnienia.
@@ -199,6 +201,8 @@ pub struct MenuState<'a> {
     pub device_code: Option<&'a str>,
     /// Trwa logowanie przegladarka (czekamy na jej powrot).
     pub browser_login: bool,
+    /// Kod Device Flow wlasnie skopiowany dotknieciem.
+    pub code_copied: bool,
     /// Stan warstwy live: peerzy w LAN (jedna linia).
     pub live: &'a str,
     pub live_enabled: bool,
@@ -1283,6 +1287,16 @@ impl Menu {
         // Dwie linie tekstu miedzy avatarem i przyciskiem.
         let tx = ax + (AVATAR * k) + 12.0 * k;
         let tw = br.x - 8.0 * k - tx;
+        // Avatar i nazwa: dotkniecie zawsze prowadzi do zakladki Konto.
+        self.rows.push((
+            MenuHit::Tab(Tab::Account),
+            Rect {
+                x: p.x,
+                y: p.y,
+                w: br.x - 8.0 * k - p.x,
+                h: HEADER_H * k,
+            },
+        ));
         let (name, name_color) = match &st.login {
             Some(l) => (l.clone(), FG),
             None => ("not signed in".to_string(), FG),
@@ -1396,21 +1410,44 @@ impl Menu {
                     y += self.line(
                         list,
                         y,
-                        "paste this code in the browser (it is in the clipboard):",
+                        "enter this code at github.com/login/device:",
                         FG,
                         out,
                     );
-                    out.push(UiPrim::Text {
+                    // Kod jest przyciskiem: dotkniecie kopiuje go do schowka.
+                    let r = Rect {
                         x: list.x + (PAD * k),
                         y,
                         w: list.w - PAD * 2.0 * k,
                         h: 44.0 * k,
+                    };
+                    if self.hot == Some(MenuHit::CopyCode) {
+                        out.push(UiPrim::Rect {
+                            x: r.x,
+                            y: r.y,
+                            w: r.w,
+                            h: r.h,
+                            color: HOT,
+                            r: 6.0 * k,
+                        });
+                    }
+                    out.push(UiPrim::Text {
+                        x: r.x,
+                        y: r.y,
+                        w: r.w,
+                        h: r.h,
                         text: code.to_string(),
                         color: ACCENT,
                         font: UiFont::Big,
                     });
+                    self.rows.push((MenuHit::CopyCode, r));
                     y += 44.0 * k;
-                    y += self.line(list, y, "github.com/login/device", FG_DIM, out);
+                    let (hint, color) = if s.code_copied {
+                        ("copied - paste it in the browser (Ctrl+V)", ACCENT)
+                    } else {
+                        ("tap the code to copy it", FG_DIM)
+                    };
+                    y += self.line(list, y, hint, color, out);
                     y += 6.0 * k;
                 } else {
                     y += self.line(list, y, "not signed in - notes stay local", FG_DIM, out);
