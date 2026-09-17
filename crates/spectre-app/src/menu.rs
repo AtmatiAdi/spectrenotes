@@ -101,6 +101,7 @@ pub enum Setting {
     WavesOn,
     /// Fale tylko na wbudowanym panelu laptopa.
     WavesLaptopOnly,
+    WavesMaximizedOnly,
     /// Wpis w kluczu Run (start do traya).
     Autostart,
     WavesIdle,
@@ -172,6 +173,7 @@ pub struct MenuState<'a> {
     pub scroll_mult: f32,
     pub waves_on: bool,
     pub waves_laptop_only: bool,
+    pub waves_maximized_only: bool,
     pub autostart: bool,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     pub waves_idle_s: u32,
@@ -1107,6 +1109,11 @@ impl Menu {
                         "Laptop screen only",
                         on_off(s.waves_laptop_only).to_string(),
                     ),
+                    (
+                        Setting::WavesMaximizedOnly,
+                        "Only when maximized or full screen",
+                        on_off(s.waves_maximized_only).to_string(),
+                    ),
                     (Setting::WavesIdle, "Waves after idle (W)", waves),
                     (
                         Setting::WavesDim,
@@ -1384,7 +1391,13 @@ impl Menu {
             }
             None => {
                 if let Some(code) = s.device_code {
-                    y += self.line(list, y, "enter this code in the browser:", FG, out);
+                    y += self.line(
+                        list,
+                        y,
+                        "paste this code in the browser (it is in the clipboard):",
+                        FG,
+                        out,
+                    );
                     out.push(UiPrim::Text {
                         x: list.x + (PAD * k),
                         y,

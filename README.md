@@ -63,8 +63,9 @@ schowany do traya; tak startuje autostart), `--new-instance` (patrz wyżej), `--
 (tryby wierszowe, same dołączają konsolę).
 
 **Współpraca ze Spectre** (`C:\Projects\Spectre` — presety ekranów i czarna nakładka
-AMOLED na panel laptopa): gdy SpectreNotes jest widoczne na panelu i ma włączoną własną
-ochronę, co 10 s prosi Spectre o wstrzymanie nakładki (dzierżawa 30 s przez komunikat
+AMOLED na panel laptopa): gdy SpectreNotes jest widoczne na panelu, ma włączoną własną
+ochronę **i jest zmaksymalizowane albo w pełnym ekranie** (domyślnie; ustawienie
+*Only when maximized or full screen* wyłącza ten warunek), co 10 s prosi Spectre o wstrzymanie nakładki (dzierżawa 30 s przez komunikat
 `Spectre.ShieldHold`). Spectre po wygaśnięciu dzierżawy wraca do ochrony sam — zamknięty
 czy zawieszony SpectreNotes nigdy nie zostawia panelu bez ochrony. HUD (`H`) mówi, co
 naprawdę poszło i dlaczego (`Spectre: shield held off, last ping 3 s ago` / `not holding -
@@ -171,8 +172,11 @@ zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (włącz/wyłącz; **tylko
 na ekranie laptopa** — na zewnętrznym monitorze fale nie startują, panel wbudowany
-rozpoznawany po typie złącza; czas bezczynności 10 s – 10 min; jasność notatki między
-pasami 0–100 %), *Sieć lokalna* (rysowanie na żywo), *System* (**autostart** — wpis
+rozpoznawany po typie złącza; **tylko zmaksymalizowane lub pełny ekran** — domyślnie
+włączone: w zwykłym oknie fale nie startują i Spectre nie dostaje próśb, bo skok okna na
+cały ekran w trakcie pracy obok był uciążliwy; gdy ochrona czuwa, przed tytułem notatki
+stoi tarcza 🛡 — potwierdzenie, że okno jest tam, gdzie ma chronić; czas bezczynności
+10 s – 10 min; jasność notatki między pasami 0–100 %), *Sieć lokalna* (rysowanie na żywo), *System* (**autostart** — wpis
 w kluczu `Run` użytkownika, aplikacja startuje z `--tray`, czyli schowana w trayu).
 Trwałe wartości lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba (kod w przeglądarce albo
 wklejony token — GitHub nie przyjmuje już logowania hasłem, więc login jest przez

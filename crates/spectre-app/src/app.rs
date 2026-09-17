@@ -226,6 +226,10 @@ pub struct App {
     /// Fale tylko, gdy okno lezy na wbudowanym panelu laptopa (OLED); na
     /// zewnetrznym monitorze nie startuja.
     waves_laptop_only: bool,
+    /// Ochrona tylko przy oknie zmaksymalizowanym albo w pelnym ekranie
+    /// (domyslnie): w zwyklym oknie fale nie startuja, a Spectre nie dostaje
+    /// od nas prosb - jego czarna nakladka chroni panel sama.
+    waves_maximized_only: bool,
     /// Wpis autostartu w rejestrze (stan odczytany na starcie i po zmianie).
     autostart: bool,
     /// Spectre (osobna aplikacja chroniaca panel): co ostatnio zdecydowal
@@ -395,6 +399,7 @@ impl App {
             .min(3600);
         let waves_on = config.get("waves_on") != Some("0");
         let waves_laptop_only = config.get("waves_laptop_only") == Some("1");
+        let waves_maximized_only = config.get("waves_maximized_only") != Some("0");
         let view_locked = config.get("view_lock") != Some("0");
         let ui_scale = window::dpi_scale(hwnd);
         renderer.set_ui_scale(ui_scale);
@@ -499,6 +504,7 @@ impl App {
             scroll_mult,
             waves_on,
             waves_laptop_only,
+            waves_maximized_only,
             autostart: spectre_shell_win::autostart::is_enabled(),
             shield: spectre_shell_win::shield::ShieldPartner::new(),
             partner: PartnerState::Unknown,
@@ -1024,6 +1030,7 @@ impl App {
             },
             fullscreen: self.fullscreen.is_active(),
             menu_open: self.menu.open,
+            protected: self.waves_armed(),
         }
     }
 
@@ -1285,6 +1292,19 @@ impl App {
                     self.stop_waves();
                     self.arm_amoled_timers();
                 }
+            }
+            Setting::WavesMaximizedOnly => {
+                self.waves_maximized_only = !self.waves_maximized_only;
+                self.config.set(
+                    "waves_maximized_only",
+                    if self.waves_maximized_only { "1" } else { "0" },
+                );
+                self.config.save();
+                if self.waves_maximized_only && !self.waves_forced {
+                    self.stop_waves();
+                    self.arm_amoled_timers();
+                }
+                self.partner_tick();
             }
             Setting::UpdateCheck => {
                 self.update_check = !self.update_check;
@@ -1627,7 +1647,12 @@ impl App {
                     }
                 }
                 SyncEvent::DeviceCode { code, url } => {
-                    self.sync.last = format!("enter code {code} at {url}");
+                    // Kod od razu w schowku: w przegladarce zostaje Ctrl+V.
+                    self.sync.last = if clipboard_set_text(&code) {
+                        format!("code {code} copied - paste it at {url}")
+                    } else {
+                        format!("enter code {code} at {url}")
+                    };
                     if !self.menu.open {
                         self.toggle_menu();
                     }
@@ -2260,6 +2285,37 @@ impl App {
         self.sync_entry();
     }
 
+    /// Dlaczego ochrona AMOLED (fale i prosby do Spectre) teraz nie obowiazuje;
+    /// `None` = okno jest tam, gdzie ma chronic. Wspolne dla fal, Spectre
+    /// i ikonki przy tytule - wszystkie trzy maja mowic to samo.
+    fn protect_block_reason(&self) -> Option<String> {
+        if self.hidden {
+            return Some("window hidden".into());
+        }
+        if unsafe { IsIconic(self.hwnd).as_bool() } {
+            return Some("window minimized".into());
+        }
+        if !self.waves_on {
+            return Some("AMOLED protection off in settings".into());
+        }
+        if self.waves_maximized_only
+            && !self.fullscreen.is_active()
+            && !window::is_maximized(self.hwnd)
+        {
+            return Some("window not maximized".into());
+        }
+        None
+    }
+
+    /// Czy fale wystartuja po bezczynnosci: `protect_block_reason` plus
+    /// "tylko ekran laptopa". To samo pokazuje ikonka przed tytulem notatki.
+    fn waves_armed(&self) -> bool {
+        self.protect_block_reason().is_none()
+            && self.waves_idle_s != 0
+            && (!self.waves_laptop_only
+                || spectre_shell_win::display::on_internal_display(self.hwnd))
+    }
+
     // ----- Spectre (partner chroniacy panel) ---------------------------------
 
     /// Co 10 s: gdy notatka jest widoczna na panelu laptopa i nasza ochrona
@@ -2267,19 +2323,15 @@ impl App {
     /// (30 s dzierzawy). W przeciwnym razie zwalniamy - Spectre chroni sam.
     /// Kazda decyzja z powodem trafia do `partner` (HUD) i przy zmianie do logu.
     fn partner_tick(&mut self) {
-        let minimized = unsafe { IsIconic(self.hwnd).as_bool() };
-        let idle = if self.hidden {
-            Some("window hidden".to_string())
-        } else if minimized {
-            Some("window minimized".to_string())
-        } else if !self.waves_on {
-            Some("AMOLED protection off in settings".to_string())
-        } else {
-            match spectre_shell_win::display::window_display(self.hwnd) {
-                Some((device, false)) => Some(format!("window on {device}, not the laptop panel")),
-                _ => None,
-            }
-        };
+        let idle =
+            self.protect_block_reason().or_else(
+                || match spectre_shell_win::display::window_display(self.hwnd) {
+                    Some((device, false)) => {
+                        Some(format!("window on {device}, not the laptop panel"))
+                    }
+                    _ => None,
+                },
+            );
         let next = match idle {
             Some(why) => {
                 if self.shield_held() {
@@ -2651,13 +2703,11 @@ impl App {
             return;
         }
         if self.waves.is_none() {
-            // "Tylko ekran laptopa": na zewnetrznym monitorze nie startujemy,
-            // ale odliczamy dalej - po przeniesieniu okna na panel ochrona
-            // wystartuje po kolejnym okresie bezczynnosci. `W` (podglad) omija to.
-            if self.waves_laptop_only
-                && !self.waves_forced
-                && !spectre_shell_win::display::on_internal_display(self.hwnd)
-            {
+            // Zwykle okno (przy "tylko zmaksymalizowane") albo zewnetrzny monitor
+            // (przy "tylko ekran laptopa"): nie startujemy, ale odliczamy dalej -
+            // po zmaksymalizowaniu albo przeniesieniu na panel ochrona wystartuje
+            // po kolejnym okresie bezczynnosci. `W` (podglad) omija to.
+            if !self.waves_forced && !self.waves_armed() {
                 self.arm_amoled_timers();
                 return;
             }
@@ -2840,6 +2890,7 @@ impl App {
                 scroll_mult: self.scroll_mult,
                 waves_on: self.waves_on,
                 waves_laptop_only: self.waves_laptop_only,
+                waves_maximized_only: self.waves_maximized_only,
                 autostart: self.autostart,
                 waves_idle_s: self.waves_idle_s,
                 waves_dim_pct: self.waves_dim_pct,
@@ -3097,6 +3148,41 @@ fn clipboard_text() -> Option<String> {
         });
         let _ = CloseClipboard();
         text.filter(|s| !s.trim().is_empty())
+    }
+}
+
+/// Tekst do schowka (kod logowania: w przegladarce zostaje Ctrl+V).
+fn clipboard_set_text(s: &str) -> bool {
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return false;
+        }
+        let ok = (|| {
+            EmptyClipboard().ok()?;
+            let h = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2).ok()?;
+            let p = GlobalLock(h) as *mut u16;
+            if p.is_null() {
+                return None;
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+            let _ = GlobalUnlock(h);
+            // Po SetClipboardData pamiec nalezy do systemu.
+            SetClipboardData(
+                CF_UNICODETEXT,
+                Some(windows::Win32::Foundation::HANDLE(h.0)),
+            )
+            .ok()?;
+            Some(())
+        })()
+        .is_some();
+        let _ = CloseClipboard();
+        ok
     }
 }
 
@@ -3460,6 +3546,9 @@ pub unsafe extern "system" fn wndproc(
                     app.scroll_to(app.cam.scroll_y);
                 }
             }
+            // Zmaksymalizowane/przywrocone: Spectre i ikonka przy tytule maja to
+            // zauwazyc od razu, nie za 10 s.
+            app.partner_soon();
             app.relayout();
             if let Some(wv) = app.waves.as_mut() {
                 wv.resize((w, h));

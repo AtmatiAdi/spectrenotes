@@ -273,6 +273,21 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       w trakcie fal. Zmierzone: pasek pod oknem od ~250 ms, stabilnie przez 6 s
       i przy prawdziwej bezczynności; przy oknie/innej aplikacji na pierwszym
       planie bez zmian.
+- [x] **Ochrona AMOLED tylko zmaksymalizowane/pełny ekran, tarcza przy tytule**
+      (2026-09-17). Prośba użytkownika: skok okna na cały ekran w trakcie pracy obok
+      był uciążliwy. W zwykłym oknie fale nie startują i Spectre nie dostaje próśb
+      (chroni sam); ustawienie *Only when maximized or full screen* przywraca stare
+      zachowanie. Wspólny predykat `protect_block_reason` dla fal, Spectre i ikonki
+      🛡 przed tytułem. Zweryfikowane zrzutami i `partner.log`: okno 1400×1000 — bez
+      tarczy, po 7 s bezczynności nadal okno, „not holding: window not maximized";
+      zmaksymalizowane — tarcza, „holding", po bezczynności pełny ekran z falami;
+      ustawienie wyłączone — tarcza i fale także w oknie.
+- [ ] **Logowanie do GitHuba jednym kliknięciem**: Device Flow jest w kodzie
+      (`github.rs`, przycisk *Sign in with GitHub (browser)*, kod ląduje w schowku),
+      brakuje tylko `CLIENT_ID` zarejestrowanej OAuth App (Settings → Developer
+      settings → OAuth Apps → New, „Enable Device Flow"); do testów
+      `github_client_id=` w `config.txt`.
+
 - [x] **Kłódka widoku**: zablokowany = kolumna wyśrodkowana (bezwzględny środek
       notatki), zoom wolno, scroll w bok nie; odblokowany = canvas nieskończony
       w osi X. Naprawia „odblokowanie" scrolla w bok przez rysowanie po oddaleniu.

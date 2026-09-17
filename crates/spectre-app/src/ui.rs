@@ -37,6 +37,8 @@ pub const EDGE_ZONE: f32 = 16.0;
 /// byc "znikniecie, ktore widac", nie animacja, na ktora sie czeka; pasek
 /// wraca natychmiast, gdy rysik wroci do krawedzi.
 pub const HIDE_MS: f32 = 220.0;
+/// Ikonka "ekran chroniony" przed tytulem notatki (Segoe UI Symbol; tarcza).
+pub const PROTECTED_GLYPH: char = '\u{1F6E1}';
 pub const ITEM_LEN: f32 = 38.0;
 pub const COLOR_LEN: f32 = 26.0;
 pub const GRIP_LEN: f32 = 19.0;
@@ -171,6 +173,8 @@ pub struct UiState<'a> {
     pub maximized: bool,
     pub fullscreen: bool,
     pub menu_open: bool,
+    /// Ochrona AMOLED czuwa (okno tam, gdzie ma chronic): ikonka przed tytulem.
+    pub protected: bool,
 }
 
 struct Item {
@@ -798,6 +802,14 @@ impl Toolbar {
             None if s.title.is_empty() => "untitled".to_string(),
             None => s.title.to_string(),
         };
+        // Ochrona AMOLED czuwa: tarcza przed tytulem. Tytul jest wysrodkowany,
+        // wiec ikonka idzie w tym samym napisie - osobny prymityw nie wiedzialby,
+        // gdzie zaczyna sie tekst.
+        let text = if s.protected && !editing {
+            format!("{PROTECTED_GLYPH} {text}")
+        } else {
+            text
+        };
         if editing {
             out.push(UiPrim::Outline {
                 x: tr.x,
@@ -1243,6 +1255,7 @@ mod tests {
             maximized: false,
             fullscreen: false,
             menu_open: false,
+            protected: false,
         };
         let mut shown = Vec::new();
         t.build(&st, &mut shown);
