@@ -203,6 +203,24 @@ logowania: tylko lokalna historia. Ruchu do GitHuba pilnuje budżet (odstępy, l
 godzinowe i dobowe z predykcją); odmowa serwera (`429`, „too many requests") wstrzymuje
 sync na 10 min – 2 h z ostrzeżeniem w Konto i HUD, commity idą dalej lokalnie.
 
+**Space'y współdzielone (Etap 6¾).** Space `default` jest zawsze prywatny. Wspólne
+notatki żyją w **osobnych space'ach** — każdy to własne repozytorium
+`spectrenotes-<nazwa>` na koncie założyciela ze **współpracownikami GitHub**;
+kto ma dostęp do repo, ten widzi space. *Konto → Friends*: lista loginów GitHub
+(`friends.txt` w prywatnym space'ie, synchronizowana jak notatki), sprawdzanych
+przy dodaniu. *Konto → Shared spaces*: nowy space, przy własnym przyciski
+„invite <znajomy>" (zaproszenie do repo), lista współpracowników, „leave".
+Zaproszenia od innych pojawiają się tam same („Join …") — przyjęcie zakłada
+lokalny katalog `spaces\<nazwa>` i podpina cudze repo. Lista notatek scala
+wszystkie space'y (kafelek „in <space>"); **folder jest metadaną notatki**, więc
+notatka przeniesiona do wspólnego space'u (*Notes → This note in a shared space*)
+zostaje w swoim folderze, a u współpracownika ten folder pojawia się z nią.
+Przeniesienie = ruch katalogu `notes/<ULID>` między repozytoriami (w starym commit
+z usunięciem, w nowym z dodaniem) — notatka zawsze żyje w jednym repo. Nowa
+notatka powstaje w space'ie bieżącej. Rejestr space'ów tej maszyny:
+`%APPDATA%\SpectreNotes\spaces.txt`. Warstwa live w LAN na razie widzi tylko
+space domyślny.
+
 **Rysowanie na żywo w sieci (Etap 6).** Urządzenia w tej samej sieci **znajdują się
 same** (multicast, bez internetu) i łączą po TCP; przez Tailscale — adres `host:port`
 wpisany w *Konto → Sieć lokalna*. **Sieć widzi tylko to, co udostępnisz** (ADR 0008):

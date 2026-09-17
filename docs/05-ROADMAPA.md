@@ -361,7 +361,7 @@ Do rozstrzygnięcia (lista otwarta — dopisywać):
       dok/undock, tryb tabletu (klawiatura schowana)
 - [ ] Onboarding: pierwszy start, logowanie, pierwszy space, druga maszyna
 
-## Etap 6¾ — Space'y współdzielone przez GitHub  ◐ W TOKU (od 2026-09-17)
+## Etap 6¾ — Space'y współdzielone przez GitHub  ◐ DZIAŁA (od 2026-09-17; do testu z drugim kontem)
 
 Decyzje z użytkownikiem (2026-09-17):
 
@@ -392,19 +392,29 @@ Decyzje z użytkownikiem (2026-09-17):
   (ma to, co już pobrał).
 
 Plan (kolejność wdrożenia):
-- [ ] **Wiele space'ów w jednej instancji**: `App` trzyma listę space'ów (domyślny
-      + `spaces\<nazwa>` obok), każdy z własnym `SyncWorker`; lista notatek scalona,
-      kafelek z nazwą space'u, gdy nie domyślny. Jedna instancja na profil
-      (`instance::space_tag` z katalogu danych, nie z pojedynczego space'u).
-- [ ] **Znajomi** (Konto → Friends): dodaj po loginie (walidacja `GET /users`),
-      lista z avatarami, usuń; `friends.txt` w space'ie domyślnym.
-- [ ] **Space'y** (Konto → Spaces): nowy space z nazwą i wyborem znajomych
-      (repo + zaproszenia), lista własnych i cudzych, zaproszenia do przyjęcia,
-      opuszczenie space'u.
-- [ ] **Przenoszenie notatki do space'u** (z listy notatek / bieżącej): kopiowanie
-      katalogu, `git rm` w starym, commit + push w obu; blokada, gdy notatka
-      otwarta na żywo w LAN u kogoś.
-- [ ] Nowa notatka: w space'ie bieżącej notatki (jak folder) — domyślnie prywatny.
+- [x] **Wiele space'ów w jednej instancji** (2026-09-17): `App::spaces` (domyślny
+      + wspoldzielone z `<dane>\spaces.txt`), jeden wątek sync z `RepoRef` w każdym
+      zadaniu (Status/Sync per space, konto wspólne), lista notatek scalona,
+      kafelek „in <space>". Warstwa live LAN zna tylko space domyślny (do zrobienia).
+- [x] **Znajomi** (Konto → Friends): dodaj po loginie (`GET /users/{login}`
+      w wątku sync), usuń dotknięciem; `friends.txt` w space'ie domyślnym,
+      commitowany jak notatki (bez avatarów — lista loginów).
+- [x] **Space'y** (Konto → Shared spaces): nowy space z nazwą (można bez logowania,
+      repo powstaje przy pierwszym syncu po zalogowaniu), przy każdym własnym
+      przyciski „invite <znajomy>" (`PUT .../collaborators`, uprawnienie push),
+      lista współpracowników (`GET .../collaborators`), zaproszenia do przyjęcia
+      (`GET /user/repository_invitations`, sprawdzane na Status i wejściu w Konto,
+      raz na 5 min), „leave this space" (rejestr; katalog zostaje).
+- [x] **Przenoszenie notatki do space'u** (Notes → „This note in a shared space"):
+      `NoteStore::close`, `rename` katalogu (fallback kopia), cache metadanych,
+      ponowne otwarcie, commit w obu repo. Zweryfikowane: przeniesienie w obie
+      strony, kreska po przeniesieniu ląduje w nowym miejscu (1547 → 1743 B),
+      w starym repo commit z usunięciem, w nowym z dodaniem. Blokada: notatka
+      udostępniona na LAN najpierw musi przestać być udostępniana.
+- [x] Nowa notatka: w space'ie bieżącej notatki (jak folder).
+- [ ] Live LAN dla notatek ze space'ów współdzielonych (`Replica` zna jeden space).
+- [ ] Wycofanie współpracownika z GUI (`remove_collaborator` gotowe).
+- [ ] Test na żywo z drugim kontem GitHub (zaproszenie → przyjęcie → wspólne notatki).
 
 ## Etap 7 — Dystrybucja
 

@@ -45,8 +45,6 @@ pub struct RepoRef {
 pub enum Job {
     /// Odczyt stanu repozytorium jednego space'u bez zmian.
     Status(RepoRef),
-    /// Stan konta (login, budzet) bez dotykania repozytoriow.
-    Account,
     /// Commit + (gdy zalogowany) fetch + merge + push jednego space'u. `force`
     /// omija minimalny odstep miedzy cyklami, ale nie odczekanie po odmowie.
     Sync {
@@ -59,6 +57,23 @@ pub enum Job {
     /// Token wklejony recznie (PAT) - gdy nie ma client_id.
     SetToken(String),
     Logout,
+    /// Znajomy: sprawdzenie, czy taki login istnieje.
+    AddFriend(String),
+    /// Zaproszenia do repo space'u (`owner` = wlasciciel repo, zwykle my).
+    Invite {
+        owner: String,
+        repo: String,
+        logins: Vec<String>,
+    },
+    /// Czekajace zaproszenia do cudzych space'ow.
+    Invitations,
+    Accept(github::Invitation),
+    /// Kto ma dostep do repo space'u.
+    Collaborators {
+        space: usize,
+        owner: String,
+        repo: String,
+    },
 }
 
 /// Chwila ostatniego udanego zdarzenia (zapis, sync, peer) - do licznika
@@ -120,6 +135,20 @@ pub enum Event {
     Error(String),
     /// Zadanie `Sync` sklejone z innym w kolejce - tylko zdejmuje licznik.
     Skipped,
+    /// Login istnieje - do listy znajomych (pisownia GitHuba).
+    FriendAdded(github::User),
+    /// Zaproszenia wyslane (`sent`) i odrzucone przez GitHub (`failed`: login, powod).
+    Invited {
+        repo: String,
+        sent: Vec<String>,
+        failed: Vec<(String, String)>,
+    },
+    Invitations(Vec<github::Invitation>),
+    Accepted(github::Invitation),
+    Collaborators {
+        space: usize,
+        logins: Vec<String>,
+    },
 }
 
 /// Stan repozytorium jednego space'u do pokazania w menu (Konto) i w HUD-zie.
@@ -437,7 +466,65 @@ fn run(
             session.avatar_sent = false;
             out.push(Event::LoggedOut);
         }
-        Job::Account => out.push(Event::Account(account_status(ctx, session, budget))),
+        Job::AddFriend(login) => {
+            match token.as_deref() {
+                Some(t) => match github::user_lookup(t, &login) {
+                    Ok(u) => out.push(Event::FriendAdded(u)),
+                    Err(e) => out.push(Event::Error(format!("friend: {e}"))),
+                },
+                None => out.push(Event::Error("sign in to GitHub first".into())),
+            }
+            out.push(Event::Account(account_status(ctx, session, budget)));
+        }
+        Job::Invite {
+            owner,
+            repo,
+            logins,
+        } => {
+            match token.as_deref() {
+                Some(t) => {
+                    let mut sent = Vec::new();
+                    let mut failed = Vec::new();
+                    for l in logins {
+                        match github::add_collaborator(t, &owner, &repo, &l) {
+                            Ok(()) => sent.push(l),
+                            Err(e) => failed.push((l, e.to_string())),
+                        }
+                    }
+                    out.push(Event::Invited { repo, sent, failed });
+                }
+                None => out.push(Event::Error("sign in to GitHub first".into())),
+            }
+            out.push(Event::Account(account_status(ctx, session, budget)));
+        }
+        Job::Invitations => {
+            if let Some(t) = token.as_deref() {
+                match github::invitations(t) {
+                    Ok(list) => out.push(Event::Invitations(list)),
+                    Err(e) => out.push(Event::Error(format!("invitations: {e}"))),
+                }
+            }
+            out.push(Event::Account(account_status(ctx, session, budget)));
+        }
+        Job::Accept(inv) => {
+            match token.as_deref() {
+                Some(t) => match github::accept_invitation(t, inv.id) {
+                    Ok(()) => out.push(Event::Accepted(inv)),
+                    Err(e) => out.push(Event::Error(format!("invitation: {e}"))),
+                },
+                None => out.push(Event::Error("sign in to GitHub first".into())),
+            }
+            out.push(Event::Account(account_status(ctx, session, budget)));
+        }
+        Job::Collaborators { space, owner, repo } => {
+            if let Some(t) = token.as_deref() {
+                match github::collaborators(t, &owner, &repo) {
+                    Ok(logins) => out.push(Event::Collaborators { space, logins }),
+                    Err(e) => out.push(Event::Error(format!("collaborators: {e}"))),
+                }
+            }
+            out.push(Event::Account(account_status(ctx, session, budget)));
+        }
     }
     out
 }

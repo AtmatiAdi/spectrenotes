@@ -327,6 +327,16 @@ impl NoteStore {
             None => Ok(()),
         }
     }
+
+    /// Zamyka plik (po `sync`), zeby katalog notatki dal sie przeniesc;
+    /// nastepny `append` otworzy go od nowa - w miejscu, gdzie store powstal,
+    /// wiec po przeniesieniu store trzeba otworzyc na nowo.
+    pub fn close(&mut self) -> io::Result<()> {
+        if let Some(mut w) = self.writer.take() {
+            w.sync()?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn read_sorted_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {

@@ -182,6 +182,12 @@ pub struct App {
     data_dir: PathBuf,
     /// Znajomi (loginy GitHub) z `friends.txt` space'u domyslnego.
     friends: Vec<String>,
+    /// Zaproszenia do cudzych space'ow czekajace na przyjecie.
+    invitations: Vec<crate::github::Invitation>,
+    /// Wspolpracownicy space'ow (indeks = space), gdy juz odczytani.
+    collaborators: HashMap<usize, Vec<String>>,
+    /// Kiedy ostatnio pytalismy o zaproszenia (raz na kilka minut wystarczy).
+    invitations_at: Option<Instant>,
     author: AuthorName,
     notes: Vec<NoteEntry>,
     /// Foldery zadeklarowane jawnie (`folders.txt`); reszta wynika z notatek.
@@ -514,6 +520,9 @@ impl App {
             spaces,
             data_dir,
             friends,
+            invitations: Vec::new(),
+            collaborators: HashMap::new(),
+            invitations_at: None,
             author,
             notes,
             folders,
@@ -1216,7 +1225,12 @@ impl App {
     fn menu_tap(&mut self, hit: MenuHit) {
         match hit {
             MenuHit::Panel => {}
-            MenuHit::Tab(t) => self.menu.set_tab(t),
+            MenuHit::Tab(t) => {
+                self.menu.set_tab(t);
+                if t == crate::menu::Tab::Account {
+                    self.poll_invitations(false);
+                }
+            }
             MenuHit::Note(i) => self.switch_note(i),
             MenuHit::MoveTo(f) => {
                 let folder = match f {
@@ -1287,6 +1301,23 @@ impl App {
                 }
             }
             MenuHit::Peer(i) => self.remove_peer(i),
+            MenuHit::AddFriend => {
+                self.menu.friend_edit = Some(String::new());
+                unsafe {
+                    let _ = SetFocus(Some(self.hwnd));
+                }
+            }
+            MenuHit::Friend(i) => self.remove_friend(i),
+            MenuHit::NewSpace => {
+                self.menu.space_edit = Some(String::new());
+                unsafe {
+                    let _ = SetFocus(Some(self.hwnd));
+                }
+            }
+            MenuHit::Invite(slot, friend) => self.invite(slot, friend),
+            MenuHit::AcceptInvitation(i) => self.accept_invitation(i),
+            MenuHit::LeaveSpace(i) => self.leave_space(i),
+            MenuHit::MoveToSpace(i) => self.move_note_to_space(i),
         }
     }
 
@@ -1592,6 +1623,227 @@ impl App {
         self.folders = all_folders(&self.spaces);
     }
 
+    // ----- znajomi i space'y wspoldzielone (Etap 6 3/4) ------------------------
+
+    fn save_friends(&mut self) {
+        if let Err(e) = spaces::save_friends(&self.spaces[0].info.root, &self.friends) {
+            self.status = format!("friends: {e}");
+        }
+        // `friends.txt` jedzie z notatkami do prywatnego repo.
+        self.git_sync_space(0, false);
+    }
+
+    fn commit_friend_edit(&mut self) {
+        if let Some(login) = self.menu.friend_edit.take() {
+            let login = login.trim().trim_start_matches('@').to_string();
+            if login.is_empty() {
+                return;
+            }
+            if self.friends.iter().any(|f| f.eq_ignore_ascii_case(&login)) {
+                self.sync.last = format!("{login} is already a friend");
+                return;
+            }
+            self.sync.last = format!("checking {login}...");
+            self.sync.send(SyncJob::AddFriend(login));
+        }
+    }
+
+    fn remove_friend(&mut self, i: usize) {
+        if i < self.friends.len() {
+            let f = self.friends.remove(i);
+            self.sync.last = format!("removed friend {f}");
+            self.save_friends();
+        }
+    }
+
+    /// Nowy space (wlasny albo cudzy po przyjeciu zaproszenia): katalog,
+    /// rejestr, slot w aplikacji, pierwszy cykl sync (zaklada/podpina repo).
+    fn add_space(&mut self, name: &str, owner: Option<&str>) {
+        let mut registry: Vec<SpaceInfo> =
+            self.spaces.iter().skip(1).map(|s| s.info.clone()).collect();
+        let info = match spaces::create(&self.data_dir, &mut registry, name, owner) {
+            Ok(i) => i,
+            Err(e) => {
+                self.sync.last = format!("space: {e}");
+                return;
+            }
+        };
+        match Space::open_or_create(&info.root) {
+            Ok(space) => {
+                self.spaces.push(SpaceSlot { info, space });
+                let slot = self.spaces.len() - 1;
+                self.sync.last = format!("space \"{}\" created", self.spaces[slot].info.name);
+                self.folders = all_folders(&self.spaces);
+                self.git_sync_space(slot, true);
+            }
+            Err(e) => self.sync.last = format!("space: {e}"),
+        }
+    }
+
+    fn commit_space_edit(&mut self) {
+        if let Some(name) = self.menu.space_edit.take() {
+            if name.trim().is_empty() {
+                return;
+            }
+            self.add_space(&name, None);
+        }
+    }
+
+    /// Opuszczenie space'u: wpis w rejestrze znika, katalog zostaje. Notatki
+    /// z tego space'u schodza z listy; biezaca, jesli byla tam, ustepuje pierwszej.
+    fn leave_space(&mut self, slot: usize) {
+        if slot == 0 || slot >= self.spaces.len() {
+            return;
+        }
+        let name = self.spaces[slot].info.name.clone();
+        let mut registry: Vec<SpaceInfo> =
+            self.spaces.iter().skip(1).map(|s| s.info.clone()).collect();
+        if let Err(e) = spaces::forget(&self.data_dir, &mut registry, &name) {
+            self.sync.last = format!("space: {e}");
+            return;
+        }
+        let leaving_current = self.notes[self.note_idx].space == slot;
+        self.spaces.remove(slot);
+        if self.sync.spaces.len() > slot {
+            self.sync.spaces.remove(slot);
+        }
+        self.collaborators.remove(&slot);
+        // Indeksy wyzszych space'ow przesuwaja sie o jeden.
+        let shifted: Vec<(usize, Vec<String>)> = self
+            .collaborators
+            .drain()
+            .map(|(k, v)| (if k > slot { k - 1 } else { k }, v))
+            .collect();
+        self.collaborators = shifted.into_iter().collect();
+        if leaving_current {
+            // Otwarta notatka zostaje w pamieci do przelaczenia - lista od nowa
+            // juz jej nie ma, wiec `reload_entries` wskaze pierwsza.
+            self.end_action();
+            self.commit_title();
+            self.sync_now();
+        }
+        self.reload_entries();
+        if leaving_current {
+            let idx = self.note_idx;
+            self.note_idx = usize::MAX;
+            self.switch_note(idx);
+        }
+        self.sync.last = format!("left space \"{name}\"");
+    }
+
+    fn invite(&mut self, slot: usize, friend: usize) {
+        let (Some(sp), Some(login)) = (self.spaces.get(slot), self.friends.get(friend)) else {
+            return;
+        };
+        let Some(me) = self.sync.login() else {
+            self.sync.last = "sign in to GitHub first".to_string();
+            return;
+        };
+        let owner = sp.info.owner.clone().unwrap_or_else(|| me.to_string());
+        let repo = sp.info.repo_name();
+        let login = login.clone();
+        self.sync.last = format!("inviting {login}...");
+        self.sync.send(SyncJob::Invite {
+            owner,
+            repo,
+            logins: vec![login],
+        });
+    }
+
+    fn request_collaborators(&mut self, slot: usize) {
+        let (Some(sp), Some(me)) = (self.spaces.get(slot), self.sync.login()) else {
+            return;
+        };
+        let owner = sp.info.owner.clone().unwrap_or_else(|| me.to_string());
+        let repo = sp.info.repo_name();
+        self.sync.send(SyncJob::Collaborators {
+            space: slot,
+            owner,
+            repo,
+        });
+    }
+
+    /// Zaproszenia z GitHuba: na zadanie (`force`) albo najwyzej raz na 5 min.
+    fn poll_invitations(&mut self, force: bool) {
+        if self.sync.login().is_none() {
+            return;
+        }
+        let due = self
+            .invitations_at
+            .is_none_or(|t| t.elapsed().as_secs() >= 300);
+        if force || due {
+            self.invitations_at = Some(Instant::now());
+            self.sync.send(SyncJob::Invitations);
+        }
+    }
+
+    fn accept_invitation(&mut self, i: usize) {
+        if let Some(inv) = self.invitations.get(i).cloned() {
+            self.sync.last = format!("joining {}...", inv.repo);
+            self.sync.send(SyncJob::Accept(inv));
+        }
+    }
+
+    /// Przeniesienie biezacej notatki do innego space'u: katalog `notes/<ULID>`
+    /// zmienia repozytorium (w starym `git rm` przez commit_all, w nowym
+    /// dodanie), folder zostaje w metadanych. Notatka jest otwarta - store
+    /// zamykamy i otwieramy w nowym miejscu.
+    fn move_note_to_space(&mut self, target: usize) {
+        let from = self.notes[self.note_idx].space;
+        if target == from || target >= self.spaces.len() {
+            return;
+        }
+        self.end_action();
+        self.commit_title();
+        self.sync_now();
+        let id = self.notes[self.note_idx].id.clone();
+        if self.lan.shares.contains_key(&id) {
+            self.sync.last = "stop sharing this note on LAN first".to_string();
+            return;
+        }
+        let src = self.spaces[from].space.note_dir(&id);
+        let dst = self.spaces[target].space.note_dir(&id);
+        // Uchwyt do pliku .ops tej notatki trzyma `store` - Windows nie pozwoli
+        // przeniesc katalogu z otwartym plikiem.
+        if let Err(e) = self.store.close() {
+            self.sync.last = format!("move: {e}");
+            return;
+        }
+        if let Err(e) = move_dir(&src, &dst) {
+            self.sync.last = format!("move: {e}");
+            match open_note(&self.spaces[from].space, &id, &self.author) {
+                Ok((store, _)) => self.store = store,
+                Err(e) => self.status = format!("reopening note: {e}"),
+            }
+            return;
+        }
+        self.spaces[from].space.invalidate_meta(&id);
+        let title = self.doc.meta("title").unwrap_or("").to_string();
+        let folder = self.doc.meta("folder").unwrap_or("").to_string();
+        let _ = self.spaces[target]
+            .space
+            .write_note_meta(&id, &spectre_sync::NoteMeta { title, folder });
+        self.thumbs.remove(&id);
+        match open_note(&self.spaces[target].space, &id, &self.author) {
+            Ok((store, doc)) => {
+                self.store = store;
+                self.doc = doc;
+            }
+            Err(e) => self.status = format!("reopening note: {e}"),
+        }
+        self.reload_entries();
+        self.note_idx = self.notes.iter().position(|e| e.id == id).unwrap_or(0);
+        if from == 0 || target == 0 {
+            // Warstwa live zna tylko space domyslny: notatka do niego przybyla
+            // albo z niego ubyla.
+            self.live.send(LiveJob::Rescan(vec![id.clone()]));
+        }
+        self.sync.last = format!("note moved to \"{}\"", self.spaces[target].info.name);
+        self.git_sync_space(from, true);
+        self.git_sync_space(target, true);
+        self.arm_thumbs(true);
+    }
+
     // ----- trwalosc ----------------------------------------------------------
 
     fn persist(&mut self, ops: &[spectre_core::Op]) {
@@ -1755,10 +2007,19 @@ impl App {
         let mut repaint = false;
         for ev in self.sync.poll() {
             match ev {
-                SyncEvent::Status { status, .. } => {
+                SyncEvent::Status { space, status, .. } => {
                     if !self.sync_booted && status.repo_ok {
                         self.sync_booted = true;
                         self.git_sync(false);
+                    }
+                    if self.sync.login().is_some() {
+                        if space != 0
+                            && status.remote.is_some()
+                            && !self.collaborators.contains_key(&space)
+                        {
+                            self.request_collaborators(space);
+                        }
+                        self.poll_invitations(false);
                     }
                 }
                 SyncEvent::Account(_) => {}
@@ -1829,6 +2090,62 @@ impl App {
                     self.sync.last = format!("error: {}", one_line(&e, 90));
                 }
                 SyncEvent::Skipped => {}
+                SyncEvent::FriendAdded(u) => {
+                    if !self
+                        .friends
+                        .iter()
+                        .any(|f| f.eq_ignore_ascii_case(&u.login))
+                    {
+                        self.friends.push(u.login.clone());
+                        self.save_friends();
+                    }
+                    self.sync.last = format!("friend added: {}", u.login);
+                    repaint = true;
+                }
+                SyncEvent::Invited { repo, sent, failed } => {
+                    let name = spaces::name_from_repo(&repo).unwrap_or(repo);
+                    self.sync.last = if failed.is_empty() {
+                        format!("invited to {name}: {}", sent.join(", "))
+                    } else {
+                        let f: Vec<String> =
+                            failed.iter().map(|(l, e)| format!("{l} ({e})")).collect();
+                        format!("invited: {}; failed: {}", sent.join(", "), f.join("; "))
+                    };
+                    // Lista wspolpracownikow od nowa (zaproszony jeszcze nie jest
+                    // wspolpracownikiem, ale przycisk ma zniknac).
+                    if let Some(slot) = self.spaces.iter().position(|s| s.info.name == name) {
+                        let list = self.collaborators.entry(slot).or_default();
+                        for l in sent {
+                            if !list.contains(&l) {
+                                list.push(l);
+                            }
+                        }
+                    }
+                    repaint = true;
+                }
+                SyncEvent::Invitations(list) => {
+                    if self.invitations != list {
+                        self.invitations = list;
+                        repaint = true;
+                    }
+                }
+                SyncEvent::Accepted(inv) => {
+                    self.invitations.retain(|i| i.id != inv.id);
+                    match spaces::name_from_repo(&inv.repo) {
+                        Some(name) => self.add_space(&name, Some(&inv.owner)),
+                        None => self.sync.last = format!("not a SpectreNotes space: {}", inv.repo),
+                    }
+                    repaint = true;
+                }
+                SyncEvent::Collaborators { space, logins } => {
+                    let me = self.sync.login().map(str::to_string);
+                    let list: Vec<String> = logins
+                        .into_iter()
+                        .filter(|l| me.as_deref().is_none_or(|m| !m.eq_ignore_ascii_case(l)))
+                        .collect();
+                    self.collaborators.insert(space, list);
+                    repaint = true;
+                }
             }
         }
         if self.menu.open || self.show_hud || repaint {
@@ -2179,6 +2496,8 @@ impl App {
             .or(self.menu.share_edit.as_mut())
             .or(self.menu.open_edit.as_mut().map(|(_, b)| b))
             .or(self.menu.peer_edit.as_mut())
+            .or(self.menu.friend_edit.as_mut())
+            .or(self.menu.space_edit.as_mut())
     }
 
     /// Klawisz w polu tekstowym. `true` = zjedzony.
@@ -2197,6 +2516,10 @@ impl App {
                 self.commit_open_edit();
             } else if self.menu.peer_edit.is_some() {
                 self.commit_peer_edit();
+            } else if self.menu.friend_edit.is_some() {
+                self.commit_friend_edit();
+            } else if self.menu.space_edit.is_some() {
+                self.commit_space_edit();
             } else {
                 self.commit_token_edit();
             }
@@ -3012,6 +3335,25 @@ impl App {
             let offers = self.offer_views();
             let space_names: Vec<String> =
                 self.spaces.iter().map(|s| s.info.name.clone()).collect();
+            let space_views: Vec<menu::SpaceView> = self
+                .spaces
+                .iter()
+                .enumerate()
+                .map(|(i, s)| menu::SpaceView {
+                    name: s.info.name.clone(),
+                    owner: s.info.owner.clone(),
+                    collaborators: self.collaborators.get(&i).cloned().unwrap_or_default(),
+                    remote: self.sync.status(i).remote.is_some(),
+                })
+                .collect();
+            let invitation_views: Vec<menu::InvitationView> = self
+                .invitations
+                .iter()
+                .map(|inv| menu::InvitationView {
+                    space: spaces::name_from_repo(&inv.repo).unwrap_or_else(|| inv.repo.clone()),
+                    from: inv.inviter.clone(),
+                })
+                .collect();
             let current = &self.notes[self.note_idx].id;
             let share = self.lan.shares.get(current).map(|k| k.is_some());
             let update_view = self.update_view();
@@ -3056,6 +3398,9 @@ impl App {
                 offers: &offers,
                 peers: &self.lan.peers,
                 spaces: &space_names,
+                space_views: &space_views,
+                friends: &self.friends,
+                invitations: &invitation_views,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -3810,4 +4155,37 @@ fn all_folders(spaces: &[SpaceSlot]) -> Vec<String> {
         }
     }
     out
+}
+
+/// Przeniesienie katalogu notatki miedzy space'ami: `rename`, a gdy sie nie da
+/// (inny wolumin) - kopia i usuniecie zrodla. Cel nie moze istniec.
+fn move_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "note already exists in the target space",
+        ));
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    copy_dir(src, dst)?;
+    std::fs::remove_dir_all(src)
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), to)?;
+        }
+    }
+    Ok(())
 }

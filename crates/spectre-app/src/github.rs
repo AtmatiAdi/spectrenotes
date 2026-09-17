@@ -435,6 +435,176 @@ pub fn ensure_repo(token: &str, login: &str, name: &str) -> Result<String> {
         .unwrap_or_else(|| format!("https://github.com/{login}/{name}.git")))
 }
 
+// ----- znajomi, wspolpracownicy, zaproszenia (Etap 6 3/4) -----------------------
+
+/// Czy taki uzytkownik istnieje (do listy znajomych). Zwraca login w pisowni
+/// GitHuba (wielkosc liter) i adres avataru.
+pub fn user_lookup(token: &str, login: &str) -> Result<User> {
+    let login = login.trim().trim_start_matches('@');
+    if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(GitError::Other(format!("not a GitHub login: {login}")));
+    }
+    let r = http::request(
+        "GET",
+        &format!("{API}/users/{login}"),
+        &[UA, ACCEPT_API, &auth_header(token)],
+        None,
+    )
+    .map_err(map_http)?;
+    if r.status == 404 {
+        return Err(GitError::Other(format!("no GitHub user named {login}")));
+    }
+    check_status(&r, "users")?;
+    Ok(User {
+        login: json_str(&r.body, "login").unwrap_or_else(|| login.to_string()),
+        avatar_url: json_str(&r.body, "avatar_url").unwrap_or_default(),
+    })
+}
+
+/// Zaproszenie do repo space'u (uprawnienie `push` - wspolpracownik pisze
+/// do wlasnych plikow). 201 = zaproszenie wyslane, 204 = juz jest.
+pub fn add_collaborator(token: &str, owner: &str, repo: &str, login: &str) -> Result<()> {
+    let r = http::request(
+        "PUT",
+        &format!("{API}/repos/{owner}/{repo}/collaborators/{login}"),
+        &[
+            UA,
+            ACCEPT_API,
+            &auth_header(token),
+            "Content-Type: application/json",
+        ],
+        Some("{\"permission\":\"push\"}"),
+    )
+    .map_err(map_http)?;
+    check_status(&r, "collaborators")
+}
+
+/// Wycofanie wspolpracownika (GUI do ustalenia w Etapie 6 1/2).
+#[allow(dead_code)]
+pub fn remove_collaborator(token: &str, owner: &str, repo: &str, login: &str) -> Result<()> {
+    let r = http::request(
+        "DELETE",
+        &format!("{API}/repos/{owner}/{repo}/collaborators/{login}"),
+        &[UA, ACCEPT_API, &auth_header(token)],
+        None,
+    )
+    .map_err(map_http)?;
+    check_status(&r, "collaborators")
+}
+
+/// Loginy wspolpracownikow repo (z wlascicielem).
+pub fn collaborators(token: &str, owner: &str, repo: &str) -> Result<Vec<String>> {
+    let r = http::request(
+        "GET",
+        &format!("{API}/repos/{owner}/{repo}/collaborators?per_page=100"),
+        &[UA, ACCEPT_API, &auth_header(token)],
+        None,
+    )
+    .map_err(map_http)?;
+    check_status(&r, "collaborators")?;
+    Ok(json_objects(&r.body)
+        .iter()
+        .filter_map(|o| json_str(o, "login"))
+        .collect())
+}
+
+/// Zaproszenie do cudzego repozytorium, czekajace na przyjecie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invitation {
+    pub id: u64,
+    pub owner: String,
+    pub repo: String,
+    pub inviter: String,
+}
+
+/// Zaproszenia do repozytoriow SpectreNotes (`spectrenotes-*`); inne pomijamy.
+pub fn invitations(token: &str) -> Result<Vec<Invitation>> {
+    let r = http::request(
+        "GET",
+        &format!("{API}/user/repository_invitations?per_page=100"),
+        &[UA, ACCEPT_API, &auth_header(token)],
+        None,
+    )
+    .map_err(map_http)?;
+    check_status(&r, "invitations")?;
+    Ok(json_objects(&r.body)
+        .iter()
+        .filter_map(|o| {
+            // Pierwsze "id" to zaproszenie (repozytorium jest dalej w obiekcie).
+            let id = json_u64(o, "id")?;
+            let full = json_str(o, "full_name")?;
+            let (owner, repo) = full.split_once('/')?;
+            if !repo.starts_with("spectrenotes-") {
+                return None;
+            }
+            // "inviter" to obiekt za "repository"; jego login to ostatnie "login".
+            let inviter = o
+                .find("\"inviter\"")
+                .and_then(|i| json_str(&o[i..], "login"))
+                .unwrap_or_else(|| owner.to_string());
+            Some(Invitation {
+                id,
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+                inviter,
+            })
+        })
+        .collect())
+}
+
+pub fn accept_invitation(token: &str, id: u64) -> Result<()> {
+    let r = http::request(
+        "PATCH",
+        &format!("{API}/user/repository_invitations/{id}"),
+        &[UA, ACCEPT_API, &auth_header(token)],
+        None,
+    )
+    .map_err(map_http)?;
+    check_status(&r, "invitation")
+}
+
+/// Obiekty najwyzszego poziomu tablicy JSON, kazdy jako surowy tekst - do
+/// odczytu pol `json_str`/`json_u64` bez pelnego parsera. Nawiasy w
+/// napisach sa pomijane.
+pub fn json_objects(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = None;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, c) in body.char_indices() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start.take() {
+                        out.push(body[s..=i].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Nazwa repozytorium dla space'u: unikalna w obrebie konta, czytelna.
 pub fn repo_name(space_dir_name: &str) -> String {
     let slug: String = space_dir_name
@@ -489,6 +659,16 @@ mod tests {
             url_encode("http://127.0.0.1:5/callback"),
             "http%3A%2F%2F127.0.0.1%3A5%2Fcallback"
         );
+    }
+
+    #[test]
+    fn obiekty_json_i_zaproszenia() {
+        let body = r#"[{"id": 7, "node_id": "x", "repository": {"id": 99, "name": "spectrenotes-proj", "full_name": "kuba/spectrenotes-proj", "owner": {"login": "kuba"}}, "invitee": {"login": "me"}, "inviter": {"login": "kuba"}}, {"id": 8, "repository": {"id": 5, "name": "inne", "full_name": "x/inne"}, "inviter": {"login": "x"}}]"#;
+        let objs = json_objects(body);
+        assert_eq!(objs.len(), 2);
+        assert_eq!(json_u64(&objs[0], "id"), Some(7));
+        assert_eq!(json_objects("[]").len(), 0);
+        assert_eq!(json_objects(r#"[{"a": "}{"}]"#).len(), 1);
     }
 
     #[test]

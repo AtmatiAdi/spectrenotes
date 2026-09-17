@@ -143,6 +143,19 @@ pub enum MenuHit {
     /// Staly adres peera: dodaj (pole tekstowe) / usun (indeks).
     AddPeer,
     Peer(usize),
+    /// Znajomi (Etap 6 3/4): dodaj (pole tekstowe) / usun (indeks).
+    AddFriend,
+    Friend(usize),
+    /// Nowy wspoldzielony space (pole tekstowe z nazwa).
+    NewSpace,
+    /// Zapros znajomego (indeks) do space'u (indeks).
+    Invite(usize, usize),
+    /// Przyjmij zaproszenie (indeks w `MenuState::invitations`).
+    AcceptInvitation(usize),
+    /// Opusc space (indeks) - katalog zostaje na dysku.
+    LeaveSpace(usize),
+    /// Przenies biezaca notatke do space'u (indeks).
+    MoveToSpace(usize),
     /// Tlo panelu - zjada dotkniecie, nic nie robi.
     Panel,
 }
@@ -218,6 +231,27 @@ pub struct MenuState<'a> {
     pub peers: &'a [String],
     /// Nazwy space'ow (indeks = `NoteEntry::space`).
     pub spaces: &'a [String],
+    /// Space'y ze szczegolami (ten sam indeks), znajomi i zaproszenia.
+    pub space_views: &'a [SpaceView],
+    pub friends: &'a [String],
+    pub invitations: &'a [InvitationView],
+}
+
+/// Space w zakladce Konto.
+pub struct SpaceView {
+    pub name: String,
+    /// Login wlasciciela cudzego space'u; `None` = moj.
+    pub owner: Option<String>,
+    /// Wspolpracownicy (bez nas), gdy juz odczytani.
+    pub collaborators: Vec<String>,
+    /// Repozytorium podpiete (jest zdalne).
+    pub remote: bool,
+}
+
+/// Zaproszenie do cudzego space'u.
+pub struct InvitationView {
+    pub space: String,
+    pub from: String,
 }
 
 /// Stan aktualizacji przetlumaczony na tekst (`app::update_view`).
@@ -270,6 +304,9 @@ pub struct Menu {
     pub open_edit: Option<(usize, String)>,
     /// Nowy staly adres peera.
     pub peer_edit: Option<String>,
+    /// Nowy znajomy (login GitHub) / nowy space (nazwa).
+    pub friend_edit: Option<String>,
+    pub space_edit: Option<String>,
     scroll: f32,
     hot: Option<MenuHit>,
     /// Elementy z ostatniego `build` - juz po przewinieciu, w pikselach ekranu.
@@ -298,6 +335,8 @@ impl Menu {
             share_edit: None,
             open_edit: None,
             peer_edit: None,
+            friend_edit: None,
+            space_edit: None,
             scroll: 0.0,
             hot: None,
             rows: Vec::new(),
@@ -387,6 +426,8 @@ impl Menu {
         self.share_edit = None;
         self.open_edit = None;
         self.peer_edit = None;
+        self.friend_edit = None;
+        self.space_edit = None;
     }
 
     /// Nazwa folderu dla `MoveTo(Some(i))` z ostatniego rysowania.
@@ -860,6 +901,27 @@ impl Menu {
                 }
             }
             y += self.action_row(list, y, hit, label, FG, out);
+        }
+
+        // Biezaca notatka a space'y wspoldzielone: przeniesienie = udostepnienie
+        // wspolpracownikom tego space'u (folder zostaje - to metadana notatki).
+        if s.space_views.len() > 1 {
+            y += 12.0 * k;
+            y += self.section(list, y, "This note in a shared space", out);
+            let cur = s.notes.get(s.note_idx).map(|n| n.space).unwrap_or(0);
+            let here = s.spaces.get(cur).map(String::as_str).unwrap_or("default");
+            y += self.line(list, y, &format!("now in: {here}"), FG_DIM, out);
+            for (i, sp) in s.space_views.iter().enumerate() {
+                if i == cur {
+                    continue;
+                }
+                let label = if i == 0 {
+                    "Move back to private (default)".to_string()
+                } else {
+                    format!("Move to \"{}\"", sp.name)
+                };
+                y += self.action_row(list, y, MenuHit::MoveToSpace(i), &label, FG, out);
+            }
         }
 
         // Biezaca notatka w sieci (ADR 0008) - minimum GUI, docelowy uklad
@@ -1609,7 +1671,119 @@ impl Menu {
         );
         y += 6.0 * k;
         y += self.button(list, y, MenuHit::SyncNow, "Sync now", FG, out);
+
+        y += self.build_sharing(s, list, y, out);
         y + 10.0 * k - (list.y - self.scroll)
+    }
+
+    /// Znajomi i space'y wspoldzielone (Etap 6 3/4): lista znajomych (loginy
+    /// GitHub), zaproszenia do przyjecia, space'y z wspolpracownikami
+    /// i przyciskami zaproszen. Wszystko wymaga zalogowania.
+    fn build_sharing(
+        &mut self,
+        s: &MenuState,
+        list: Rect,
+        mut y: f32,
+        out: &mut Vec<UiPrim>,
+    ) -> f32 {
+        let k = self.scale;
+        let y0 = y;
+        let logged = s.account.login.is_some();
+        y += 12.0 * k;
+        y += self.section(list, y, "Friends", out);
+        if !logged {
+            y += self.line(
+                list,
+                y,
+                "sign in to add friends and share spaces",
+                FG_DIM,
+                out,
+            );
+        }
+        if s.friends.is_empty() && logged {
+            y += self.line(list, y, "no friends yet - add a GitHub login", FG_DIM, out);
+        }
+        for (i, f) in s.friends.iter().enumerate() {
+            let label = format!("{f}   (tap to remove)");
+            y += self.action_row(list, y, MenuHit::Friend(i), &label, FG, out);
+        }
+        if logged {
+            if let Some(buf) = self.friend_edit.clone() {
+                y += self.edit_row(list, y, &buf, "GitHub login, Enter", out);
+            } else {
+                y += self.action_row(
+                    list,
+                    y,
+                    MenuHit::AddFriend,
+                    "+  Add friend (GitHub login)",
+                    FG,
+                    out,
+                );
+            }
+        }
+
+        if !s.invitations.is_empty() {
+            y += 12.0 * k;
+            y += self.section(list, y, "Invitations", out);
+            for (i, inv) in s.invitations.iter().enumerate() {
+                let label = format!("Join \"{}\" from {}", inv.space, inv.from);
+                y += self.action_row(list, y, MenuHit::AcceptInvitation(i), &label, ACCENT, out);
+            }
+        }
+
+        y += 12.0 * k;
+        y += self.section(list, y, "Shared spaces", out);
+        y += self.line(
+            list,
+            y,
+            "\"default\" is private; others are shared repos",
+            FG_DIM,
+            out,
+        );
+        for (i, sp) in s.space_views.iter().enumerate().skip(1) {
+            let who = match &sp.owner {
+                Some(o) => format!("{}   (from {o})", sp.name),
+                None => sp.name.clone(),
+            };
+            y += self.line(list, y, &who, FG, out);
+            let members = if sp.collaborators.is_empty() {
+                if sp.remote {
+                    "collaborators: loading...".to_string()
+                } else {
+                    "repository not connected yet".to_string()
+                }
+            } else {
+                format!("with: {}", sp.collaborators.join(", "))
+            };
+            y += self.line(list, y, &members, FG_DIM, out);
+            if sp.owner.is_none() && logged {
+                // Zaproszenia: znajomi, ktorych jeszcze nie ma w space'ie.
+                for (fi, f) in s.friends.iter().enumerate() {
+                    if sp.collaborators.iter().any(|c| c.eq_ignore_ascii_case(f)) {
+                        continue;
+                    }
+                    let label = format!("   invite {f}");
+                    y += self.action_row(list, y, MenuHit::Invite(i, fi), &label, FG_DIM, out);
+                }
+            }
+            y += self.action_row(
+                list,
+                y,
+                MenuHit::LeaveSpace(i),
+                "   leave this space (notes stay on disk)",
+                FG_DIM,
+                out,
+            );
+            y += 4.0 * k;
+        }
+        // Space mozna zalozyc bez logowania - repo powstanie przy pierwszym
+        // syncu po zalogowaniu; zaproszenia i tak wymagaja konta.
+        if let Some(buf) = self.space_edit.clone() {
+            y += self.edit_row(list, y, &buf, "space name, Enter", out);
+        } else {
+            y += self.action_row(list, y, MenuHit::NewSpace, "+  New shared space", FG, out);
+        }
+        y - y0
     }
 
     /// Wiersz tekstu w zakladce; zwraca wysokosc.
