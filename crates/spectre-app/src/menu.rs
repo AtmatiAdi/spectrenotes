@@ -156,6 +156,8 @@ pub enum MenuHit {
     LeaveSpace(usize),
     /// Przenies biezaca notatke do space'u (indeks).
     MoveToSpace(usize),
+    /// Okno "Send feedback" (pierwsza pozycja w Ustawieniach).
+    Feedback,
     /// Tlo panelu - zjada dotkniecie, nic nie robi.
     Panel,
 }
@@ -1056,6 +1058,10 @@ impl Menu {
             s if s < 60 => format!("{s} s"),
             s => format!("{} min", s / 60),
         };
+        // "Send feedback" zawsze na samej gorze ustawien - ma byc pod reka,
+        // gdy cos nie dziala, a nie na koncu listy przelacznikow.
+        y += self.button(list, y, MenuHit::Feedback, "Send feedback", FG, out);
+        y += 6.0 * k;
         // "Application" na gorze: wersja, stan aktualizacji i przycisk,
         // ktory znaczy to, co w danej chwili ma sens (sprawdz / pobierz /
         // anuluj / zainstaluj). Pasek postepu tylko podczas pobierania.

@@ -5,6 +5,8 @@
 //! platforme polega na napisaniu rownoleglego `spectre-shell-*`.
 
 pub mod autostart;
+pub mod capture;
+pub mod dialog;
 pub mod display;
 pub mod hash;
 pub mod http;
@@ -14,6 +16,7 @@ pub mod instance;
 pub mod pen;
 pub mod secret;
 pub mod shield;
+pub mod sysinfo;
 pub mod tray;
 pub mod window;
 

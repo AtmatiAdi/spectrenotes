@@ -18,6 +18,7 @@ mod amoled;
 mod app;
 mod bench;
 mod config;
+mod feedback;
 mod github;
 mod lan;
 mod live;

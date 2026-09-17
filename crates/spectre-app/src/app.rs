@@ -7,6 +7,7 @@ use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, S
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
 use spectre_render::{Overlay, PresentMode, Renderer, UiPrim, WetTail};
 use spectre_shell_win::shield::HoldError;
+use spectre_shell_win::{capture, dialog, sysinfo};
 use spectre_shell_win::tray::{self, Tray, HOTKEY_TOGGLE, WM_TRAY};
 use spectre_shell_win::window::{self, Fullscreen};
 use spectre_shell_win::{PenBatch, PenButtons, PenDecoder};
@@ -25,6 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::amoled::Waves;
 use crate::config::Config;
 use crate::lan::LanConfig;
+use crate::feedback::{self, Feedback, Hit as FeedbackHit};
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::spaces::{self, SpaceInfo};
@@ -93,6 +95,9 @@ const TIMER_TOPMOST: usize = 10;
 const TOPMOST_TICK_MS: u32 = 200;
 const TOPMOST_TICKS: u32 = 8;
 const TOPMOST_SLOW_MS: u32 = 5000;
+/// Klatki paska postepu w oknie feedbacku (scenariusz trwa ~8 s).
+const TIMER_FEEDBACK: usize = 11;
+const FEEDBACK_TICK_MS: u32 = 33;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -282,6 +287,8 @@ pub struct App {
     topmost_ticks: u32,
     /// Kod logowania skopiowany dotknieciem (napis pod kodem).
     code_copied: bool,
+    /// Okno "Send feedback" (nad wszystkim, modalne).
+    feedback: Feedback,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -575,6 +582,7 @@ impl App {
             waves_fullscreen: false,
             topmost_ticks: 0,
             code_copied: false,
+            feedback: Feedback::new(&update_repo),
             toolbar,
             menu,
             config,
@@ -676,6 +684,17 @@ impl App {
     /// element okna, menu, pasek albo canvas.
     fn pointer_down(&mut self, batch: &PenBatch) {
         let (x, y) = self.last_screen;
+        // Okno feedbacku jest modalne: dotkniecie poza nim zamyka je (chyba ze
+        // trwa wysylka), w srodku - trafia do jego przyciskow.
+        if self.feedback.open {
+            match self.feedback.hit(x, y) {
+                Some(h) => self.feedback_tap(h),
+                None if !self.feedback.sending() => self.feedback.close(),
+                None => {}
+            }
+            self.render();
+            return;
+        }
         if let Some(t) = self.toolbar.title_hit(x, y) {
             self.title_tap(t);
         } else if let Some(h) = self.menu.hit(x, y) {
@@ -716,7 +735,9 @@ impl App {
     /// kursor gumki, kursor dla innych osob.
     fn pointer_hover(&mut self, pos: (f32, f32), b: PenButtons, render: bool) {
         let eraser_cursor = b.eraser || self.eraser_tool;
-        let ui_changed = if self.menu.contains(pos.0, pos.1) {
+        let ui_changed = if self.feedback.open {
+            self.feedback.hover(pos.0, pos.1)
+        } else if self.menu.contains(pos.0, pos.1) {
             self.menu.hover(pos.0, pos.1)
         } else {
             let m = self.menu.open && self.menu.hover(-1.0, -1.0);
@@ -1318,6 +1339,7 @@ impl App {
             MenuHit::AcceptInvitation(i) => self.accept_invitation(i),
             MenuHit::LeaveSpace(i) => self.leave_space(i),
             MenuHit::MoveToSpace(i) => self.move_note_to_space(i),
+            MenuHit::Feedback => self.open_feedback(),
         }
     }
 
@@ -1515,6 +1537,7 @@ impl App {
             self.toolbar.dock,
             self.toolbar.thickness(),
         );
+        self.feedback.layout(w as f32, h as f32, ui_scale);
     }
 
     fn commit_folder_edit(&mut self) {
@@ -2146,11 +2169,190 @@ impl App {
                     self.collaborators.insert(space, list);
                     repaint = true;
                 }
+                SyncEvent::Feedback(r) => {
+                    self.feedback.result(r);
+                    if !self.feedback.sending() {
+                        unsafe {
+                            let _ = KillTimer(Some(self.hwnd), TIMER_FEEDBACK);
+                        }
+                    }
+                    repaint = true;
+                }
             }
         }
         if self.menu.open || self.show_hud || repaint {
             self.render();
         }
+    }
+
+    // ----- feedback ------------------------------------------------------------
+
+    /// "Send feedback" z ustawien: okno nad wszystkim, klawiatura idzie do
+    /// pola tekstowego.
+    fn open_feedback(&mut self) {
+        self.commit_folder_edit();
+        self.menu.clear_lan_edits();
+        self.feedback.signed_in = self.sync.login().is_some() || self.feedback_fake().is_some();
+        self.feedback.show();
+        unsafe {
+            let _ = SetFocus(Some(self.hwnd));
+        }
+    }
+
+    fn feedback_tap(&mut self, hit: FeedbackHit) {
+        match hit {
+            FeedbackHit::Panel => {}
+            FeedbackHit::Close => self.feedback.close(),
+            FeedbackHit::Retry => self.feedback.phase = feedback::Phase::Edit,
+            FeedbackHit::OpenIssue => {
+                if let feedback::Phase::Sent(i) = &self.feedback.phase {
+                    window::open_in_browser(&i.url);
+                }
+            }
+            FeedbackHit::Remove(i) => {
+                if i < self.feedback.draft.attachments.len() {
+                    self.feedback.draft.attachments.remove(i);
+                }
+            }
+            FeedbackHit::AddFile => self.attach_file(),
+            FeedbackHit::Screenshot => self.attach_screenshot(),
+            FeedbackHit::Send => self.send_feedback(),
+        }
+    }
+
+    /// Systemowe okno wyboru pliku (modalne - pompuje komunikaty samo).
+    fn attach_file(&mut self) {
+        let Some(path) = dialog::pick_file(self.hwnd, "Attach a file to your feedback") else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".to_string());
+        match std::fs::read(&path) {
+            Ok(bytes) => self.push_attachment(name, bytes),
+            Err(e) => self.status = format!("feedback: {name}: {e}"),
+        }
+    }
+
+    /// Zrzut aplikacji bez okna feedbacku i bez panelu menu: klatka
+    /// renderowana od nowa, kopiowana z ekranu po zlozeniu przez DWM.
+    fn attach_screenshot(&mut self) {
+        let menu_was = self.menu.open;
+        self.feedback.open = false;
+        self.menu.open = false;
+        self.render();
+        let shot = capture::window_png(self.hwnd);
+        self.menu.open = menu_was;
+        self.feedback.open = true;
+        match shot {
+            Ok(png) => {
+                if let Ok(dump) = std::env::var("SPECTRENOTES_FEEDBACK_DUMP") {
+                    let _ = std::fs::write(dump, &png);
+                }
+                let name = format!(
+                    "screenshot-{}.png",
+                    menu::local_stamp_now().replace([':', ' '], "-")
+                );
+                self.push_attachment(name, png);
+            }
+            Err(e) => self.status = format!("feedback: screenshot: {e}"),
+        }
+    }
+
+    fn push_attachment(&mut self, name: String, bytes: Vec<u8>) {
+        if self.feedback.draft.attached_bytes() + bytes.len() > feedback::ATTACH_MAX {
+            self.status = format!(
+                "feedback: attachments over {} MB",
+                feedback::ATTACH_MAX / (1024 * 1024)
+            );
+            return;
+        }
+        self.feedback
+            .draft
+            .attachments
+            .push(feedback::Attachment { name, bytes });
+    }
+
+    fn feedback_info(&self) -> feedback::Info {
+        let (w, h) = self.renderer.size();
+        let state = if self.fullscreen.is_active() {
+            "fullscreen"
+        } else if window::is_maximized(self.hwnd) {
+            "maximized"
+        } else {
+            "window"
+        };
+        feedback::Info {
+            version: spectre_update::CURRENT.to_string(),
+            os: sysinfo::os_version(),
+            gpu: self.renderer.adapter_name().to_string(),
+            window: format!(
+                "{w}x{h} @{:.2} {state}",
+                window::dpi_scale(self.hwnd)
+            ),
+            sync: self.sync.last.clone(),
+        }
+    }
+
+    /// Z tokenem: issue zaklada watek sync (pasek postepu w oknie); bez -
+    /// przegladarka z wypelnionym formularzem.
+    fn send_feedback(&mut self) {
+        if self.feedback.draft.is_empty() || self.feedback.sending() {
+            return;
+        }
+        let info = self.feedback_info();
+        if let Some(fake) = self.feedback_fake() {
+            // Test GUI bez GitHuba: sam scenariusz paska i ekrany koncowe.
+            self.feedback.begin_send();
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_FEEDBACK, FEEDBACK_TICK_MS, None);
+            }
+            self.feedback.result(if fake == "ok" {
+                Ok(crate::github::Issue {
+                    number: 42,
+                    url: "https://github.com/example/issues/42".into(),
+                })
+            } else {
+                Err("contents: HTTP 422: path contains a malformed path component".into())
+            });
+            return;
+        }
+        if self.sync.login().is_some() {
+            self.feedback.begin_send();
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_FEEDBACK, FEEDBACK_TICK_MS, None);
+            }
+            self.sync.send(SyncJob::Feedback {
+                target: self.feedback.target.clone(),
+                draft: self.feedback.draft.clone(),
+                info,
+            });
+        } else {
+            let url = feedback::browser_url(&self.feedback.target, &self.feedback.draft, &info);
+            window::open_in_browser(&url);
+            self.feedback.draft = feedback::Draft::default();
+            self.feedback.close();
+        }
+    }
+
+    /// `SPECTRENOTES_FEEDBACK_FAKE=ok|err` (tylko z wejsciem testowym): okno
+    /// zachowuje sie jak po zalogowaniu, a wysylka konczy sie podanym wynikiem
+    /// bez GitHuba - do testow GUI scenariusza paska i zalacznikow.
+    fn feedback_fake(&self) -> Option<String> {
+        if !self.test_input {
+            return None;
+        }
+        std::env::var("SPECTRENOTES_FEEDBACK_FAKE").ok()
+    }
+
+    fn feedback_tick(&mut self) {
+        if !self.feedback.tick() {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_FEEDBACK);
+            }
+        }
+        self.render();
     }
 
     // ----- aktualizacje ------------------------------------------------------
@@ -2488,6 +2690,9 @@ impl App {
 
     /// Aktywne pole tekstowe: tytul, nazwa folderu, token, hasla, adres peera.
     fn active_edit(&mut self) -> Option<&mut String> {
+        if self.feedback.open && matches!(self.feedback.phase, feedback::Phase::Edit) {
+            return Some(&mut self.feedback.draft.text);
+        }
         self.toolbar
             .title_edit
             .as_mut()
@@ -2504,6 +2709,33 @@ impl App {
     fn edit_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool) -> bool {
         if self.active_edit().is_none() {
             return false;
+        }
+        // Okno feedbacku: Enter to nowy wiersz, Ctrl+Enter wysyla, Esc zamyka
+        // (szkic zostaje), wklejanie zachowuje wiersze.
+        if self.feedback.open {
+            if vk == VK_RETURN {
+                if ctrl {
+                    self.feedback_tap(FeedbackHit::Send);
+                } else if self.feedback.draft.text.chars().count() < feedback::TEXT_MAX {
+                    self.feedback.draft.text.push('\n');
+                }
+            } else if vk == VK_ESCAPE {
+                self.feedback.close();
+            } else if vk == VK_BACK {
+                self.feedback.draft.text.pop();
+            } else if ctrl && vk.0 == 0x56 {
+                if let Some(text) = clipboard_text() {
+                    let b = &mut self.feedback.draft.text;
+                    for ch in text.chars().filter(|c| !c.is_control() || *c == '\n') {
+                        if b.chars().count() >= feedback::TEXT_MAX {
+                            break;
+                        }
+                        b.push(ch);
+                    }
+                }
+            }
+            self.render();
+            return true;
         }
         if vk == VK_RETURN {
             if self.toolbar.title_edit.is_some() {
@@ -3404,6 +3636,10 @@ impl App {
             };
             self.menu.build(&ms, &mut prims);
         }
+        if self.feedback.open {
+            self.feedback.signed_in = self.sync.login().is_some() || self.feedback_fake().is_some();
+            self.feedback.build(&mut prims);
+        }
 
         // Fale (Z7): krok symulacji o czas od poprzedniej klatki, tylko gdy trwaja.
         let dim = match self.waves.as_mut() {
@@ -3822,10 +4058,11 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_CHAR => {
+            let limit = if app.feedback.open { feedback::TEXT_MAX } else { 200 };
             if let Some(buf) = app.active_edit() {
                 let c = wparam.0 as u32;
                 if let Some(ch) = char::from_u32(c) {
-                    if !ch.is_control() && buf.chars().count() < 200 {
+                    if !ch.is_control() && buf.chars().count() < limit {
                         buf.push(ch);
                         app.render();
                     }
@@ -4033,6 +4270,7 @@ pub unsafe extern "system" fn wndproc(
                 }
                 TIMER_ANIM => app.anim_tick(),
                 TIMER_TOPMOST => app.topmost_tick(),
+                TIMER_FEEDBACK => app.feedback_tick(),
                 _ => {}
             }
             LRESULT(0)

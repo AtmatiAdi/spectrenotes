@@ -28,7 +28,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_FAR,
+    DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
@@ -143,6 +144,11 @@ struct TextFormats {
     ui: IDWriteTextFormat,
     /// Segoe UI 16,5, wysrodkowana, bez zawijania (tytul notatki, przyciski okna).
     title: IDWriteTextFormat,
+    /// Segoe UI 15, do lewej, od gory, z zawijaniem (akapity: okno feedbacku).
+    body: IDWriteTextFormat,
+    /// Jak `body`, ale wyrownana do dolu prostokata - gdy tekst jest dluzszy
+    /// niz pole, widac jego koniec (kursor), nie poczatek.
+    body_tail: IDWriteTextFormat,
 }
 
 impl TextFormats {
@@ -174,12 +180,17 @@ impl TextFormats {
         title.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
         title.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         title.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        let body = make("Segoe UI", 15.0)?;
+        let body_tail = make("Segoe UI", 15.0)?;
+        body_tail.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR)?;
         Ok(Self {
             mono,
             big,
             center,
             ui,
             title,
+            body,
+            body_tail,
         })
     }
 }
@@ -196,6 +207,10 @@ pub enum UiFont {
     Big,
     /// Segoe UI 19, wysrodkowana - tytul notatki i przyciski okna w zakladkach.
     Title,
+    /// Segoe UI 15, do lewej, od gory, zawijana - akapity tekstu.
+    Body,
+    /// Jak `Body`, przy dolnej krawedzi - dlugi tekst pokazuje koniec.
+    BodyTail,
 }
 
 /// Czubek cudzej kreski w trakcie rysowania (warstwa live), we wlasnym kolorze.
@@ -1196,6 +1211,8 @@ impl Renderer {
                         UiFont::Center => &self.fonts.center,
                         UiFont::Big => &self.fonts.big,
                         UiFont::Title => &self.fonts.title,
+                        UiFont::Body => &self.fonts.body,
+                        UiFont::BodyTail => &self.fonts.body_tail,
                     };
                     let wide: Vec<u16> = text.encode_utf16().collect();
                     let rect = D2D_RECT_F {

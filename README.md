@@ -168,7 +168,17 @@ na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę
 `Enter`), pod spodem *This note on LAN* (udostępnij, hasło) i *Shared on LAN* (cudze
 udostępnienia). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
 zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
-*Ustawienia* pogrupowane funkcjonalnie: *Wyświetlanie* (vsync, tearing, pełny ekran,
+*Ustawienia*: na samej górze zawsze **Send feedback** — okno nad canvasem z polem
+tekstowym (Enter = nowy wiersz, Ctrl+Enter wysyła, Ctrl+V wkleja), *Attach a file…*
+(systemowy wybór pliku) i *Attach app screenshot* (zrzut aplikacji bez okna i menu);
+*Send* zakłada issue w publicznym `spectrenotes-releases` tokenem zalogowanego
+użytkownika, a zrzuty/pliki lądują w publicznym repo `spectrenotes-feedback` na jego
+koncie (Contents API — issue w cudzym repo nie przyjmie pliku; obrazek z surowego
+adresu GitHub renderuje w treści). Pod tekstem doklejana jest wersja, Windows, GPU,
+rozmiar okna i ostatni komunikat synca. W trakcie wysyłki pasek postępu odgrywa ~8 s
+scenariusz komentarzy (easter egg — potrafi się cofnąć), prawdziwy błąd przerywa go od
+razu i szkic zostaje. Bez logowania przycisk otwiera formularz nowego issue w
+przeglądarce z wpisaną treścią (bez załączników). Dalej grupy funkcjonalne: *Wyświetlanie* (vsync, tearing, pełny ekran,
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (włącz/wyłącz; **tylko
 na ekranie laptopa** — na zewnętrznym monitorze fale nie startują, panel wbudowany
@@ -330,6 +340,10 @@ drogą co z `WM_POINTER` (pasek, menu, canvas), tylko bez dekodera. Klawisze mo�
 podać `PostMessage(WM_KEYDOWN)`, przesuwanie okna sprawdzić pytaniem `WM_NCHITTEST`
 (2 = `HTCAPTION`). Skrypt testowy nie zabiera więc kursora ani fokusu osobie, która
 w tym czasie pracuje. Bez tej zmiennej `WM_COPYDATA` jest ignorowane.
+Do okna feedbacku (tylko z tą zmienną): `SPECTRENOTES_FEEDBACK_FAKE=ok|err` udaje
+zalogowanie i kończy wysyłkę podanym wynikiem bez GitHuba (scenariusz paska, ekrany
+końcowe, załączniki), a `SPECTRENOTES_FEEDBACK_DUMP=<plik.png>` zapisuje na dysk zrzut
+z *Attach app screenshot*.
 
 ### Porównania, które warto zrobić od razu
 

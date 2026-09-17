@@ -227,14 +227,18 @@ zanim zamkniemy kształt menu; każda z tych rzeczy dokłada własne wejścia do
       rebuild po ustaniu gestu.
 - [ ] **LAN do końca** (Etap 6/6¾): live dla notatek ze space'ów współdzielonych,
       potwierdzenie na dwóch fizycznych maszynach, GUI udostępniania (peerzy, nazwy).
-- [ ] **Przycisk „Send feedback"** w menu (Konto albo Ustawienia): tekst + automatycznie
-      wersja, OS, GPU, ostatni błąd synca. **Dokąd wysyłać — do decyzji**; propozycja:
-      GitHub Issue w publicznym `spectrenotes-releases` tokenem zalogowanego użytkownika
-      (`POST /repos/{owner}/{repo}/issues`, ten sam klient REST co sync; bez logowania —
-      otwarcie przeglądarki na `issues/new?title=&body=` z wypełnioną treścią).
-      Alternatywa Slack webhook: prostsza (jeden `POST` z JSON), ale adres webhooka
-      musiałby siedzieć w binarce (każdy go wyciągnie i zaleje kanał), a zgłaszający
-      nie widzi odpowiedzi.
+- [x] **Przycisk „Send feedback"** — pierwsza pozycja w Ustawieniach (2026-09-17):
+      okno z polem tekstowym, *Attach a file…*, *Attach app screenshot* (zrzut bez okna
+      i menu, GDI + WIC → PNG), *Send* → issue w publicznym `spectrenotes-releases`
+      tokenem użytkownika (`POST /repos/{owner}/{repo}/issues`), załączniki w publicznym
+      `spectrenotes-feedback` na jego koncie (Contents API), pod treścią wersja/OS/GPU/
+      okno/sync. Pasek postępu z ~8-sekundowym scenariuszem komentarzy (easter egg,
+      cofa się przy „It bounced off the Octocat"), błąd przerywa od razu, szkic zostaje.
+      Bez logowania: `issues/new?title=&body=` w przeglądarce. Slack webhook odrzucony
+      (adres w binarce = każdy zaleje kanał; zgłaszający nie widzi odpowiedzi).
+      Zweryfikowane zrzutami (`SPECTRENOTES_FEEDBACK_FAKE`); **wysyłka na żywo do
+      sprawdzenia z prawdziwym tokenem** (issues w `spectrenotes-releases` muszą być
+      włączone).
 
 Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
 - [x] **Stan synchronizacji w menu, obok informacji „synced"**: nagłówek pokazuje

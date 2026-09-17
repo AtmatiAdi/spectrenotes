@@ -24,6 +24,7 @@ use spectre_sync::{AuthorName, Budget, BudgetStatus, Git, GitError, SyncReport, 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
+use crate::feedback;
 use crate::github;
 
 /// Watek sync -> okno: "sa zdarzenia do odebrania" (`SyncWorker::poll`).
@@ -73,6 +74,14 @@ pub enum Job {
         space: usize,
         owner: String,
         repo: String,
+    },
+    /// Zgloszenie feedbacku: issue w `target` (`owner/repo`), zalaczniki
+    /// w repo uzytkownika. Idzie osobnym watkiem - trwa sekundy i nie ma
+    /// blokowac synchronizacji.
+    Feedback {
+        target: String,
+        draft: feedback::Draft,
+        info: feedback::Info,
     },
 }
 
@@ -149,6 +158,8 @@ pub enum Event {
         space: usize,
         logins: Vec<String>,
     },
+    /// Wynik wysylki feedbacku (tekst bledu do pokazania w oknie).
+    Feedback(std::result::Result<github::Issue, String>),
 }
 
 /// Stan repozytorium jednego space'u do pokazania w menu (Konto) i w HUD-zie.
@@ -522,6 +533,30 @@ fn run(
                     Ok(logins) => out.push(Event::Collaborators { space, logins }),
                     Err(e) => out.push(Event::Error(format!("collaborators: {e}"))),
                 }
+            }
+            out.push(Event::Account(account_status(ctx, session, budget)));
+        }
+        Job::Feedback {
+            target,
+            draft,
+            info,
+        } => {
+            match (token, session.login.clone()) {
+                (Some(t), Some(login)) => {
+                    let events = events.clone();
+                    let hwnd_raw = ctx.hwnd_raw;
+                    let _ = thread::Builder::new()
+                        .name("feedback".into())
+                        .spawn(move || {
+                            let r = feedback::send(&t, &login, &target, &draft, &info)
+                                .map_err(|e| e.to_string());
+                            let _ = events.send(Event::Feedback(r));
+                            wake(hwnd_raw);
+                        });
+                }
+                _ => out.push(Event::Feedback(Err(
+                    "sign in to GitHub first (or use the browser)".into(),
+                ))),
             }
             out.push(Event::Account(account_status(ctx, session, budget)));
         }

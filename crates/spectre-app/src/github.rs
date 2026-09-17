@@ -303,7 +303,7 @@ fn callback_code(target: &str, state: &str) -> Result<String> {
     }
 }
 
-fn url_encode(s: &str) -> String {
+pub fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
         match b {
@@ -605,6 +605,164 @@ pub fn json_objects(body: &str) -> Vec<String> {
     out
 }
 
+// ----- feedback: zgloszenie jako issue + zalaczniki w repo uzytkownika ---------
+
+/// Zgloszenie wyslane: numer i adres issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Issue {
+    pub number: u64,
+    pub url: String,
+}
+
+/// Otwiera issue w `owner/repo` (publiczne repo wydan - kazdy zalogowany
+/// moze). Zwraca numer i `html_url`.
+pub fn create_issue(token: &str, owner: &str, repo: &str, title: &str, body: &str) -> Result<Issue> {
+    let payload = format!(
+        "{{\"title\":{},\"body\":{}}}",
+        json_quote(title),
+        json_quote(body)
+    );
+    let r = http::request(
+        "POST",
+        &format!("{API}/repos/{owner}/{repo}/issues"),
+        &[
+            UA,
+            ACCEPT_API,
+            &auth_header(token),
+            "Content-Type: application/json",
+        ],
+        Some(&payload),
+    )
+    .map_err(map_http)?;
+    check_status(&r, "issues")?;
+    Ok(Issue {
+        number: json_u64(&r.body, "number").unwrap_or(0),
+        url: json_str(&r.body, "html_url")
+            .unwrap_or_else(|| format!("https://github.com/{owner}/{repo}/issues")),
+    })
+}
+
+/// Publiczne repo `login/name` na zalaczniki (istniejace albo zalozone).
+/// Publiczne, bo obrazki w issue musza byc widoczne dla autora aplikacji -
+/// a samo issue i tak jest publiczne.
+pub fn ensure_public_repo(token: &str, login: &str, name: &str) -> Result<()> {
+    let headers = [UA, ACCEPT_API, &auth_header(token)];
+    let r = http::request(
+        "GET",
+        &format!("{API}/repos/{login}/{name}"),
+        &headers,
+        None,
+    )
+    .map_err(map_http)?;
+    if r.status == 200 {
+        return Ok(());
+    }
+    if r.status != 404 {
+        check_status(&r, "repos")?;
+    }
+    let body = format!(
+        "{{\"name\":\"{name}\",\"private\":false,\"auto_init\":true,\
+         \"description\":\"SpectreNotes feedback attachments (screenshots, files)\"}}"
+    );
+    let r = http::request(
+        "POST",
+        &format!("{API}/user/repos"),
+        &[
+            UA,
+            ACCEPT_API,
+            &auth_header(token),
+            "Content-Type: application/json",
+        ],
+        Some(&body),
+    )
+    .map_err(map_http)?;
+    check_status(&r, "user/repos")
+}
+
+/// Wgrywa plik do repo (Contents API, tresc w base64) i zwraca adres do
+/// surowej tresci (`download_url`) - wklejany w issue jako obrazek/link.
+pub fn upload_file(
+    token: &str,
+    login: &str,
+    repo: &str,
+    path: &str,
+    bytes: &[u8],
+    message: &str,
+) -> Result<String> {
+    let payload = format!(
+        "{{\"message\":{},\"content\":\"{}\"}}",
+        json_quote(message),
+        base64(bytes)
+    );
+    let url_path: String = path
+        .split('/')
+        .map(url_encode)
+        .collect::<Vec<_>>()
+        .join("/");
+    let r = http::request(
+        "PUT",
+        &format!("{API}/repos/{login}/{repo}/contents/{url_path}"),
+        &[
+            UA,
+            ACCEPT_API,
+            &auth_header(token),
+            "Content-Type: application/json",
+        ],
+        Some(&payload),
+    )
+    .map_err(map_http)?;
+    check_status(&r, "contents")?;
+    json_str(&r.body, "download_url").ok_or_else(|| {
+        GitError::Other("contents: response without download_url".to_string())
+    })
+}
+
+/// Napis jako literal JSON (z cudzyslowami).
+pub fn json_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Base64 standardowe z dopelnieniem (tresc pliku dla Contents API).
+pub fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// Nazwa repozytorium dla space'u: unikalna w obrebie konta, czytelna.
 pub fn repo_name(space_dir_name: &str) -> String {
     let slug: String = space_dir_name
@@ -669,6 +827,21 @@ mod tests {
         assert_eq!(json_u64(&objs[0], "id"), Some(7));
         assert_eq!(json_objects("[]").len(), 0);
         assert_eq!(json_objects(r#"[{"a": "}{"}]"#).len(), 1);
+    }
+
+    #[test]
+    fn base64_i_json() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0x89, b'P', b'N', b'G']), "iVBORw==");
+        assert_eq!(json_quote("a\"b\\c\nd"), "\"a\\\"b\\\\c\\nd\"");
+        let round = "x\ny \"q\" \\ t\t";
+        assert_eq!(
+            json_str(&format!("{{\"t\":{}}}", json_quote(round)), "t").unwrap(),
+            round
+        );
     }
 
     #[test]
