@@ -80,7 +80,7 @@ zależność nie zachodzi.
    `%APPDATA%\SpectreNotes\partner.log`; Spectre loguje każde zakrycie/odkrycie panelu
    z powodem, trybem i stanem dzierżawy. Dwa logi obok siebie mówią, kto zawinił.
 9. **Ochrona tylko w oknie zmaksymalizowanym albo pełnoekranowym** (domyślnie,
-   `waves_maximized_only=1`; ustawienie *Only when maximized or full screen*).
+   `waves_maximized_only=1`; ustawienie *Maximized only*).
    W zwykłym oknie fale nie startują (odliczanie idzie dalej — po zmaksymalizowaniu
    ochrona wejdzie po kolejnym okresie bezczynności) i Spectre nie dostaje próśb
    (`not holding: window not maximized`) — jego nakładka chroni panel sama. Powód:

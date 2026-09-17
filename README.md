@@ -65,7 +65,7 @@ schowany do traya; tak startuje autostart), `--new-instance` (patrz wyżej), `--
 **Współpraca ze Spectre** (`C:\Projects\Spectre` — presety ekranów i czarna nakładka
 AMOLED na panel laptopa): gdy SpectreNotes jest widoczne na panelu, ma włączoną własną
 ochronę **i jest zmaksymalizowane albo w pełnym ekranie** (domyślnie; ustawienie
-*Only when maximized or full screen* wyłącza ten warunek), co 10 s prosi Spectre o wstrzymanie nakładki (dzierżawa 30 s przez komunikat
+*Maximized only* wyłącza ten warunek), co 10 s prosi Spectre o wstrzymanie nakładki (dzierżawa 30 s przez komunikat
 `Spectre.ShieldHold`). Spectre po wygaśnięciu dzierżawy wraca do ochrony sam — zamknięty
 czy zawieszony SpectreNotes nigdy nie zostawia panelu bez ochrony. HUD (`H`) mówi, co
 naprawdę poszło i dlaczego (`Spectre: shield held off, last ping 3 s ago` / `not holding -

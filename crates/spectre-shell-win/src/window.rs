@@ -51,7 +51,11 @@ const APP_ICON_ID: u16 = 1;
 pub fn app_icon(size: i32) -> Option<HICON> {
     unsafe {
         let hinstance = GetModuleHandleW(None).ok()?;
-        let flags = if size == 0 { LR_DEFAULTSIZE } else { IMAGE_FLAGS(0) };
+        let flags = if size == 0 {
+            LR_DEFAULTSIZE
+        } else {
+            IMAGE_FLAGS(0)
+        };
         LoadImageW(
             Some(hinstance.into()),
             PCWSTR(APP_ICON_ID as usize as *const u16),
@@ -296,6 +300,31 @@ impl Fullscreen {
         }
     }
 
+    /// Pelny ekran skonczyl sie bez nas: `WM_SIZE` z `SIZE_RESTORED`, gdy flaga
+    /// wciaz stoi (Win+Dol, przywrocenie z paska zadan - ida przez `ShowWindow`,
+    /// nie przez `WM_SYSCOMMAND`). Okno juz stoi w swoim rcNormalPosition;
+    /// zostaje zdjac "zawsze na wierzchu" i odmeldowac powloce. Zwraca, czy
+    /// bylo co konczyc.
+    pub fn ended_externally(&mut self, hwnd: HWND) -> bool {
+        if !self.active {
+            return false;
+        }
+        self.active = false;
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        mark_fullscreen(hwnd, false);
+        true
+    }
+
     /// Czy okno bylo zmaksymalizowane, zanim weszlo w pelny ekran. Przycisk
     /// maksymalizacji ma pokazywac stan, do ktorego wyjscie wroci.
     pub fn was_maximized(&self) -> bool {
@@ -358,7 +387,23 @@ impl Fullscreen {
                 mark_fullscreen(hwnd, true);
             } else {
                 self.active = false;
-                if self.was_maximized() {
+                if self.was_maximized() && !is_maximized(hwnd) {
+                    // Ktos przywrocil okno w trakcie (Win+Dol idzie przez
+                    // `ShowWindow`, nie `WM_SYSCOMMAND`). Jawny prostokat obszaru
+                    // roboczego nadany **zwyklemu** oknu stalby sie jego
+                    // rcNormalPosition - i kazde pozniejsze przywrocenie ladowalo
+                    // w rozmiarze monitora, na drugim ekranie w polowie poza nim.
+                    let _ = SetWindowPos(
+                        hwnd,
+                        Some(HWND_NOTOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE,
+                    );
+                    let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+                } else if self.was_maximized() {
                     if let Some((_, work)) = monitor_rects(hwnd) {
                         let _ = SetWindowPos(
                             hwnd,

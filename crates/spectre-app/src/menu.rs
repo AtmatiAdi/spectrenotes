@@ -1111,7 +1111,7 @@ impl Menu {
                     ),
                     (
                         Setting::WavesMaximizedOnly,
-                        "Only when maximized or full screen",
+                        "Maximized only",
                         on_off(s.waves_maximized_only).to_string(),
                     ),
                     (Setting::WavesIdle, "Waves after idle (W)", waves),

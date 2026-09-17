@@ -276,12 +276,24 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
 - [x] **Ochrona AMOLED tylko zmaksymalizowane/pełny ekran, tarcza przy tytule**
       (2026-09-17). Prośba użytkownika: skok okna na cały ekran w trakcie pracy obok
       był uciążliwy. W zwykłym oknie fale nie startują i Spectre nie dostaje próśb
-      (chroni sam); ustawienie *Only when maximized or full screen* przywraca stare
+      (chroni sam); ustawienie *Maximized only* przywraca stare
       zachowanie. Wspólny predykat `protect_block_reason` dla fal, Spectre i ikonki
       🛡 przed tytułem. Zweryfikowane zrzutami i `partner.log`: okno 1400×1000 — bez
       tarczy, po 7 s bezczynności nadal okno, „not holding: window not maximized";
       zmaksymalizowane — tarcza, „holding", po bezczynności pełny ekran z falami;
       ustawienie wyłączone — tarcza i fale także w oknie.
+- [x] **Po ochronie okno lądowało „w połowie pod ekranem"** (2026-09-17). Z configu
+      użytkownika: `window=-1295,1376,2880,1800,0` — normalne położenie w rozmiarze
+      monitora. Odtworzone: przywrócenie okna **z zewnątrz** w pełnym ekranie
+      (Win+↓ i pasek zadań idą przez `ShowWindow`, nie `WM_SYSCOMMAND`) zostawiało
+      flagę; wyjście po falach nadawało już **zwykłemu** oknu prostokąt obszaru
+      roboczego, a Windows zapisywał go jako rcNormalPosition. Teraz `WM_SIZE`
+      z `SIZE_RESTORED` przy aktywnej fladze kończy pełny ekran (`ended_externally`:
+      NOTOPMOST, odmeldowanie powłoce, fale gasną), a wyjście z `was_maximized`
+      przy niezmaksymalizowanym oknie robi `ShowWindow(SW_MAXIMIZE)` zamiast
+      jawnego prostokąta. Zmierzone: po SW_RESTORE z zewnątrz i wyjściu okno
+      300,200–1700,1200, config nadal `300,200,1400,1000,1`.
+
 - [ ] **Logowanie do GitHuba jednym kliknięciem**: Device Flow jest w kodzie
       (`github.rs`, przycisk *Sign in with GitHub (browser)*, kod ląduje w schowku),
       brakuje tylko `CLIENT_ID` zarejestrowanej OAuth App (Settings → Developer

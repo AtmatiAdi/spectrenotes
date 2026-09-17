@@ -1373,6 +1373,26 @@ impl App {
         }
     }
 
+    /// Ktos przywrocil okno w pelnym ekranie (patrz `Fullscreen::ended_externally`):
+    /// porzadkujemy to samo, co po zwyklym wyjsciu, a fale - jesli to one
+    /// wlaczyly pelny ekran - gasna, bo uzytkownik wlasnie dzialal.
+    fn fullscreen_ended_externally(&mut self) {
+        if !self.fullscreen.ended_externally(self.hwnd) {
+            return;
+        }
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
+        }
+        self.toolbar.chrome = true;
+        if self.waves_fullscreen {
+            self.waves_fullscreen = false;
+            if !self.waves_forced {
+                self.stop_waves();
+                self.arm_amoled_timers();
+            }
+        }
+    }
+
     fn toggle_fullscreen(&mut self) {
         self.fullscreen.toggle(self.hwnd);
         unsafe {
@@ -3530,6 +3550,12 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_SIZE => {
+            // Przywrocenie z zewnatrz w pelnym ekranie (Win+Dol, pasek zadan):
+            // flaga nie moze zostac, bo wyjscie po falach nadaloby zwyklemu oknu
+            // prostokat monitora jako polozenie normalne.
+            if wparam.0 == SIZE_RESTORED as usize && app.fullscreen.is_active() {
+                app.fullscreen_ended_externally();
+            }
             let w = (lparam.0 & 0xffff) as u32;
             let h = ((lparam.0 >> 16) & 0xffff) as u32;
             if let Ok(true) = app.renderer.resize(w, h) {
