@@ -83,6 +83,13 @@ impl PenDecoder {
         unsafe { GetPointerType(pointer_id, &mut t).is_ok() && (t == PT_PEN || t == PT_MOUSE) }
     }
 
+    /// Prawdziwe pioro (nie mysz przez `EnableMouseInPointer`) - decyduje,
+    /// czy chowac kursor: czubek rysika sam jest wskaznikiem.
+    pub fn is_real_pen(&self, pointer_id: u32) -> bool {
+        let mut t = POINTER_INPUT_TYPE::default();
+        unsafe { GetPointerType(pointer_id, &mut t).is_ok() && t == PT_PEN }
+    }
+
     /// Sam stan przyciskow, bez probek - do HUD-u w trakcie hoveru.
     pub fn buttons(&self, pointer_id: u32) -> Option<PenButtons> {
         let mut info = POINTER_PEN_INFO::default();

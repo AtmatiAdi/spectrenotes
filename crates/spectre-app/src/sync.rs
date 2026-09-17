@@ -144,6 +144,11 @@ pub enum Event {
     Error(String),
     /// Zadanie `Sync` sklejone z innym w kolejce - tylko zdejmuje licznik.
     Skipped,
+    /// Zadanie wykonane (po wszystkich jego zdarzeniach) - zdejmuje licznik.
+    /// Wysylane przez petle watku, nie przez `run`, wiec zadna sciezka (blad
+    /// otwarcia repo, logowanie oddane osobnemu watkowi) nie zostawia licznika
+    /// w gorze - a wisiacy licznik to "syncing..." na zawsze (issue #12).
+    Done,
     /// Login istnieje - do listy znajomych (pisownia GitHuba).
     FriendAdded(github::User),
     /// Zaproszenia wyslane (`sent`) i odrzucone przez GitHub (`failed`: login, powod).
@@ -274,7 +279,8 @@ impl SyncWorker {
     }
 
     /// Zdarzenia od ostatniego wywolania (po `WM_SYNC`). Kazde zadanie konczy sie
-    /// zdarzeniem `Status`/`Account` (albo `Skipped`), wiec na nich zdejmujemy licznik.
+    /// zdarzeniem `Done` (albo `Skipped`, gdy nie weszlo do kolejki), wiec na nich
+    /// zdejmujemy licznik.
     pub fn poll(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
         while let Ok(ev) = self.rx.try_recv() {
@@ -289,13 +295,11 @@ impl SyncWorker {
                     }
                     self.spaces[*space] = status.clone();
                     self.account = account.clone();
+                }
+                Event::Account(a) => self.account = a.clone(),
+                Event::Skipped | Event::Done => {
                     self.pending = self.pending.saturating_sub(1);
                 }
-                Event::Account(a) => {
-                    self.account = a.clone();
-                    self.pending = self.pending.saturating_sub(1);
-                }
-                Event::Skipped => self.pending = self.pending.saturating_sub(1),
                 Event::Synced { report, .. } if report.transfer.remote_ops > 0 => {
                     self.last_remote_ok = Some(Mark::now());
                 }
@@ -371,6 +375,9 @@ fn worker(ctx: Ctx, jobs: Receiver<Job>, events: Sender<Event>) {
             if events.send(e).is_err() {
                 return;
             }
+        }
+        if events.send(Event::Done).is_err() {
+            return;
         }
         wake(ctx.hwnd_raw);
     }

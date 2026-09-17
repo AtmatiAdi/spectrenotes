@@ -113,6 +113,8 @@ pub enum Setting {
     UpdateCheck,
     /// Eksport PDF: biale tlo (kolory z odwrocona jasnoscia) czy czarne jak ekran.
     PdfPaper,
+    /// Krzyzyk kursora takze pod piorem.
+    PenCursor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +215,7 @@ pub struct MenuState<'a> {
     pub update_check: bool,
     /// Eksport PDF na bialym tle.
     pub pdf_paper: bool,
+    pub pen_cursor: bool,
     /// Ostatnia udana wymiana z GitHubem (fetch/push), ostatni zapis na dysk
     /// i ostatnia wymiana operacji z peerem w LAN. Naglowek pokazuje jedna
     /// z nich (najmocniejsza dostepna) z licznikiem tykajacym co sekunde,
@@ -243,6 +246,9 @@ pub struct MenuState<'a> {
     pub space_views: &'a [SpaceView],
     pub friends: &'a [String],
     pub invitations: &'a [InvitationView],
+    /// Notatki otwarte z LAN (cudze, replikowane lokalnie): nie sa "moimi"
+    /// notatkami - lista pokazuje je tylko w "Shared on LAN" (issue #11).
+    pub lan_notes: &'a [String],
 }
 
 /// Space w zakladce Konto.
@@ -444,6 +450,23 @@ impl Menu {
     }
 
     /// Kolko nad panelem. Zwraca `true`, gdy trzeba przerysowac.
+    /// Przewiniecie o `dy` px (przeciaganie listy piorem). `true` = cos sie zmienilo.
+    pub fn scroll_by(&mut self, dy: f32) -> bool {
+        let max = (self.content_h - self.list_rect().h).max(0.0);
+        let s = (self.scroll + dy).clamp(0.0, max);
+        if (s - self.scroll).abs() > f32::EPSILON {
+            self.scroll = s;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Czy punkt lezy w przewijanej liscie (nie w naglowku ani zakladkach).
+    pub fn in_list(&self, x: f32, y: f32) -> bool {
+        self.open && self.list_rect().contains(x, y)
+    }
+
     pub fn wheel(&mut self, delta_notches: f32) -> bool {
         let k = self.scale;
         let max = (self.content_h - self.list_rect().h).max(0.0);
@@ -868,7 +891,8 @@ impl Menu {
         let k = self.scale;
         // Foldery: jawne + wynikajace z notatek, alfabetycznie.
         let mut folders: Vec<String> = s.folders.to_vec();
-        for n in s.notes {
+        let mine = |i: &usize| !s.lan_notes.contains(&s.notes[*i].id);
+        for n in s.notes.iter().filter(|n| !s.lan_notes.contains(&n.id)) {
             if !n.folder.is_empty() && !folders.contains(&n.folder) {
                 folders.push(n.folder.clone());
             }
@@ -878,7 +902,19 @@ impl Menu {
         let folders = std::mem::take(&mut self.folder_names);
 
         let mut y = list.y - self.scroll + 6.0 * k;
+        // Zaproszenia do cudzych space'ow tez tutaj - w Koncie latwo je
+        // przegapic, a to jedyna rzecz, ktora czeka na decyzje (issue #16).
+        if !s.invitations.is_empty() {
+            y += self.section(list, y, "Invitations", out);
+            for (i, inv) in s.invitations.iter().enumerate() {
+                let label = format!("Join \"{}\" from {}", inv.space, inv.from);
+                y += self.action_row(list, y, MenuHit::AcceptInvitation(i), &label, ACCENT, out);
+            }
+            y += 8.0 * k;
+        }
+        let mut y = list.y - self.scroll + 6.0 * k;
         let root: Vec<usize> = (0..s.notes.len())
+            .filter(mine)
             .filter(|&i| s.notes[i].folder.is_empty())
             .rev()
             .collect();
@@ -887,6 +923,7 @@ impl Menu {
         for (fi, name) in folders.iter().enumerate() {
             y += 8.0 * k;
             let ids: Vec<usize> = (0..s.notes.len())
+                .filter(mine)
                 .filter(|&i| s.notes[i].folder == *name)
                 .rev()
                 .collect();
@@ -901,7 +938,7 @@ impl Menu {
         for (hit, label) in [
             (MenuHit::NewNote, "+  New note"),
             (MenuHit::NewFolder, "+  New folder"),
-            (MenuHit::ExportPdf, "↧  Export this note to PDF…"),
+            (MenuHit::ExportPdf, "↓  Export this note to PDF…"),
         ] {
             if hit == MenuHit::NewFolder {
                 if let Some(buf) = self.folder_edit.clone() {
@@ -1150,6 +1187,11 @@ impl Menu {
             (
                 "Display",
                 vec![
+                    (
+                        Setting::PenCursor,
+                        "Cursor under the pen",
+                        if s.pen_cursor { "crosshair" } else { "hidden" }.to_string(),
+                    ),
                     (Setting::Vsync, "VSync (V)", on_off(s.vsync).to_string()),
                     (
                         Setting::PanTearing,

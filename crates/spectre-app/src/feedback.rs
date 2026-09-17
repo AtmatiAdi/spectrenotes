@@ -19,7 +19,7 @@ use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
 
 use crate::github::{self, Issue};
-use crate::ui::{Rect, ACCENT, BG, FG, FG_DIM, HOT, LINE};
+use crate::ui::{Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 /// Repo (na koncie uzytkownika) na zalaczniki.
 pub const FILES_REPO: &str = "spectrenotes-feedback";
@@ -265,6 +265,8 @@ pub struct Feedback {
     pub signed_in: bool,
     /// Podpis pod tytulem, dokad idzie zgloszenie.
     pub target: String,
+    /// Ctrl+A: caly tekst zaznaczony - nastepne wejscie go zastepuje.
+    pub select_all: bool,
     hot: Option<Hit>,
     rows: Vec<(Hit, Rect)>,
     rect: Rect,
@@ -280,6 +282,7 @@ impl Feedback {
             phase: Phase::Edit,
             signed_in: false,
             target: target.to_string(),
+            select_all: false,
             hot: None,
             rows: Vec::new(),
             rect: Rect::ZERO,
@@ -308,6 +311,7 @@ impl Feedback {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.select_all = false;
         self.hot = None;
     }
 
@@ -563,6 +567,17 @@ impl Feedback {
             w: inner.w,
             h: TEXT_H * k,
         };
+        if self.select_all {
+            // Zaznaczenie: cale pole w kolorze aktywnym (jak wiersz w menu).
+            out.push(UiPrim::Rect {
+                x: tb.x,
+                y: tb.y,
+                w: tb.w,
+                h: tb.h,
+                color: ACTIVE,
+                r: 8.0 * k,
+            });
+        }
         out.push(UiPrim::Outline {
             x: tb.x,
             y: tb.y,

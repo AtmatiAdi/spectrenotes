@@ -200,7 +200,16 @@ Device Flow (kod w schowku) i wklejony PAT. Aplikacja OAuth „SpectreNotes" jes
 zarejestrowana na koncie AtmatiAdi: Client ID w `github.rs`, sekret **poza repo** —
 `build.rs` wkleja go z `%USERPROFILE%\.spectrenotes-oauth-secret` przy budowaniu
 (bez pliku binarka umie tylko Device Flow). Dalej: stan synchronizacji i budżetu ruchu, „Synchronizuj teraz".
-Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go. **Nigdy nie zakrywa paska
+Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go. **Pióro na liście**: element
+wybiera się przy **puszczeniu** rysika (nie przy kontakcie), a przeciągnięcie w pionie
+przewija listę — bez tego ustawienia przełączały się „same" przy próbie przewinięcia
+(issue #8). Okno startuje z otwartym panelem (Notatki; przy pierwszym uruchomieniu —
+Konto z logowaniem), pasek narzędzi jest domyślnie przypięty (issues #2, #15).
+Zaproszenia do space'ów widać też na górze zakładki Notatki (#16); notatki otwarte
+z LAN nie trafiają do „moich" notatek — są tylko w *Shared on LAN* (#11).
+Kursor: pod piórem schowany (czubek rysika jest wskaźnikiem; *Ustawienia → Display →
+Cursor under the pen* przywraca krzyżyk), pod myszą krzyżyk, w czasie fal AMOLED
+zawsze schowany (#3, #13). **Nigdy nie zakrywa paska
 narzędzi**: przy lewej krawędzi staje obok niego, u góry i u dołu zaczyna się za nim
 (przy prawej pasek i tak nie jest po drodze). Dzięki temu ☰ zostaje pod palcem —
 drugie dotknięcie zamyka menu — a ustawienia paska (krawędź doku, przypięcie) widać

@@ -18,8 +18,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, SetFocus, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_ESCAPE, VK_F11, VK_HOME, VK_NEXT,
-    VK_OEM_4, VK_OEM_6, VK_PRIOR, VK_RETURN,
+    GetKeyState, SetFocus, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_F11, VK_HOME,
+    VK_LWIN, VK_MENU, VK_NEXT, VK_OEM_4, VK_OEM_6, VK_PRIOR, VK_RETURN, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -136,7 +136,23 @@ enum Mode {
     Pan,
     /// Przeciaganie paska narzedzi za uchwyt do innej krawedzi.
     DragBar,
+    /// Pioro na liscie menu: przeciagniecie przewija, puszczenie bez ruchu
+    /// = dotkniecie elementu (issue #8 - ustawienia przelaczaly sie przy
+    /// samym kontakcie, a listy nie dalo sie przewinac bez kolka).
+    Menu,
 }
+
+/// Dotkniecie listy menu w toku (`Mode::Menu`).
+#[derive(Debug, Clone, Copy)]
+struct MenuTouch {
+    hit: MenuHit,
+    start_y: f32,
+    last_y: f32,
+    moved: bool,
+}
+
+/// Od ilu px ruchu w pionie dotkniecie listy staje sie przewijaniem.
+const MENU_DRAG_PX: f32 = 6.0;
 
 /// Co trzeba zrobic z warstwa sucha przed nastepna klatka.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -304,6 +320,14 @@ pub struct App {
     update_check: bool,
     /// Eksport PDF na bialym tle (`pdf_paper=0` w config = czarne jak ekran).
     pdf_paper: bool,
+    /// Kursor (krzyzyk) takze pod piorem; domyslnie schowany - czubek rysika
+    /// sam jest wskaznikiem (issue #3). `pen_cursor=1` w config.
+    pen_cursor: bool,
+    /// Ostatnie wejscie wskaznika to prawdziwe pioro (nie mysz).
+    last_input_pen: bool,
+    /// Dotkniecie listy menu w toku: co bylo pod piorem, gdzie zaczelo,
+    /// gdzie bylo ostatnio i czy juz przewijamy (wtedy nie ma dotkniecia).
+    menu_touch: Option<MenuTouch>,
     /// Po zamknieciu okna uruchom binarke ponownie z tymi argumentami
     /// (restart po aktualizacji) - robi to `WM_DESTROY` juz po sprzatnieciu.
     relaunch: Option<Vec<String>>,
@@ -379,6 +403,17 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
         } else {
             app.arm_amoled_timers();
             app.arm_partner_timer();
+            // Okno otwiera sie z lista notatek (dotkniecie canvasu ja chowa);
+            // przy pierwszym uruchomieniu - z logowaniem (issues #2, #15).
+            let first_run = placement.is_none();
+            app.menu.set_tab(if first_run {
+                menu::Tab::Account
+            } else {
+                menu::Tab::Notes
+            });
+            if !app.menu.open {
+                app.toggle_menu();
+            }
         }
         for slot in 0..app.spaces.len() {
             let repo = app.repo_ref(slot);
@@ -437,7 +472,8 @@ impl App {
             .get("dock")
             .and_then(Dock::parse)
             .unwrap_or(Dock::Left);
-        let toolbar_pin = config.get("toolbar_pin") == Some("1");
+        // Domyslnie przypiety: chowajacy sie pasek na starcie mylil testerow (issue #2).
+        let toolbar_pin = config.get("toolbar_pin") != Some("0");
         let scroll_mult = config
             .get("scroll_mult")
             .and_then(|s| s.parse::<f32>().ok())
@@ -490,6 +526,7 @@ impl App {
         let update = Updater::start(hwnd, &update_repo, &data_dir);
         let update_check = config.get("update_check") != Some("0");
         let pdf_paper = config.get("pdf_paper") != Some("0");
+        let pen_cursor = config.get("pen_cursor") == Some("1");
         if update_check {
             unsafe {
                 SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_FIRST_MS, None);
@@ -595,6 +632,9 @@ impl App {
             update,
             update_check,
             pdf_paper,
+            pen_cursor,
+            last_input_pen: false,
+            menu_touch: None,
             relaunch: None,
             reload_pending: false,
             live,
@@ -649,8 +689,8 @@ impl App {
     /// Przycisk trzymany = funkcja. Zmiana w trakcie ruchu konczy biezaca
     /// akcje i zaczyna nowa od tej samej probki.
     fn apply_buttons(&mut self, batch: &PenBatch) -> bool {
-        if self.mode == Mode::DragBar {
-            return false; // przyciski nie przerywaja przenoszenia paska
+        if self.mode == Mode::DragBar || self.mode == Mode::Menu {
+            return false; // przyciski nie przerywaja przenoszenia paska ani menu
         }
         let want = if batch.buttons.barrel {
             Mode::Pan
@@ -667,7 +707,7 @@ impl App {
             Mode::Draw => self.begin_stroke(batch),
             Mode::Erase => self.begin_erase(batch),
             Mode::Pan => self.begin_pan(batch),
-            Mode::Idle | Mode::DragBar => {}
+            Mode::Idle | Mode::DragBar | Mode::Menu => {}
         }
         true
     }
@@ -677,6 +717,7 @@ impl App {
             Mode::Draw => self.end_stroke(),
             Mode::Erase => self.last_erase_canvas = None,
             Mode::DragBar => self.end_drag_bar(),
+            Mode::Menu => self.menu_touch = None,
             Mode::Pan | Mode::Idle => {}
         }
         self.mode = Mode::Idle;
@@ -703,13 +744,18 @@ impl App {
         if let Some(t) = self.toolbar.title_hit(x, y) {
             self.title_tap(t);
         } else if let Some(h) = self.menu.hit(x, y) {
-            if h != MenuHit::Panel {
-                self.commit_folder_edit();
-                // Pola LAN: dotkniecie gdzie indziej = rezygnacja (haslo
-                // wpisane do polowy nie ma prawa zostac zatwierdzone).
-                self.menu.clear_lan_edits();
+            if self.menu.in_list(x, y) {
+                // Lista: decyzja przy puszczeniu (dotkniecie) albo w ruchu (przewijanie).
+                self.mode = Mode::Menu;
+                self.menu_touch = Some(MenuTouch {
+                    hit: h,
+                    start_y: y,
+                    last_y: y,
+                    moved: false,
+                });
+            } else {
+                self.menu_activate(h);
             }
-            self.menu_tap(h);
         } else {
             // Przycisk ☰ jest teraz widoczny obok panelu, wiec sam musi decydowac
             // o zamknieciu: gdyby zadzialala tu jeszcze regula "dotkniecie poza
@@ -775,6 +821,7 @@ impl App {
                 Mode::Pan => self.update_pan(batch),
                 Mode::DragBar => self.toolbar.drag_to(self.last_screen.0, self.last_screen.1),
                 Mode::Idle => {}
+                Mode::Menu => self.menu_drag(),
             }
             let (px, py) = self.last_screen;
             self.share_cursor(px, py);
@@ -793,6 +840,9 @@ impl App {
                 Mode::Erase => self.erase_with(batch),
                 _ => {}
             }
+        }
+        if self.mode == Mode::Menu {
+            self.menu_release();
         }
         self.end_action();
         self.render();
@@ -1248,6 +1298,42 @@ impl App {
     }
 
     /// Dotkniecie panelu menu.
+    /// Element menu wybrany (dotkniecie zakonczone bez przewijania).
+    fn menu_activate(&mut self, h: MenuHit) {
+        if h != MenuHit::Panel {
+            self.commit_folder_edit();
+            // Pola LAN: dotkniecie gdzie indziej = rezygnacja (haslo
+            // wpisane do polowy nie ma prawa zostac zatwierdzone).
+            self.menu.clear_lan_edits();
+        }
+        self.menu_tap(h);
+    }
+
+    /// Ruch piora na liscie menu: po `MENU_DRAG_PX` lista jedzie za piorem.
+    fn menu_drag(&mut self) {
+        let y = self.last_screen.1;
+        let k = window::dpi_scale(self.hwnd);
+        let Some(t) = self.menu_touch.as_mut() else {
+            return;
+        };
+        if !t.moved && (y - t.start_y).abs() < MENU_DRAG_PX * k {
+            return;
+        }
+        t.moved = true;
+        let dy = t.last_y - y;
+        t.last_y = y;
+        self.menu.scroll_by(dy);
+    }
+
+    /// Puszczenie piora na liscie: bez ruchu = dotkniecie elementu.
+    fn menu_release(&mut self) {
+        if let Some(t) = self.menu_touch.take() {
+            if !t.moved {
+                self.menu_activate(t.hit);
+            }
+        }
+    }
+
     fn menu_tap(&mut self, hit: MenuHit) {
         match hit {
             MenuHit::Panel => {}
@@ -1438,6 +1524,13 @@ impl App {
                         let _ = KillTimer(Some(self.hwnd), TIMER_UPDATE);
                     }
                 }
+            }
+            Setting::PenCursor => {
+                self.pen_cursor = !self.pen_cursor;
+                self.config
+                    .set("pen_cursor", if self.pen_cursor { "1" } else { "0" });
+                self.config.save();
+                self.apply_cursor();
             }
             Setting::PdfPaper => {
                 self.pdf_paper = !self.pdf_paper;
@@ -2124,7 +2217,7 @@ impl App {
                 SyncEvent::Error(e) => {
                     self.sync.last = format!("error: {}", one_line(&e, 90));
                 }
-                SyncEvent::Skipped => {}
+                SyncEvent::Skipped | SyncEvent::Done => {}
                 SyncEvent::FriendAdded(u) => {
                     if !self
                         .friends
@@ -2194,6 +2287,36 @@ impl App {
         }
         if self.menu.open || self.show_hud || repaint {
             self.render();
+        }
+    }
+
+    // ----- kursor --------------------------------------------------------------
+
+    /// Zapamietuje, czy ostatnie wejscie to pioro czy mysz - od tego zalezy,
+    /// czy krzyzyk ma byc widoczny.
+    fn note_pointer(&mut self, pointer_id: u32) {
+        let pen = self.pen.is_real_pen(pointer_id);
+        if pen != self.last_input_pen {
+            self.last_input_pen = pen;
+            self.apply_cursor();
+        }
+    }
+
+    /// Czy kursor systemowy ma byc schowany nad canvasem: zawsze podczas fal
+    /// (issue #13 - krzyzyk na czarnym ekranie to wypalany punkt) i pod
+    /// piorem, gdy uzytkownik nie chce krzyzyka (issue #3).
+    fn cursor_hidden(&self) -> bool {
+        self.waves.is_some() || (self.last_input_pen && !self.pen_cursor)
+    }
+
+    /// Ustawia kursor od razu (system pyta `WM_SETCURSOR` tylko przy ruchu).
+    fn apply_cursor(&self) {
+        unsafe {
+            if self.cursor_hidden() {
+                SetCursor(None);
+            } else if let Ok(c) = LoadCursorW(None, IDC_CROSS) {
+                SetCursor(Some(c));
+            }
         }
     }
 
@@ -2780,20 +2903,51 @@ impl App {
             return false;
         }
         // Okno feedbacku: Enter to nowy wiersz, Ctrl+Enter wysyla, Esc zamyka
-        // (szkic zostaje), wklejanie zachowuje wiersze.
+        // (szkic zostaje), Ctrl+A zaznacza wszystko (nastepny znak, Backspace
+        // albo wklejenie zastepuje tekst), Ctrl+C/X kopiuja/wycinaja calosc,
+        // wklejanie zachowuje wiersze (issue #10).
         if self.feedback.open {
+            let selected = self.feedback.select_all;
+            let modifier_only = [VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN].contains(&vk);
             if vk == VK_RETURN {
                 if ctrl {
                     self.feedback_tap(FeedbackHit::Send);
-                } else if self.feedback.draft.text.chars().count() < feedback::TEXT_MAX {
-                    self.feedback.draft.text.push('\n');
+                } else {
+                    if selected {
+                        self.feedback.draft.text.clear();
+                    }
+                    if self.feedback.draft.text.chars().count() < feedback::TEXT_MAX {
+                        self.feedback.draft.text.push('\n');
+                    }
                 }
             } else if vk == VK_ESCAPE {
-                self.feedback.close();
-            } else if vk == VK_BACK {
-                self.feedback.draft.text.pop();
+                if selected {
+                    self.feedback.select_all = false;
+                } else {
+                    self.feedback.close();
+                }
+            } else if vk == VK_BACK || vk == VK_DELETE {
+                if selected {
+                    self.feedback.draft.text.clear();
+                } else if vk == VK_BACK {
+                    self.feedback.draft.text.pop();
+                }
+            } else if ctrl && vk.0 == 0x41 {
+                self.feedback.select_all = !self.feedback.draft.text.is_empty();
+                self.render();
+                return true;
+            } else if ctrl && (vk.0 == 0x43 || vk.0 == 0x58) {
+                if !self.feedback.draft.text.is_empty() {
+                    clipboard_set_text(&self.feedback.draft.text);
+                    if vk.0 == 0x58 && selected {
+                        self.feedback.draft.text.clear();
+                    }
+                }
             } else if ctrl && vk.0 == 0x56 {
                 if let Some(text) = clipboard_text() {
+                    if selected {
+                        self.feedback.draft.text.clear();
+                    }
                     let b = &mut self.feedback.draft.text;
                     for ch in text.chars().filter(|c| !c.is_control() || *c == '\n') {
                         if b.chars().count() >= feedback::TEXT_MAX {
@@ -2802,6 +2956,11 @@ impl App {
                         b.push(ch);
                     }
                 }
+            } else if modifier_only {
+                return true;
+            }
+            if !modifier_only {
+                self.feedback.select_all = false;
             }
             self.render();
             return true;
@@ -3378,6 +3537,14 @@ impl App {
     /// ekran - poprzedni rozmiar okna. Zwraca, czy fale trwaly.
     fn stop_waves(&mut self) -> bool {
         let had = self.waves.take().is_some();
+        if had {
+            self.apply_cursor();
+        }
+        // Pasek "zawsze widoczny" schowal sie pod fale - ma wrocic razem z
+        // notatka, nie dopiero po podjechaniu rysikiem do krawedzi (issue #9).
+        if had && self.toolbar.pinned {
+            self.toolbar.visible = true;
+        }
         if self.waves_fullscreen {
             self.waves_fullscreen = false;
             if self.fullscreen.is_active() && !self.hidden {
@@ -3401,6 +3568,7 @@ impl App {
         wv.set_brightness(self.waves_dim_pct as f32 / 100.0);
         self.waves = Some(wv);
         self.waves_tick = Instant::now();
+        self.apply_cursor();
         if self.menu.open {
             self.toggle_menu();
         }
@@ -3647,6 +3815,7 @@ impl App {
                     remote: self.sync.status(i).remote.is_some(),
                 })
                 .collect();
+            let lan_notes: Vec<String> = self.lan.opened.keys().cloned().collect();
             let invitation_views: Vec<menu::InvitationView> = self
                 .invitations
                 .iter()
@@ -3687,6 +3856,7 @@ impl App {
                 update: &update_view,
                 update_check: self.update_check,
                 pdf_paper: self.pdf_paper,
+                pen_cursor: self.pen_cursor,
                 synced: self.sync.last_remote_ok,
                 saved: self.saved,
                 peer: self.live.last_ops,
@@ -3703,6 +3873,7 @@ impl App {
                 space_views: &space_views,
                 friends: &self.friends,
                 invitations: &invitation_views,
+                lan_notes: &lan_notes,
             };
             self.menu.build(&ms, &mut prims);
         }
@@ -3764,6 +3935,7 @@ impl App {
             Mode::DragBar => "MOVING TOOLBAR".to_string(),
             Mode::Erase => "ERASER".to_string(),
             Mode::Draw => format!("pen #{}", self.color_idx + 1),
+            Mode::Menu => "MENU".to_string(),
             Mode::Idle if self.buttons.eraser || self.eraser_tool => "eraser".to_string(),
             Mode::Idle => format!("pen #{}", self.color_idx + 1),
         };
@@ -4032,12 +4204,14 @@ pub unsafe extern "system" fn wndproc(
     match msg {
         WM_POINTERDOWN => {
             app.activity();
+            app.note_pointer(pointer_id);
             if let Some(batch) = app.read(pointer_id, false) {
                 app.pointer_down(&batch);
             }
             LRESULT(0)
         }
         WM_POINTERUPDATE => {
+            app.note_pointer(pointer_id);
             // Koalescencja: jesli w kolejce czeka juz nastepny komunikat piora,
             // przetwarzamy probki, ale nie renderujemy - narysuje ostatni z serii.
             let more_pending = {
@@ -4129,6 +4303,15 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_CHAR => {
             let limit = if app.feedback.open { feedback::TEXT_MAX } else { 200 };
+            // Zaznaczone wszystko (Ctrl+A): pierwszy znak zastepuje tekst.
+            if app.feedback.open && app.feedback.select_all {
+                if let Some(ch) = char::from_u32(wparam.0 as u32) {
+                    if !ch.is_control() {
+                        app.feedback.draft.text.clear();
+                        app.feedback.select_all = false;
+                    }
+                }
+            }
             if let Some(buf) = app.active_edit() {
                 let c = wparam.0 as u32;
                 if let Some(ch) = char::from_u32(c) {
@@ -4293,6 +4476,16 @@ pub unsafe extern "system" fn wndproc(
             }
             app.show();
             LRESULT(0)
+        }
+        WM_SETCURSOR => {
+            // Nad canvasem decydujemy sami (fale, pioro); ramka i reszta - system.
+            if (lparam.0 & 0xffff) as u32 == HTCLIENT as u32 && app.cursor_hidden() {
+                unsafe {
+                    SetCursor(None);
+                }
+                return LRESULT(1);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SYNC => {
             app.on_sync_events();

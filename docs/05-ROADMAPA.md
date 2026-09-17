@@ -449,6 +449,38 @@ Plan (kolejność wdrożenia):
 - [ ] Wycofanie współpracownika z GUI (`remove_collaborator` gotowe).
 - [ ] Test na żywo z drugim kontem GitHub (zaproszenie → przyjęcie → wspólne notatki).
 
+## Zgłoszenia z testów v0.3.0 (issues w `spectrenotes-releases`, 2026-09-17)
+
+Pierwsza osoba z zewnątrz (niekola) + własne. Zamknięte w v0.3.1:
+- [x] #2 pierwsze uruchomienie z logowaniem, pasek domyślnie przypięty; #15 start
+      z listą notatek (panel otwarty, dotknięcie canvasu zamyka).
+- [x] #3 krzyżyk kursora pod piórem schowany (ustawienie *Cursor under the pen*);
+      #13 kursor schowany w czasie fal (`WM_SETCURSOR` + `SetCursor(None)` przy starcie fal).
+- [x] #8 lista menu: wybór przy puszczeniu, przeciągnięcie przewija (`Mode::Menu`,
+      próg 6 px); zweryfikowane zrzutami: przeciągnięcie nie zmienia żadnego ustawienia,
+      kontakt nie przełącza, puszczenie przełącza (x1.0 → x1.5).
+- [x] #9 pasek „zawsze widoczny" wraca po falach.
+- [x] #10 okno feedbacku: Ctrl+A (zaznaczenie = podświetlone pole; następny znak,
+      Backspace/Delete albo wklejenie zastępuje), Ctrl+C, Ctrl+X, Esc zdejmuje zaznaczenie.
+- [x] #11 notatki otwarte z LAN nie pokazują się w „moich" (tylko *Shared on LAN*);
+      **otwarte**: nadal leżą w space'ie domyślnym, więc idą do gita jak własne —
+      do decyzji (osobny katalog `lan/`?).
+- [x] #12 „syncing..." na zawsze: licznik `pending` zdejmowany był tylko po
+      `Status`/`Account`, a `Login` (oddany osobnemu wątkowi) i `Sync` bez repo
+      nie wysyłały żadnego — teraz pętla wątku wysyła `Done` po każdym zadaniu.
+- [x] #14/#16 zaproszenie widoczne też na górze zakładki Notatki.
+
+Do omówienia z użytkownikiem (potrzebny rysik / decyzja):
+- [ ] #4 „czułość wykrywania pisania" — co dokładnie (próg nacisku startu kreski? odrzucanie dłoni?).
+- [ ] #5 minimalna grubość przy zerowym nacisku rośnie dziś proporcjonalnie (12 % `base_width`);
+      jeśli ma rosnąć szybciej — jaka krzywa (decyzja o odczuciu pióra).
+- [ ] #6 cienkie kreski grubieją miejscami po puszczeniu — do odtworzenia z rysikiem
+      (podejrzenie: realizacja D2D vs `FillGeometry` przy `THIN_PX`, albo nakładanie
+      wstęgi na ostrych załamaniach); prośba o zrzut z powiększeniem.
+- [ ] #7 4K  %: „100 %" to dziś 1 jednostka = 1 piksel fizyczny, więc kolumna
+      (2880) mieści się w 3840 px — tester widzi mniej niż oczekuje; do ustalenia, czy
+      100 % ma znaczyć „dopasuj szerokość" na każdym ekranie.
+
 ## Etap 7 — Dystrybucja
 
 - [x] Wydania: `release.ps1` (wersja → testy → build → tag → GitHub Release, 3 ostatnie)
