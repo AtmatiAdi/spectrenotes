@@ -424,7 +424,19 @@ impl App {
             .filter(|s| !s.is_empty())
             .unwrap_or(crate::github::CLIENT_ID)
             .to_string();
-        let sync = SyncWorker::start(hwnd, space.root(), &author, &data_dir, &client_id);
+        let client_secret = config
+            .get("github_client_secret")
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::github::CLIENT_SECRET)
+            .to_string();
+        let sync = SyncWorker::start(
+            hwnd,
+            space.root(),
+            &author,
+            &data_dir,
+            &client_id,
+            &client_secret,
+        );
         let update_repo = config
             .get("update_repo")
             .filter(|s| !s.is_empty())
@@ -1192,8 +1204,14 @@ impl App {
             }
             MenuHit::Setting(s) => self.toggle_setting(s),
             MenuHit::Login => {
-                self.sync.last = "signing in: finish in the browser".to_string();
-                self.sync.send(SyncJob::Login);
+                // Drugie klikniecie w trakcie: ta sama strona jeszcze raz (karta
+                // mogla sie zamknac), nie drugi nasluch.
+                if let Some(url) = self.sync.browser_login.clone() {
+                    window::open_in_browser(&url);
+                } else {
+                    self.sync.last = "signing in: finish in the browser".to_string();
+                    self.sync.send(SyncJob::Login);
+                }
             }
             MenuHit::Logout => self.sync.send(SyncJob::Logout),
             MenuHit::SyncNow => self.git_sync(true),
@@ -1677,6 +1695,10 @@ impl App {
                         self.toggle_menu();
                     }
                     self.menu.set_tab(crate::menu::Tab::Account);
+                    repaint = true;
+                }
+                SyncEvent::BrowserLogin { .. } => {
+                    self.sync.last = "signing in: allow SpectreNotes in the browser".to_string();
                     repaint = true;
                 }
                 SyncEvent::LoggedIn(user) => {
@@ -2925,6 +2947,7 @@ impl App {
                 peer: self.live.last_ops,
                 avatar: self.renderer.has_avatar(),
                 device_code: self.sync.device_code.as_deref(),
+                browser_login: self.sync.browser_login.is_some(),
                 live: &live_line,
                 live_enabled: self.live.enabled,
                 share,

@@ -3,11 +3,13 @@
 //! (`spectre_shell_win::http`), JSON parsowany recznie - odpowiedzi maja
 //! kilka plaskich pol, serde bylby najwiekszym crate'em w binarce.
 //!
-//! Device Flow: aplikacja prosi GitHub o kod, pokazuje go uzytkownikowi,
-//! otwiera `github.com/login/device`, a potem odpytuje, az uzytkownik
-//! zatwierdzi. Wymaga `client_id` aplikacji OAuth zarejestrowanej na GitHubie
-//! z wlaczonym Device Flow (`CLIENT_ID`, nadpisywalne w `config.txt`:
-//! `github_client_id=`). Bez client_id zostaje wklejenie tokenu (PAT).
+//! Logowanie, od najwygodniejszego:
+//! 1. **Przegladarka z powrotem do aplikacji** (OAuth web flow): nasluch na
+//!    loopbacku, `Authorize` na GitHubie, przegladarka wraca z kodem, kod
+//!    wymieniany na token. Wymaga `CLIENT_ID` i `CLIENT_SECRET`.
+//! 2. **Device Flow**: kod (w schowku) do wpisania na `github.com/login/device`,
+//!    aplikacja odpytuje, az uzytkownik zatwierdzi. Wymaga tylko `CLIENT_ID`.
+//! 3. **Wklejony token (PAT)** - zawsze dostepne.
 
 use std::time::{Duration, Instant};
 
@@ -15,9 +17,20 @@ use spectre_shell_win::http;
 use spectre_sync::GitError;
 pub use spectre_update::json::{json_str, json_u64};
 
-/// OAuth App "SpectreNotes" - do uzupelnienia po rejestracji na GitHubie
-/// (Settings -> Developer settings -> OAuth Apps, "Enable Device Flow").
-pub const CLIENT_ID: &str = "";
+/// OAuth App "SpectreNotes" (konto AtmatiAdi; Settings -> Developer settings ->
+/// OAuth Apps: adres zwrotny `http://127.0.0.1/callback`, Device Flow wlaczony,
+/// tokeny bez wygasania). Client ID jest publiczny. Nadpisywalne w `config.txt`:
+/// `github_client_id=`.
+pub const CLIENT_ID: &str = "Ov23liM9ywOxPBWJ4gWU";
+/// Sekret aplikacji - potrzebny tylko do wymiany kodu z przegladarki na token
+/// (GitHub nie robi tu PKCE bez sekretu). **Nie w repozytorium**: `build.rs`
+/// wkleja go z pliku `%USERPROFILE%\.spectrenotes-oauth-secret` (albo ze
+/// zmiennej `SPECTRENOTES_OAUTH_SECRET`) przy budowaniu; bez niego zostaje
+/// Device Flow (kod w schowku). Nadpisywalne: `github_client_secret=`.
+pub const CLIENT_SECRET: &str = match option_env!("SPECTRENOTES_OAUTH_SECRET") {
+    Some(s) => s,
+    None => "",
+};
 const API: &str = "https://api.github.com";
 const UA: &str = "User-Agent: SpectreNotes";
 const ACCEPT_JSON: &str = "Accept: application/json";
@@ -133,6 +146,203 @@ pub fn device_wait(client_id: &str, d: &Device) -> Result<String> {
             None => check_status(&r, "oauth/access_token")?,
         }
     }
+}
+
+/// Logowanie przez przegladarke z powrotem do aplikacji (OAuth web flow):
+/// nasluch na `127.0.0.1:<port>`, `github.com/login/oauth/authorize`,
+/// przegladarka wraca z `code` na `/callback`, kod wymieniamy na token.
+/// GitHub przy adresie zwrotnym loopback przyjmuje dowolny port, wiec w
+/// aplikacji OAuth wystarczy zarejestrowany `http://127.0.0.1/callback`.
+pub struct BrowserLogin {
+    pub url: String,
+    listener: std::net::TcpListener,
+    redirect_uri: String,
+    state: String,
+}
+
+/// Krok 1: port, adres do otwarcia w przegladarce.
+pub fn browser_login_start(client_id: &str) -> Result<BrowserLogin> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| GitError::Other(format!("sign-in: local port: {e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| GitError::Other(format!("sign-in: local port: {e}")))?
+        .port();
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| GitError::Other(format!("sign-in: listener: {e}")))?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let state = format!("{:x}{:x}", nanos, std::process::id());
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    let url = format!(
+        "https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={}&scope=repo&state={state}",
+        url_encode(&redirect_uri)
+    );
+    Ok(BrowserLogin {
+        url,
+        listener,
+        redirect_uri,
+        state,
+    })
+}
+
+/// Krok 2: czeka na powrot przegladarki (do 5 min), odpowiada jej strona
+/// "mozesz zamknac karte" i wymienia kod na token. Blokuje - z osobnego watku.
+pub fn browser_login_wait(
+    client_id: &str,
+    client_secret: &str,
+    l: &BrowserLogin,
+) -> Result<String> {
+    use std::io::{Read, Write};
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let mut stream = loop {
+        match l.listener.accept() {
+            Ok((s, _)) => break s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(GitError::Other(
+                        "sign-in: no answer from the browser in 5 minutes".into(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(GitError::Other(format!("sign-in: listener: {e}"))),
+        }
+    };
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 2048];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 16 * 1024 {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => break,
+        }
+    }
+    let request = String::from_utf8_lossy(&buf);
+    let target = request
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .unwrap_or("");
+    let result = callback_code(target, &l.state);
+    let (title, text) = match &result {
+        Ok(_) => (
+            "Signed in",
+            "SpectreNotes is signed in to GitHub. You can close this tab.".to_string(),
+        ),
+        Err(e) => ("Sign-in failed", e.to_string()),
+    };
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>SpectreNotes</title></head>\
+         <body style=\"background:#121212;color:#bebebe;font:16px 'Segoe UI',sans-serif;\
+         display:flex;align-items:center;justify-content:center;height:100vh;margin:0\">\
+         <div style=\"text-align:center\"><div style=\"font-size:28px;color:#73a08c;margin-bottom:12px\">{title}</div>{text}</div>\
+         </body></html>"
+    );
+    let _ = write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+        html.len()
+    );
+    let _ = stream.flush();
+    drop(stream);
+    let code = result?;
+    let body = format!(
+        "client_id={client_id}&client_secret={client_secret}&code={}&redirect_uri={}",
+        url_encode(&code),
+        url_encode(&l.redirect_uri)
+    );
+    let r = http::request(
+        "POST",
+        "https://github.com/login/oauth/access_token",
+        &[
+            UA,
+            ACCEPT_JSON,
+            "Content-Type: application/x-www-form-urlencoded",
+        ],
+        Some(&body),
+    )
+    .map_err(map_http)?;
+    if let Some(token) = json_str(&r.body, "access_token") {
+        return Ok(token);
+    }
+    match json_str(&r.body, "error_description").or_else(|| json_str(&r.body, "error")) {
+        Some(e) => Err(GitError::Other(format!("sign-in: {e}"))),
+        None => {
+            check_status(&r, "oauth/access_token")?;
+            Err(GitError::Other(
+                "sign-in: no access_token in the answer".into(),
+            ))
+        }
+    }
+}
+
+/// Kod z adresu, na ktory wrocila przegladarka (`/callback?code=..&state=..`);
+/// `state` musi byc nasz - inaczej to nie jest odpowiedz na nasze pytanie.
+fn callback_code(target: &str, state: &str) -> Result<String> {
+    let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let param = |name: &str| {
+        query
+            .split('&')
+            .find_map(|kv| kv.split_once('=').filter(|(k, _)| *k == name))
+            .map(|(_, v)| url_decode(v))
+    };
+    match (param("code"), param("state"), param("error")) {
+        (Some(code), Some(s), _) if s == state => Ok(code),
+        (_, _, Some(e)) => Err(GitError::Other(format!(
+            "sign-in: {}",
+            param("error_description").unwrap_or(e)
+        ))),
+        (Some(_), _, _) => Err(GitError::Other("sign-in: state mismatch".into())),
+        _ => Err(GitError::Other("sign-in: no code in the callback".into())),
+    }
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                Ok(v) => {
+                    out.push(v);
+                    i += 3;
+                }
+                Err(_) => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn auth_header(token: &str) -> String {
@@ -256,6 +466,30 @@ fn one_line(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kod_z_powrotu_przegladarki() {
+        assert_eq!(
+            callback_code("/callback?code=abc%2F1&state=s1", "s1").unwrap(),
+            "abc/1"
+        );
+        assert!(callback_code("/callback?code=abc&state=zle", "s1")
+            .unwrap_err()
+            .to_string()
+            .contains("state"));
+        assert!(callback_code(
+            "/callback?error=access_denied&error_description=The+user+denied&state=s1",
+            "s1"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("The user denied"));
+        assert!(callback_code("/favicon.ico", "s1").is_err());
+        assert_eq!(
+            url_encode("http://127.0.0.1:5/callback"),
+            "http%3A%2F%2F127.0.0.1%3A5%2Fcallback"
+        );
+    }
 
     #[test]
     fn nazwa_repo() {

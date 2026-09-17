@@ -294,11 +294,14 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       jawnego prostokąta. Zmierzone: po SW_RESTORE z zewnątrz i wyjściu okno
       300,200–1700,1200, config nadal `300,200,1400,1000,1`.
 
-- [ ] **Logowanie do GitHuba jednym kliknięciem**: Device Flow jest w kodzie
-      (`github.rs`, przycisk *Sign in with GitHub (browser)*, kod ląduje w schowku),
-      brakuje tylko `CLIENT_ID` zarejestrowanej OAuth App (Settings → Developer
-      settings → OAuth Apps → New, „Enable Device Flow"); do testów
-      `github_client_id=` w `config.txt`.
+- [x] **Logowanie do GitHuba jednym kliknięciem** (2026-09-17). Użytkownik
+      zarejestrował OAuth App „SpectreNotes" (redirect `http://127.0.0.1/callback`,
+      Device Flow, tokeny bez wygasania). `github.rs`: nasłuch `TcpListener` na
+      losowym porcie loopbacku, `authorize` z `state`, odbiór `/callback?code=`,
+      strona „możesz zamknąć kartę", wymiana kodu na token z sekretem. Sekret nie
+      leży w repo: `build.rs` → `option_env!` z `%USERPROFILE%.spectrenotes-oauth-secret`.
+      Bez sekretu automatycznie Device Flow (kod w schowku); drugi klik w trakcie
+      otwiera tę samą stronę ponownie, nie drugi nasłuch.
 
 - [x] **Kłódka widoku**: zablokowany = kolumna wyśrodkowana (bezwzględny środek
       notatki), zoom wolno, scroll w bok nie; odblokowany = canvas nieskończony

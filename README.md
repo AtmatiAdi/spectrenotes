@@ -178,9 +178,13 @@ cały ekran w trakcie pracy obok był uciążliwy; gdy ochrona czuwa, przed tytu
 stoi tarcza 🛡 — potwierdzenie, że okno jest tam, gdzie ma chronić; czas bezczynności
 10 s – 10 min; jasność notatki między pasami 0–100 %), *Sieć lokalna* (rysowanie na żywo), *System* (**autostart** — wpis
 w kluczu `Run` użytkownika, aplikacja startuje z `--tray`, czyli schowana w trayu).
-Trwałe wartości lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba (kod w przeglądarce albo
-wklejony token — GitHub nie przyjmuje już logowania hasłem, więc login jest przez
-przeglądarkę lub PAT), stan synchronizacji i budżetu ruchu, „Synchronizuj teraz".
+Trwałe wartości lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba — przycisk **Sign in with GitHub** otwiera
+przeglądarkę, po „Authorize" wraca ona sama do aplikacji (OAuth na loopbacku,
+`http://127.0.0.1:<port>/callback`), token zapisuje się i repo zakłada samo; zapasowo
+Device Flow (kod w schowku) i wklejony PAT. Aplikacja OAuth „SpectreNotes" jest
+zarejestrowana na koncie AtmatiAdi: Client ID w `github.rs`, sekret **poza repo** —
+`build.rs` wkleja go z `%USERPROFILE%.spectrenotes-oauth-secret` przy budowaniu
+(bez pliku binarka umie tylko Device Flow). Dalej: stan synchronizacji i budżetu ruchu, „Synchronizuj teraz".
 Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go. **Nigdy nie zakrywa paska
 narzędzi**: przy lewej krawędzi staje obok niego, u góry i u dołu zaczyna się za nim
 (przy prawej pasek i tak nie jest po drodze). Dzięki temu ☰ zostaje pod palcem —

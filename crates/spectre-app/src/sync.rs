@@ -75,6 +75,10 @@ pub enum Event {
         code: String,
         url: String,
     },
+    /// Logowanie w przegladarce trwa (otwarta na `url`, wroci sama do aplikacji).
+    BrowserLogin {
+        url: String,
+    },
     LoggedIn(String),
     LoggedOut,
     /// Avatar zalogowanego (z GitHuba albo z pamieci podrecznej) - do renderera.
@@ -118,6 +122,8 @@ pub struct SyncWorker {
     pub last: String,
     /// Trwajace logowanie: kod do wpisania.
     pub device_code: Option<String>,
+    /// Trwajace logowanie przegladarka: adres, gdyby karta sie zamknela.
+    pub browser_login: Option<String>,
     /// Ostatnia udana wymiana ze zdalnym (fetch/push) - do licznika w menu.
     pub last_remote_ok: Option<Mark>,
 }
@@ -130,6 +136,8 @@ struct Ctx {
     budget_path: PathBuf,
     avatar_path: PathBuf,
     client_id: String,
+    /// Pusty = bez logowania przegladarka (zostaje Device Flow).
+    client_secret: String,
     repo_name: String,
     hwnd_raw: isize,
 }
@@ -141,6 +149,7 @@ impl SyncWorker {
         author: &AuthorName,
         data_dir: &Path,
         client_id: &str,
+        client_secret: &str,
     ) -> Self {
         let (tx, jobs) = mpsc::channel::<Job>();
         let (events, rx) = mpsc::channel::<Event>();
@@ -155,6 +164,7 @@ impl SyncWorker {
             budget_path: data_dir.join("traffic.txt"),
             avatar_path: data_dir.join("avatar.img"),
             client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
             repo_name: github::repo_name(&space_name),
             // HWND to wskaznik - przenosimy jako liczbe, okno zyje dluzej niz watek.
             hwnd_raw: hwnd.0 as isize,
@@ -170,6 +180,7 @@ impl SyncWorker {
             status: Status::default(),
             last: String::new(),
             device_code: None,
+            browser_login: None,
             last_remote_ok: None,
         }
     }
@@ -195,7 +206,15 @@ impl SyncWorker {
                     self.last_remote_ok = Some(Mark::now());
                 }
                 Event::DeviceCode { code, .. } => self.device_code = Some(code.clone()),
-                Event::LoggedIn(_) | Event::LoggedOut => self.device_code = None,
+                Event::BrowserLogin { url } => self.browser_login = Some(url.clone()),
+                Event::LoggedIn(_) | Event::LoggedOut => {
+                    self.device_code = None;
+                    self.browser_login = None;
+                }
+                Event::Error(e) if e.starts_with("sign-in") => {
+                    self.device_code = None;
+                    self.browser_login = None;
+                }
                 _ => {}
             }
             out.push(ev);
@@ -332,8 +351,14 @@ fn run(
                 out.push(Event::Error(
                     "no GitHub app client_id - paste a token (PAT) in the Account tab".into(),
                 ));
-            } else {
+            } else if ctx.client_secret.is_empty() {
                 spawn_device_login(ctx, events.clone());
+            } else {
+                // Przegladarka wraca sama do aplikacji; gdy nie da sie otworzyc
+                // portu, zostaje kod do wpisania.
+                if !spawn_browser_login(ctx, events.clone()) {
+                    spawn_device_login(ctx, events.clone());
+                }
             }
         }
         Job::SetToken(t) => match github::user_info(&t) {
@@ -445,6 +470,41 @@ fn sync_cycle(
 
 /// Device Flow na osobnym watku: kod -> przegladarka -> odpytywanie -> token
 /// na dysk -> zdarzenia. Watek sync w tym czasie normalnie commituje.
+/// Logowanie przegladarka (OAuth web flow, powrot na loopback). `false` = nie
+/// udalo sie zajac portu - wolajacy przechodzi na Device Flow.
+fn spawn_browser_login(ctx: &Ctx, events: Sender<Event>) -> bool {
+    let login = match github::browser_login_start(&ctx.client_id) {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    let client_id = ctx.client_id.clone();
+    let client_secret = ctx.client_secret.clone();
+    let token_path = ctx.token_path.clone();
+    let hwnd_raw = ctx.hwnd_raw;
+    let _ = events.send(Event::BrowserLogin {
+        url: login.url.clone(),
+    });
+    wake(hwnd_raw);
+    window::open_in_browser(&login.url);
+    let _ = thread::Builder::new()
+        .name("github-login".into())
+        .spawn(move || {
+            let result = (|| -> github::Result<String> {
+                let token = github::browser_login_wait(&client_id, &client_secret, &login)?;
+                let login = github::user_login(&token)?;
+                secret::store(&token_path, Some(&token))
+                    .map_err(|e| GitError::Other(format!("saving token: {e}")))?;
+                Ok(login)
+            })();
+            let _ = match result {
+                Ok(login) => events.send(Event::LoggedIn(login)),
+                Err(e) => events.send(Event::Error(e.to_string())),
+            };
+            wake(hwnd_raw);
+        });
+    true
+}
+
 fn spawn_device_login(ctx: &Ctx, events: Sender<Event>) {
     let client_id = ctx.client_id.clone();
     let token_path = ctx.token_path.clone();

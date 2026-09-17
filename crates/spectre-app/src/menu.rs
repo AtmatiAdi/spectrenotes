@@ -197,6 +197,8 @@ pub struct MenuState<'a> {
     pub avatar: bool,
     /// Trwajace logowanie Device Flow: kod do wpisania.
     pub device_code: Option<&'a str>,
+    /// Trwa logowanie przegladarka (czekamy na jej powrot).
+    pub browser_login: bool,
     /// Stan warstwy live: peerzy w LAN (jedna linia).
     pub live: &'a str,
     pub live_enabled: bool,
@@ -1420,15 +1422,18 @@ impl Menu {
                         out,
                     );
                     y += 6.0 * k;
-                    if st.device_flow {
+                    if s.browser_login {
+                        y += self.line(list, y, "waiting for the browser...", FG, out);
                         y += self.button(
                             list,
                             y,
                             MenuHit::Login,
-                            "Sign in with GitHub (browser)",
-                            FG,
+                            "Open the GitHub page again",
+                            FG_DIM,
                             out,
                         );
+                    } else if st.device_flow {
+                        y += self.button(list, y, MenuHit::Login, "Sign in with GitHub", FG, out);
                     }
                 }
                 // Token wklejony recznie: jedyna droga bez client_id, zapasowa z nim.
