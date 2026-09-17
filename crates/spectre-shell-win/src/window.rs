@@ -275,6 +275,27 @@ impl Fullscreen {
         self.active
     }
 
+    /// Jeszcze raz "zawsze na wierzchu", bez ruszania polozenia i aktywacji.
+    /// Powloka podnosi pasek zadan nad nasze okno ~50-100 ms po zmianie jego
+    /// stanu, gdy sama ma pierwszy plan - wolane z timera po wejsciu w pelny
+    /// ekran, a potem rzadko w trakcie ochrony AMOLED.
+    pub fn raise(&self, hwnd: HWND) {
+        if !self.active {
+            return;
+        }
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+
     /// Czy okno bylo zmaksymalizowane, zanim weszlo w pelny ekran. Przycisk
     /// maksymalizacji ma pokazywac stan, do ktorego wyjscie wroci.
     pub fn was_maximized(&self) -> bool {
@@ -329,6 +350,11 @@ impl Fullscreen {
                     );
                     let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                 }
+                // Gdy pierwszy plan ma sam pasek zadan (ostatnie klikniecie w zegar,
+                // tray, Start), powloka ~50-100 ms po zmianie stanu okna wraca z
+                // paskiem nad nasze - mimo "zawsze na wierzchu". Ochrona AMOLED
+                // startuje po bezczynnosci, wiec to czesty przypadek: pasek
+                // zostawal nad falami. Ponowne TOPMOST z timera (`raise`) wygrywa.
                 mark_fullscreen(hwnd, true);
             } else {
                 self.active = false;
@@ -541,6 +567,11 @@ pub fn apply_placement(hwnd: HWND, s: &str, show: bool) -> bool {
             right: v[0] + v[2],
             bottom: v[1] + v[3],
         },
+        // (-1,-1) = "policz sam z WM_GETMINMAXINFO". Zero jest tu wprost
+        // zapamietanym punktem: system przesuwa wtedy pierwsza maksymalizacje
+        // o ramke poza ekran, a przy pelnym ekranie zostaja odkryte 8 px
+        // paska zadan u dolu i po prawej.
+        ptMaxPosition: POINT { x: -1, y: -1 },
         ..Default::default()
     };
     unsafe { SetWindowPlacement(hwnd, &wp).is_ok() }

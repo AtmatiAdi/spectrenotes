@@ -107,7 +107,15 @@ Technicznie pełny ekran to **maksymalizacja do całego monitora**: okno (bez
 Zmaksymalizowane okno zajmuje więc dokładnie obszar roboczy od (0,0) — bez ramki
 wysuniętej 9 px poza ekran — i przejście do pełnego ekranu to tylko dolna krawędź
 rosnąca o pasek zadań; treść nie drga. Ze zwykłego okna wejście i wyjście grają
-systemowe animacje maksymalizacji i przywracania. Pasek narzędzi (i zakładki
+systemowe animacje maksymalizacji i przywracania. Dwie pułapki, obie zmierzone:
+zapamiętane położenie (`SetWindowPlacement`) musi mieć `ptMaxPosition = (-1,-1)`,
+bo zero jest dla systemu wprost zapisanym punktem i pierwsza maksymalizacja lądowała
+w (-8,-8) — 8 px paska zadań zostawało odkryte u dołu i po prawej; a gdy pierwszy
+plan ma sam pasek zadań (ostatnie kliknięcie w zegar czy tray — po bezczynności to
+częste), powłoka ~50–100 ms po zmianie stanu okna wraca z paskiem **nad** nasze,
+mimo „zawsze na wierzchu", i bywa, że drugi raz po ~0,8 s. Dlatego po wejściu
+w pełny ekran `TIMER_TOPMOST` przez 1,6 s co 200 ms powtarza `HWND_TOPMOST`, a
+w trakcie ochrony AMOLED raz na 5 s. Pasek narzędzi (i zakładki
 w pełnym ekranie) nie znika w jednej klatce: wsuwa się w swoją krawędź i blednie
 przez ~200 ms — także gdy chowa go ochrona AMOLED; podjazd rysika do krawędzi
 przerywa to od razu.

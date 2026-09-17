@@ -261,6 +261,18 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
       `TIMER_ANIM` 16 ms tylko na czas animacji, bez klatek podczas rysowania),
       także przy starcie ochrony AMOLED (pod wjeżdżającymi falami). Zmierzone:
       8 klatek w ~190 ms.
+- [x] **Ochrona AMOLED nie zawsze zakrywała pasek zadań** (2026-09-17). Dwie
+      przyczyny, obie zmierzone (`WindowFromPoint` w środku paska, sondowanie co
+      30 ms): (1) `apply_placement` zostawiał `ptMaxPosition = (0,0)`, a system
+      traktuje to jako zapisany punkt, nie „policz sam" — pierwsza maksymalizacja
+      w procesie lądowała w (-8,-8) i 8 px paska zadań zostawało odkryte u dołu
+      i po prawej; teraz `(-1,-1)`. (2) Gdy pierwszy plan miał sam pasek zadań
+      (ostatnie kliknięcie w zegar/tray, potem bezczynność), powłoka ~50–100 ms
+      po zmianie stanu okna podnosiła pasek nad nasze, czasem drugi raz po ~0,8 s;
+      `TIMER_TOPMOST` powtarza `HWND_TOPMOST` co 200 ms przez 1,6 s, potem co 5 s
+      w trakcie fal. Zmierzone: pasek pod oknem od ~250 ms, stabilnie przez 6 s
+      i przy prawdziwej bezczynności; przy oknie/innej aplikacji na pierwszym
+      planie bez zmian.
 - [x] **Kłódka widoku**: zablokowany = kolumna wyśrodkowana (bezwzględny środek
       notatki), zoom wolno, scroll w bok nie; odblokowany = canvas nieskończony
       w osi X. Naprawia „odblokowanie" scrolla w bok przez rysowanie po oddaleniu.

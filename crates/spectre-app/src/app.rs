@@ -83,6 +83,15 @@ const THUMB_BUDGET_MS: f32 = 5.0;
 /// klatki i tak ida z kazdym zdarzeniem rysika, a dodatkowe tylko by je opoznialy.
 const TIMER_ANIM: usize = 9;
 const ANIM_TICK_MS: u32 = 16;
+/// Ponowne "zawsze na wierzchu" po wejsciu w pelny ekran: powloka podnosi
+/// pasek zadan nad nasze okno ~50-100 ms po zmianie jego stanu, gdy sama ma
+/// pierwszy plan (zmierzone), a bywa, ze drugi raz po ~0,8 s. Osiem odswiezen
+/// co 200 ms po wejsciu, potem w trakcie ochrony AMOLED raz na kilka sekund -
+/// pasek na falach to wypalanie, przed ktorym fale maja chronic.
+const TIMER_TOPMOST: usize = 10;
+const TOPMOST_TICK_MS: u32 = 200;
+const TOPMOST_TICKS: u32 = 8;
+const TOPMOST_SLOW_MS: u32 = 5000;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -247,6 +256,8 @@ pub struct App {
     waves_dim_pct: u32,
     /// Pelny ekran wlaczony przez fale (ochrona calego panelu) - do cofniecia.
     waves_fullscreen: bool,
+    /// Ile szybkich odswiezen TOPMOST zostalo po wejsciu w pelny ekran.
+    topmost_ticks: u32,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -503,6 +514,7 @@ impl App {
             waves_forced: false,
             waves_dim_pct,
             waves_fullscreen: false,
+            topmost_ticks: 0,
             toolbar,
             menu,
             config,
@@ -1044,6 +1056,26 @@ impl App {
         }
     }
 
+    fn topmost_tick(&mut self) {
+        self.fullscreen.raise(self.hwnd);
+        unsafe {
+            if !self.fullscreen.is_active() {
+                let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
+            } else if self.topmost_ticks > 1 {
+                self.topmost_ticks -= 1;
+            } else if self.topmost_ticks == 1 {
+                self.topmost_ticks = 0;
+                if self.waves.is_some() {
+                    SetTimer(Some(self.hwnd), TIMER_TOPMOST, TOPMOST_SLOW_MS, None);
+                } else {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
+                }
+            } else if self.waves.is_none() {
+                let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
+            }
+        }
+    }
+
     fn anim_tick(&mut self) {
         if !self.toolbar.animating() {
             unsafe {
@@ -1323,6 +1355,14 @@ impl App {
 
     fn toggle_fullscreen(&mut self) {
         self.fullscreen.toggle(self.hwnd);
+        unsafe {
+            if self.fullscreen.is_active() {
+                self.topmost_ticks = TOPMOST_TICKS;
+                SetTimer(Some(self.hwnd), TIMER_TOPMOST, TOPMOST_TICK_MS, None);
+            } else {
+                let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
+            }
+        }
         self.toolbar.chrome = !self.fullscreen.is_active();
         self.relayout();
     }
@@ -3398,6 +3438,7 @@ pub unsafe extern "system" fn wndproc(
                     }
                 }
                 TIMER_ANIM => app.anim_tick(),
+                TIMER_TOPMOST => app.topmost_tick(),
                 _ => {}
             }
             LRESULT(0)
