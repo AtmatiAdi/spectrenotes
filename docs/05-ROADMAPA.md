@@ -169,8 +169,9 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       ten sam space) — założenie repo, push, pobranie, merge niezależnych historii,
       fast-forward z powrotem
 - [ ] Rejestracja aplikacji OAuth na GitHubie i wpisanie `CLIENT_ID` (właściciel projektu)
-- [ ] Przeglądarka wersji notatki (`log_note` jest; brak UI i odtwarzania stanu z commita)
-      — **po Etapie 6½**: jej kształt zależy od decyzji o GUI
+- [–] ~~Przeglądarka wersji notatki~~ — **skreślona 2026-09-17** (decyzja użytkownika):
+      historia zostaje w gicie (`log_note`, `git log` w repo), bez UI w aplikacji.
+      W jej miejsce eksport do PDF (Etap 6½, „Przed finalizacją GUI").
 - [ ] Snapshoty i przycinanie HEAD — razem z Etapem 3
 
 ## Etap 6 — Realtime P2P  ◐ DZIAŁA W LAN
@@ -210,9 +211,30 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 
 Rdzeń (pióro, format, git, live) stoi; **brakuje wymagań dla sporej części
 funkcji użytkowych** — do tej pory GUI rosło przyrostowo, funkcja po funkcji.
-Zanim dojdzie przeglądarka wersji i kolejne narzędzia, jedna sesja na spisanie,
+Zanim dojdą kolejne narzędzia, jedna sesja na spisanie,
 co aplikacja ma robić i jak ma wyglądać. Wynik: aktualizacja `00-ZALOZENIA.md`
 (nowe Z-ki albo doprecyzowanie istniejących) i lista zmian GUI tutaj.
+
+**Przed finalizacją GUI** (ustalone 2026-09-17 — do zrobienia w tej kolejności,
+zanim zamkniemy kształt menu; każda z tych rzeczy dokłada własne wejścia do GUI):
+- [ ] **Eksport do PDF** (zamiast przeglądarki wersji): cała notatka albo widoczny
+      zakres, wektorowo z geometrii kresek (bez rasteryzacji — Direct2D ma
+      `ID2D1Device::CreatePrintControl` / XPS, albo własny zapis ścieżek do PDF),
+      strona = kolumna `COLUMN_W` cięta po wysokości; wpis w menu *Notatki* i skrót.
+- [ ] **Snapshoty i przycinanie HEAD** (Etap 3/5) razem z przycinaniem `via-*` (Etap 6)
+      — jeden mechanizm: stan HEAD do pliku, stare `.ops` do usunięcia w gicie.
+- [ ] **Zoom bez pełnego rebuildu** (Etap 2): podgląd skalowaniem warstwy suchej,
+      rebuild po ustaniu gestu.
+- [ ] **LAN do końca** (Etap 6/6¾): live dla notatek ze space'ów współdzielonych,
+      potwierdzenie na dwóch fizycznych maszynach, GUI udostępniania (peerzy, nazwy).
+- [ ] **Przycisk „Send feedback"** w menu (Konto albo Ustawienia): tekst + automatycznie
+      wersja, OS, GPU, ostatni błąd synca. **Dokąd wysyłać — do decyzji**; propozycja:
+      GitHub Issue w publicznym `spectrenotes-releases` tokenem zalogowanego użytkownika
+      (`POST /repos/{owner}/{repo}/issues`, ten sam klient REST co sync; bez logowania —
+      otwarcie przeglądarki na `issues/new?title=&body=` z wypełnioną treścią).
+      Alternatywa Slack webhook: prostsza (jeden `POST` z JSON), ale adres webhooka
+      musiałby siedzieć w binarce (każdy go wyciągnie i zaleje kanał), a zgłaszający
+      nie widzi odpowiedzi.
 
 Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
 - [x] **Stan synchronizacji w menu, obok informacji „synced"**: nagłówek pokazuje
@@ -349,7 +371,7 @@ Konkretne zgłoszenia (do zrobienia niezależnie od reszty):
 
 Do rozstrzygnięcia (lista otwarta — dopisywać):
 - [ ] Menu i nawigacja: czy panel boczny zostaje, co z zakładkami nad canvasem,
-      gdzie ląduje przeglądarka wersji, jak wygląda przenoszenie notatek i foldery
+      jak wygląda przenoszenie notatek i foldery, gdzie ląduje eksport PDF
 - [ ] Narzędzia rysowania (Z11 vs „Więcej narzędzi" z Etapu 4): zaznaczanie, kształty,
       zakreślacz, lasso — które w v1, jak wybierane rysikiem
 - [ ] Praca z wieloma osobami (Etap 6): jak pokazywać, kto jest w notatce, kolory
@@ -434,7 +456,7 @@ gdzie są. Format to zip z XML i binarnymi stroke'ami, więc jest wykonalny,
 ale to praca na osobny etap i nie ma powodu robić jej przed działającą aplikacją.
 
 Dalej: zakreślacz i lasso (`StrokeTransform` + LWW), wstawianie obrazków
-(content-addressed store, pytanie o Git LFS), OCR, eksport PDF, szyfrowanie
+(content-addressed store, pytanie o Git LFS), OCR, szyfrowanie
 at-rest, tryb prezentacji.
 
 **Opcjonalnie: port na Androida (Samsung, S Pen).** Tylko Android — Apple odpada
