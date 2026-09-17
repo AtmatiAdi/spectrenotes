@@ -361,6 +361,51 @@ Do rozstrzygnięcia (lista otwarta — dopisywać):
       dok/undock, tryb tabletu (klawiatura schowana)
 - [ ] Onboarding: pierwszy start, logowanie, pierwszy space, druga maszyna
 
+## Etap 6¾ — Space'y współdzielone przez GitHub  ◐ W TOKU (od 2026-09-17)
+
+Decyzje z użytkownikiem (2026-09-17):
+
+- **Jednostką udostępniania przez GitHub jest space = repozytorium.** Space
+  domyślny (`default`) jest zawsze prywatny i nigdy nie dostaje współpracowników.
+  Space współdzielony to **osobne repo** `spectrenotes-<nazwa>` na koncie
+  założyciela, z **współpracownikami GitHub** (collaborators) — bez własnego
+  serwera, bez własnej bazy uprawnień. Kto ma dostęp do repo, ten widzi space.
+- **Znajomi** to lista loginów GitHub, trzymana w **prywatnym space'ie domyślnym**
+  (`friends.txt`, synchronizowana jak reszta), sprawdzana przez `GET /users/{login}`.
+  Służy do szybkiego zakładania space'u: wybierasz znajomych, aplikacja zaprasza
+  ich do repo (`PUT /repos/{owner}/{repo}/collaborators/{login}`); zaproszony widzi
+  zaproszenie w Koncie (`GET /user/repository_invitations`) i przyjmuje je z aplikacji.
+- **Folder jest abstrakcją porządkującą, nie miejscem.** Folder notatki to jej
+  metadana (`Meta folder`, już tak jest); lista notatek scala notatki ze wszystkich
+  space'ów i grupuje po folderze. Notatka przeniesiona do wspólnego space'u
+  zachowuje folder: u właściciela dalej leży tam, gdzie leżała, u współpracownika
+  ten folder pojawia się z tą jedną notatką.
+- **Udostępnienie istniejącej notatki = przeniesienie** jej katalogu (ULID, wszystkie
+  pliki `.ops`) z repo prywatnego do repo space'u; w starym repo `git rm` (historia
+  zostaje). Notatka żyje zawsze w jednym repo — bez kopii i dwóch źródeł prawdy.
+  Inne urządzenia widzą ruch po syncu (znika z jednego space'u, pojawia się w drugim).
+- Wewnątrz space'u działa dokładnie to, co dziś między własnymi urządzeniami:
+  własne pliki każdego autora, sumowanie kresek, LWW tytułów. Kod formatu i merge
+  bez zmian. Live w LAN/Tailscale jak dotąd (ADR 0008), niezależnie od space'u.
+- Prywatność: repo prywatne, widzą je tylko zaproszeni; szyfrowania at-rest nie ma
+  (jak dziś). Wycofanie współpracownika = `DELETE .../collaborators/{login}`
+  (ma to, co już pobrał).
+
+Plan (kolejność wdrożenia):
+- [ ] **Wiele space'ów w jednej instancji**: `App` trzyma listę space'ów (domyślny
+      + `spaces\<nazwa>` obok), każdy z własnym `SyncWorker`; lista notatek scalona,
+      kafelek z nazwą space'u, gdy nie domyślny. Jedna instancja na profil
+      (`instance::space_tag` z katalogu danych, nie z pojedynczego space'u).
+- [ ] **Znajomi** (Konto → Friends): dodaj po loginie (walidacja `GET /users`),
+      lista z avatarami, usuń; `friends.txt` w space'ie domyślnym.
+- [ ] **Space'y** (Konto → Spaces): nowy space z nazwą i wyborem znajomych
+      (repo + zaproszenia), lista własnych i cudzych, zaproszenia do przyjęcia,
+      opuszczenie space'u.
+- [ ] **Przenoszenie notatki do space'u** (z listy notatek / bieżącej): kopiowanie
+      katalogu, `git rm` w starym, commit + push w obu; blokada, gdy notatka
+      otwarta na żywo w LAN u kogoś.
+- [ ] Nowa notatka: w space'ie bieżącej notatki (jak folder) — domyślnie prywatny.
+
 ## Etap 7 — Dystrybucja
 
 - [x] Wydania: `release.ps1` (wersja → testy → build → tag → GitHub Release, 3 ostatnie)
