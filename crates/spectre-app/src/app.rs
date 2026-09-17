@@ -29,6 +29,7 @@ use crate::lan::LanConfig;
 use crate::feedback::{self, Feedback, Hit as FeedbackHit};
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
+use crate::pdf;
 use crate::spaces::{self, SpaceInfo};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, RepoRef, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
@@ -301,6 +302,8 @@ pub struct App {
     /// Aktualizacje z wydan GitHuba; `update_check=0` w config wylacza automat.
     update: Updater,
     update_check: bool,
+    /// Eksport PDF na bialym tle (`pdf_paper=0` w config = czarne jak ekran).
+    pdf_paper: bool,
     /// Po zamknieciu okna uruchom binarke ponownie z tymi argumentami
     /// (restart po aktualizacji) - robi to `WM_DESTROY` juz po sprzatnieciu.
     relaunch: Option<Vec<String>>,
@@ -486,6 +489,7 @@ impl App {
             .to_string();
         let update = Updater::start(hwnd, &update_repo, &data_dir);
         let update_check = config.get("update_check") != Some("0");
+        let pdf_paper = config.get("pdf_paper") != Some("0");
         if update_check {
             unsafe {
                 SetTimer(Some(hwnd), TIMER_UPDATE, UPDATE_FIRST_MS, None);
@@ -590,6 +594,7 @@ impl App {
             sync_booted: false,
             update,
             update_check,
+            pdf_paper,
             relaunch: None,
             reload_pending: false,
             live,
@@ -1340,6 +1345,7 @@ impl App {
             MenuHit::LeaveSpace(i) => self.leave_space(i),
             MenuHit::MoveToSpace(i) => self.move_note_to_space(i),
             MenuHit::Feedback => self.open_feedback(),
+            MenuHit::ExportPdf => self.export_pdf(),
         }
     }
 
@@ -1432,6 +1438,12 @@ impl App {
                         let _ = KillTimer(Some(self.hwnd), TIMER_UPDATE);
                     }
                 }
+            }
+            Setting::PdfPaper => {
+                self.pdf_paper = !self.pdf_paper;
+                self.config
+                    .set("pdf_paper", if self.pdf_paper { "1" } else { "0" });
+                self.config.save();
             }
             Setting::Autostart => {
                 let on = !self.autostart;
@@ -2182,6 +2194,63 @@ impl App {
         }
         if self.menu.open || self.show_hud || repaint {
             self.render();
+        }
+    }
+
+    // ----- eksport PDF ---------------------------------------------------------
+
+    /// Biezaca notatka do PDF: okno zapisu (nazwa z tytulu), zapis, otwarcie
+    /// w domyslnej przegladarce PDF. `SPECTRENOTES_PDF_OUT` (tylko z wejsciem
+    /// testowym) omija okno i podaje sciezke.
+    fn export_pdf(&mut self) {
+        let title = self.title();
+        let stem: String = title
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let stem = stem.trim();
+        let name = format!(
+            "{}.pdf",
+            if stem.is_empty() { "note" } else { stem }
+        );
+        let path = match std::env::var("SPECTRENOTES_PDF_OUT") {
+            Ok(p) if self.test_input => PathBuf::from(p),
+            _ => match dialog::save_file(self.hwnd, "Export note to PDF", &name, "pdf") {
+                Some(p) => p,
+                None => return,
+            },
+        };
+        let t0 = Instant::now();
+        let pdf = pdf::export(
+            &self.doc,
+            &self.ink,
+            &pdf::Options {
+                paper: self.pdf_paper,
+                title,
+            },
+        );
+        match std::fs::write(&path, &pdf.bytes) {
+            Ok(()) => {
+                self.status = format!(
+                    "PDF: {} page{} ({} kB) in {:.0} ms -> {}",
+                    pdf.pages,
+                    if pdf.pages == 1 { "" } else { "s" },
+                    pdf.bytes.len() / 1024,
+                    t0.elapsed().as_secs_f32() * 1000.0,
+                    path.display()
+                );
+                eprintln!("{}", self.status);
+                if !self.test_input {
+                    window::open_in_browser(&path.to_string_lossy());
+                }
+            }
+            Err(e) => self.status = format!("PDF: {}: {e}", path.display()),
         }
     }
 
@@ -3617,6 +3686,7 @@ impl App {
                 version: spectre_update::CURRENT,
                 update: &update_view,
                 update_check: self.update_check,
+                pdf_paper: self.pdf_paper,
                 synced: self.sync.last_remote_ok,
                 saved: self.saved,
                 peer: self.live.last_ops,

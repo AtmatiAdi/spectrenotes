@@ -10,7 +10,7 @@
 //! - **mokra** - czubek biezacej kreski i overlay, rysowane wprost na backbufferze.
 
 mod d2d;
-mod geometry;
+pub mod geometry;
 mod tess;
 
 pub use d2d::{DimMask, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail, DIM_STEP};

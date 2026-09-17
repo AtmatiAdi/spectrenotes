@@ -217,10 +217,17 @@ co aplikacja ma robić i jak ma wyglądać. Wynik: aktualizacja `00-ZALOZENIA.md
 
 **Przed finalizacją GUI** (ustalone 2026-09-17 — do zrobienia w tej kolejności,
 zanim zamkniemy kształt menu; każda z tych rzeczy dokłada własne wejścia do GUI):
-- [ ] **Eksport do PDF** (zamiast przeglądarki wersji): cała notatka albo widoczny
-      zakres, wektorowo z geometrii kresek (bez rasteryzacji — Direct2D ma
-      `ID2D1Device::CreatePrintControl` / XPS, albo własny zapis ścieżek do PDF),
-      strona = kolumna `COLUMN_W` cięta po wysokości; wpis w menu *Notatki* i skrót.
+- [x] **Eksport do PDF** (2026-09-17, zamiast przeglądarki wersji): *Notatki →
+      Export this note to PDF…* (okno zapisu, nazwa z tytułu, plik otwiera się po
+      zapisie). Wektorowo: te same obrysy kresek co na ekranie (`geometry::outlines`,
+      CPU) jako ścieżki `m/l/h/f` z wypełnieniem nonzero, własny writer PDF 1.4 i
+      własny zlib (LZ77 + stałe kody Huffmana, `deflate.rs`) — zero zależności.
+      Strona = kolumna `COLUMN_W` (poszerzona, gdy treść wystaje) w proporcji A4,
+      cięcie po wysokości, kreska na styku na obu stronach z przycięciem. Ustawienie
+      *Export → PDF background*: białe (kolory z odwróconą jasnością HSL — jasna
+      paleta AMOLED czytelna na papierze) albo czarne jak ekran. Zweryfikowane:
+      PDF wyrenderowany `Windows.Data.Pdf` pokrywa się ze zrzutem ekranu (4 kreski +
+      kropka, kolory), 5 kresek = 2,3 kB. Poza zakresem: tylko widoczny wycinek.
 - [ ] **Snapshoty i przycinanie HEAD** (Etap 3/5) razem z przycinaniem `via-*` (Etap 6)
       — jeden mechanizm: stan HEAD do pliku, stare `.ops` do usunięcia w gicie.
 - [ ] **Zoom bez pełnego rebuildu** (Etap 2): podgląd skalowaniem warstwy suchej,

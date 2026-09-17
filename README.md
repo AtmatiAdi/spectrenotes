@@ -168,6 +168,11 @@ na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę
 `Enter`), pod spodem *This note on LAN* (udostępnij, hasło) i *Shared on LAN* (cudze
 udostępnienia). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
 zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
+**Export this note to PDF…** zapisuje bieżącą notatkę wektorowo (te same obrysy
+kresek co na ekranie, własny writer PDF i zlib — bez zależności): strona to kolumna
+notatki w proporcji A4, cięta po wysokości; plik otwiera się po zapisie. *Ustawienia →
+Export → PDF background*: białe (kolory z odwróconą jasnością, żeby jasna paleta AMOLED
+była czytelna na papierze) albo czarne jak ekran.
 *Ustawienia*: na samej górze zawsze **Send feedback** — okno nad canvasem z polem
 tekstowym (Enter = nowy wiersz, Ctrl+Enter wysyła, Ctrl+V wkleja), *Attach a file…*
 (systemowy wybór pliku) i *Attach app screenshot* (zrzut aplikacji bez okna i menu);
@@ -344,6 +349,7 @@ Do okna feedbacku (tylko z tą zmienną): `SPECTRENOTES_FEEDBACK_FAKE=ok|err` ud
 zalogowanie i kończy wysyłkę podanym wynikiem bez GitHuba (scenariusz paska, ekrany
 końcowe, załączniki), a `SPECTRENOTES_FEEDBACK_DUMP=<plik.png>` zapisuje na dysk zrzut
 z *Attach app screenshot*.
+`SPECTRENOTES_PDF_OUT=<plik.pdf>` omija okno zapisu przy eksporcie PDF.
 
 ### Porównania, które warto zrobić od razu
 

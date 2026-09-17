@@ -111,6 +111,8 @@ pub enum Setting {
     Live,
     /// Automatyczne sprawdzanie wydan na GitHubie.
     UpdateCheck,
+    /// Eksport PDF: biale tlo (kolory z odwrocona jasnoscia) czy czarne jak ekran.
+    PdfPaper,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +123,8 @@ pub enum MenuHit {
     MoveTo(Option<usize>),
     NewNote,
     NewFolder,
+    /// Biezaca notatka do PDF (okno zapisu).
+    ExportPdf,
     Setting(Setting),
     Login,
     Logout,
@@ -207,6 +211,8 @@ pub struct MenuState<'a> {
     pub version: &'a str,
     pub update: &'a UpdateView,
     pub update_check: bool,
+    /// Eksport PDF na bialym tle.
+    pub pdf_paper: bool,
     /// Ostatnia udana wymiana z GitHubem (fetch/push), ostatni zapis na dysk
     /// i ostatnia wymiana operacji z peerem w LAN. Naglowek pokazuje jedna
     /// z nich (najmocniejsza dostepna) z licznikiem tykajacym co sekunde,
@@ -895,6 +901,7 @@ impl Menu {
         for (hit, label) in [
             (MenuHit::NewNote, "+  New note"),
             (MenuHit::NewFolder, "+  New folder"),
+            (MenuHit::ExportPdf, "↧  Export this note to PDF…"),
         ] {
             if hit == MenuHit::NewFolder {
                 if let Some(buf) = self.folder_edit.clone() {
@@ -1139,7 +1146,7 @@ impl Menu {
         y += 10.0 * k;
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.
-        let groups: [(&str, Vec<SettingRow>); 6] = [
+        let groups: [(&str, Vec<SettingRow>); 7] = [
             (
                 "Display",
                 vec![
@@ -1216,6 +1223,14 @@ impl Menu {
                     Setting::Live,
                     "Live drawing (LAN)",
                     on_off(s.live_enabled).to_string(),
+                )],
+            ),
+            (
+                "Export",
+                vec![(
+                    Setting::PdfPaper,
+                    "PDF background",
+                    if s.pdf_paper { "white" } else { "black" }.to_string(),
                 )],
             ),
             (

@@ -74,6 +74,27 @@ pub unsafe fn build(
     Ok(geo)
 }
 
+/// Obrysy kreski jako wielokaty (jednostki canvasu), bez D2D - do eksportu
+/// wektorowego (PDF). Te same lancuchy, luki i uproszczenie co w `build`, wiec
+/// PDF pokazuje dokladnie to, co ekran; `zoom` steruje gestoscia lukow tak
+/// samo jak przy rysowaniu (2,0 = punkt na pol jednostki).
+pub fn outlines(segs: &[Segment], zoom: f32) -> Vec<Vec<(f32, f32)>> {
+    let min_w = MIN_WIDTH_PX / zoom;
+    let eps = SIMPLIFY_PX / zoom;
+    let mut out = Vec::new();
+    let mut pts: Vec<Vector2> = Vec::with_capacity(256);
+    for chain in chains(segs, min_w) {
+        pts.clear();
+        outline(&chain, zoom, &mut pts);
+        simplify(&mut pts, eps);
+        if pts.len() < 3 {
+            continue;
+        }
+        out.push(pts.iter().map(|v| (v.X, v.Y)).collect());
+    }
+    out
+}
+
 /// Czy kreska w najgrubszym miejscu ma na ekranie mniej niz `THIN_PX`.
 pub fn is_thin(segs: &[Segment], zoom: f32) -> bool {
     segs.iter().map(|s| s.width).fold(0.0, f32::max) * zoom < THIN_PX
