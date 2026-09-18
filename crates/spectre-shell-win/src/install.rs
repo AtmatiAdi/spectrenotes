@@ -114,6 +114,7 @@ pub fn install_self(version: &str, about_url: &str) -> std::io::Result<PathBuf> 
         .map(|m| m.len() / 1024)
         .unwrap_or(0) as u32;
     register_uninstall(version, about_url, &dest, size_kb)?;
+    add_firewall_rule(&dest);
     Ok(dest)
 }
 
@@ -124,6 +125,7 @@ pub fn uninstall_self() -> std::io::Result<()> {
     let _ = std::fs::remove_file(shortcut_path());
     let _ = crate::autostart::set_enabled(false);
     unregister_uninstall();
+    remove_firewall_rule();
     let dir = app_dir();
     let _ = std::fs::remove_dir_all(updates_dir());
     // `ping` jako opoznienie (cmd nie ma `sleep`): proces musi sie skonczyc,
@@ -377,5 +379,70 @@ mod tests {
         assert_eq!(std::fs::read(&cur).unwrap(), b"new");
         assert_eq!(std::fs::read(&old).unwrap(), b"old");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Nazwa reguly zapory dla zainstalowanej kopii.
+const FIREWALL_RULE: &str = "SpectreNotes";
+
+/// Regula Windows Firewall dla `exe` (przychodzace, sieci prywatne i publiczne)
+/// - zeby live w LAN nie pytal uzytkownika przy pierwszym uruchomieniu.
+/// Dodanie reguly wymaga uprawnien administratora, wiec `netsh` idzie przez
+/// `runas` (jedno pytanie UAC przy instalacji); odmowa nic nie psuje -
+/// zostaje zwykle pytanie zapory przy starcie. Bez czekania na wynik.
+pub fn add_firewall_rule(exe: &Path) {
+    if has_firewall_rule(exe) {
+        return;
+    }
+    let args = format!(
+        "advfirewall firewall add rule name=\"{FIREWALL_RULE}\" dir=in action=allow \
+         program=\"{}\" enable=yes profile=private,public",
+        exe.display()
+    );
+    shell_execute("runas", "netsh", &args);
+}
+
+/// Usuniecie reguly (odinstalowanie); tez przez UAC.
+pub fn remove_firewall_rule() {
+    shell_execute(
+        "runas",
+        "netsh",
+        &format!("advfirewall firewall delete rule name=\"{FIREWALL_RULE}\""),
+    );
+}
+
+/// Czy dla tej sciezki jest juz regula zezwalajaca (nasza albo dodana przez
+/// uzytkownika w oknie zapory) - wtedy nie ma po co pytac o UAC.
+fn has_firewall_rule(exe: &Path) -> bool {
+    let out = std::process::Command::new("netsh")
+        .args(["advfirewall", "firewall", "show", "rule", "name=all", "dir=in", "verbose"])
+        .output();
+    let Ok(out) = out else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+    let want = exe.to_string_lossy().to_ascii_lowercase();
+    // Wpis "Program:" z nasza sciezka w bloku reguly "Allow" - blok konczy sie
+    // pusta linia; szukamy pary w obrebie jednego bloku.
+    text.split("\n\n")
+        .chain(text.split("\r\n\r\n"))
+        .any(|block| block.contains(&want) && block.contains("allow"))
+}
+
+fn shell_execute(verb: &str, file: &str, args: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    let verb = crate::window::wide(verb);
+    let file = crate::window::wide(file);
+    let args = crate::window::wide(args);
+    unsafe {
+        let _ = ShellExecuteW(
+            None,
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR(args.as_ptr()),
+            PCWSTR::null(),
+            SW_HIDE,
+        );
     }
 }

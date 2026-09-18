@@ -179,9 +179,22 @@ impl Node {
         me: &AuthorName,
         wake: Box<dyn Fn() + Send>,
     ) -> io::Result<Self> {
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        // Testy jednostkowe: nasluch tylko na petli zwrotnej i bez multicastu -
+        // kazdy `cargo test` to nowa binarka `spectre_sync-<hash>.exe`, a nasluch
+        // na 0.0.0.0 wywolywal pytanie Windows Firewall przy kazdym uruchomieniu
+        // (18 IX 2026). Petla zwrotna zapory nie obchodzi.
+        let bind_ip = if cfg!(test) {
+            Ipv4Addr::LOCALHOST
+        } else {
+            Ipv4Addr::UNSPECIFIED
+        };
+        let listener = TcpListener::bind((bind_ip, 0))?;
         let port = listener.local_addr()?.port();
-        let udp = multicast_socket()?;
+        let udp = if cfg!(test) {
+            None
+        } else {
+            Some(multicast_socket()?)
+        };
         let instance = random_u64();
         let (tx, cmds) = mpsc::channel::<Cmd>();
         let (events, rx) = mpsc::channel::<Event>();
@@ -201,7 +214,7 @@ impl Node {
                     }
                 })?;
         }
-        {
+        if let Some(udp) = udp {
             let tx = tx.clone();
             let beacon = Beacon {
                 instance,

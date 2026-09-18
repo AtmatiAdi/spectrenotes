@@ -269,8 +269,12 @@ space'u (tam, gdzie git i tak by go przyniósł). Kto space'u nie ma, tej notatk
 zobaczy. Protokół live v3 (starsze wersje aplikacji nie połączą się).
 Stan w Konto (*Sieć lokalna*) i w HUD-zie (peerzy, opóźnienie mokrej kreski);
 wyłączenie w *Ustawienia → Sieć lokalna*. Zerwane połączenie wykrywane w ~12 s
-(heartbeat). **Windows Firewall zapyta o zgodę przy pierwszym uruchomieniu** — bez
-niej działa tylko między instancjami na tej samej maszynie. Test na jednej maszynie:
+(heartbeat). **Zapora**: `--install` (także instalator) dodaje regułę Windows Firewall dla
+zainstalowanej binarki (`netsh` przez UAC — jedno pytanie o uprawnienia; odmowa nic nie
+psuje, zostaje pytanie zapory przy pierwszym uruchomieniu), `--uninstall` ją zdejmuje.
+Bez reguły live działa tylko między instancjami na tej samej maszynie. Testy
+jednostkowe live słuchają wyłącznie na pętli zwrotnej i bez multicastu — inaczej każdy
+`cargo test` (nowa binarka `spectre_sync-<hash>.exe`) budził pytanie zapory. Test na jednej maszynie:
 druga instancja z innym `COMPUTERNAME` i `APPDATA` oraz własnym katalogiem space'u.
 
 | Sterowanie | Działanie |
