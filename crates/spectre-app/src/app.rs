@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -34,6 +34,7 @@ use crate::picker::{self, Picker};
 use crate::spaces::{self, SpaceInfo};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, RepoRef, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
+use crate::thumbs;
 use crate::update::{State as UpdateState, Updater, WM_UPDATE};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
@@ -82,7 +83,6 @@ const TIMER_UPDATE: usize = 8;
 const UPDATE_FIRST_MS: u32 = 5_000;
 const UPDATE_EVERY_MS: u32 = 10 * 60 * 1000;
 const THUMBS_TICK_MS: u32 = 16;
-const THUMB_BUDGET_MS: f32 = 5.0;
 /// Klatki animacji chowania paska (`ui::HIDE_MS`): chodzi tylko przez te
 /// ~200 ms i gasnie z ostatnia klatka. Podczas rysowania nie renderuje sam -
 /// klatki i tak ida z kazdym zdarzeniem rysika, a dodatkowe tylko by je opoznialy.
@@ -300,6 +300,12 @@ pub struct App {
     /// = notatka sie zmienila i miniatura jest do odswiezenia.
     thumbs: HashMap<String, u64>,
     thumbs_pending: bool,
+    /// Watek miniatur (wlasne D2D) i notatki, na ktore czekamy.
+    thumbs_worker: thumbs::Worker,
+    thumbs_in_flight: HashSet<String>,
+    thumbs_logged: bool,
+    thumbs_batches: u32,
+    thumbs_uploaded: u32,
     /// Kanal wejscia testowego (`test_input`) - tylko gdy proces wystartowal
     /// ze zmienna `SPECTRENOTES_TEST_INPUT`; inaczej `WM_COPYDATA` jest ignorowane.
     test_input: bool,
@@ -388,6 +394,8 @@ pub struct App {
     /// Czas ostatniej klatki (render + present), do HUD-u.
     frame_ms: f32,
     frame_max_ms: f32,
+    /// Pierwsza klatka juz zalogowana (`startup:`).
+    first_frame_logged: bool,
 }
 
 /// `start_hidden`: start do traya (autostart `--tray`) - polozenie odtworzone,
@@ -477,6 +485,11 @@ impl App {
         }
         let friends = spaces::load_friends(space_dir);
         let mut notes = load_all_entries(&spaces);
+        eprintln!(
+            "startup: {} notes listed {:.0} ms",
+            notes.len(),
+            crate::since_start_ms()
+        );
         if notes.is_empty() {
             let id = spaces[0].space.create_note()?;
             notes.push(entry_for(&spaces[0].space, 0, id));
@@ -492,11 +505,17 @@ impl App {
         let cur = &spaces[notes[note_idx].space].space;
         let (store, doc) = open_note(cur, &notes[note_idx].id, &author)?;
         refresh_entry(cur, &mut notes[note_idx], &doc);
+        eprintln!(
+            "startup: note opened ({} strokes) {:.0} ms",
+            doc.live_count(),
+            crate::since_start_ms()
+        );
         let space = &spaces[0].space;
 
         let (w, h) = window::client_size(hwnd);
         let mut renderer = Renderer::new(hwnd, w, h)
             .map_err(|e| std::io::Error::other(format!("renderer: {e}")))?;
+        eprintln!("startup: renderer ready {:.0} ms", crate::since_start_ms());
         let tray = Tray::add(hwnd, "SpectreNotes")
             .map_err(|e| std::io::Error::other(format!("tray: {e}")))?;
         let config = Config::load();
@@ -561,6 +580,7 @@ impl App {
             .unwrap_or(crate::github::CLIENT_SECRET)
             .to_string();
         let sync = SyncWorker::start(hwnd, &author, &data_dir, &client_id, &client_secret);
+        let thumbs_worker = thumbs::Worker::start(hwnd, author.id(), data_dir.join("thumbs"));
         let update_repo = config
             .get("update_repo")
             .filter(|s| !s.is_empty())
@@ -666,6 +686,11 @@ impl App {
             shield_ping: None,
             thumbs: HashMap::new(),
             thumbs_pending: false,
+            thumbs_worker,
+            thumbs_in_flight: HashSet::new(),
+            thumbs_logged: false,
+            thumbs_batches: 0,
+            thumbs_uploaded: 0,
             partner_log: partner_log_path,
             test_input: std::env::var_os("SPECTRENOTES_TEST_INPUT").is_some(),
             started: Instant::now(),
@@ -714,6 +739,7 @@ impl App {
             status: String::new(),
             frame_ms: 0.0,
             frame_max_ms: 0.0,
+            first_frame_logged: false,
         })
     }
 
@@ -3644,18 +3670,17 @@ impl App {
         (w.max(1.0) as u32, (w * menu::CARD_ASPECT).max(1.0) as u32)
     }
 
-    /// Buduje brakujace miniatury widocznych notatek - najwyzej przez
-    /// `THUMB_BUDGET_MS`, reszta w kolejnym tiku. Panel ma sie otworzyc od razu,
-    /// a wczytanie cudzej notatki to odczyt z dysku.
+    /// Zleca watkowi miniatur (`thumbs::Worker`) brakujace miniatury - od
+    /// najnowszej notatki, bo tak sa ulozone kafelki w oknie wyboru i w panelu.
+    /// Tu tylko sprawdzamy, czego brakuje, i wysylamy zlecenia; rysowanie,
+    /// odczyt operacji i cache na dysku sa w watku, wyniki wracaja przez
+    /// `WM_THUMBS` (`on_thumbs`). Klatka okna nie czeka na nic.
     fn ensure_thumbs(&mut self) {
         let (tw, th) = self.thumb_size();
-        let t0 = Instant::now();
-        let mut left = false;
-        // Biezaca notatka idzie z otwartego dokumentu - bez zagladania na dysk.
-        let mut todo: Vec<(String, Option<u64>)> = Vec::new();
         let current = self.notes[self.note_idx].id.clone();
+        let mut todo: Vec<(String, Option<u64>)> = Vec::new();
         todo.push((current.clone(), Some(self.doc.lamport())));
-        for n in &self.notes {
+        for n in self.notes.iter().rev() {
             if n.id != current {
                 todo.push((n.id.clone(), None));
             }
@@ -3665,8 +3690,6 @@ impl App {
                 todo.push((id.clone(), None));
             }
         }
-        let cache_dir = self.data_dir.join("thumbs");
-        let (mut loaded, mut drawn) = (0u32, 0u32);
         for (id, live_lamport) in todo {
             let key = menu::thumb_key(&id);
             let built = self.thumbs.get(&id).copied();
@@ -3679,9 +3702,9 @@ impl App {
             if fresh && self.renderer.has_thumb(key) {
                 continue;
             }
-            if t0.elapsed().as_secs_f32() * 1000.0 > THUMB_BUDGET_MS {
-                left = true;
-                break;
+            // Jedno zlecenie na notatke naraz; nowsza wersja pojdzie, gdy wroci ta.
+            if self.thumbs_in_flight.contains(&id) {
+                continue;
             }
             let Some(slot) = self
                 .notes
@@ -3693,71 +3716,72 @@ impl App {
                 continue;
             };
             let note_dir = self.slot_space(slot).note_dir(&id);
-            let fp = crate::thumbs::fingerprint(&note_dir);
-            // Najpierw cache na dysku: ta sama miniatura, bez czytania operacji
-            // i rysowania (`thumbs.rs`). Biezaca notatka tez - przy starcie jej
-            // dokument jest tym, co na dysku; kazda kolejna zmiana ma juz swoj
-            // lamport i rysuje sie z pamieci.
-            if built.is_none() {
-                if let Some((w, h, px)) = crate::thumbs::load(&cache_dir, &id, fp, tw, th) {
-                    if self.renderer.load_thumb(key, w, h, &px).is_ok() {
-                        self.thumbs.insert(id, live_lamport.unwrap_or(0));
-                        loaded += 1;
-                        continue;
-                    }
-                }
-            }
-            let lamport = match live_lamport {
-                Some(l) => {
-                    let doc = std::mem::replace(&mut self.doc, Document::new(self.author.id()));
-                    let r = self.renderer.build_thumb(key, &doc, &self.ink, tw, th);
-                    self.doc = doc;
-                    if r.is_err() {
-                        continue;
-                    }
-                    l
-                }
-                None => {
-                    let Ok(ops) = spectre_sync::store::read_ops(self.slot_space(slot), &id)
-                    else {
-                        continue;
-                    };
-                    let mut doc = Document::new(self.author.id());
-                    for op in &ops {
-                        doc.apply(op);
-                    }
-                    if self
-                        .renderer
-                        .build_thumb(key, &doc, &self.ink, tw, th)
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    doc.lamport()
-                }
+            let source = match live_lamport {
+                // Otwarta notatka: kreski z pamieci (zapis na dysk moze jeszcze trwac).
+                Some(_) => thumbs::Source::Strokes(
+                    self.doc.visible().map(|(_, d, _)| d.clone()).collect(),
+                ),
+                None => thumbs::Source::Disk(note_dir.clone()),
             };
-            if let Ok((w, h, px)) = self.renderer.thumb_pixels(key) {
-                crate::thumbs::save(&cache_dir, &id, fp, w, h, &px);
-            }
-            drawn += 1;
-            self.thumbs.insert(id, lamport);
+            self.thumbs_worker.send(thumbs::Job {
+                id: id.clone(),
+                note_dir,
+                source,
+                lamport: live_lamport,
+                w: tw,
+                h: th,
+                ink: self.ink,
+            });
+            self.thumbs_in_flight.insert(id);
         }
-        if loaded + drawn > 0 {
+    }
+
+    /// Gotowe miniatury z watku (po `WM_THUMBS`): do bitmap renderera, a jesli
+    /// sa na ekranie - klatka.
+    fn on_thumbs(&mut self) {
+        let ready = self.thumbs_worker.poll();
+        if ready.is_empty() {
+            return;
+        }
+        let (mut loaded, mut drawn) = (0u32, 0u32);
+        for r in ready {
+            self.thumbs_in_flight.remove(&r.id);
+            let key = menu::thumb_key(&r.id);
+            if self.renderer.load_thumb(key, r.w, r.h, &r.bgra).is_ok() {
+                self.thumbs.insert(r.id, r.lamport.unwrap_or(0));
+                if r.cached {
+                    loaded += 1;
+                } else {
+                    drawn += 1;
+                }
+            }
+        }
+        if !self.thumbs_logged && self.thumbs_in_flight.is_empty() {
+            self.thumbs_logged = true;
             eprintln!(
-                "thumbs: {loaded} from cache, {drawn} drawn ({:.1} ms), {:.0} ms after start",
-                t0.elapsed().as_secs_f32() * 1000.0,
-                self.started.elapsed().as_secs_f32() * 1000.0
+                "thumbs: all ready ({} notes, {} uploads in {} batches) {:.0} ms after start",
+                self.thumbs.len(),
+                self.thumbs_uploaded,
+                self.thumbs_batches,
+                crate::since_start_ms()
             );
         }
-        // Bitmapy siedza w pamieci sterownika - usuniete notatki nie moga ich trzymac.
-        if !left {
+        self.thumbs_batches += 1;
+        self.thumbs_uploaded += loaded + drawn;
+        if self.thumbs_in_flight.is_empty() {
+            // Bitmapy siedza w pamieci sterownika, a PNG na dysku - usuniete
+            // notatki nie moga ich trzymac.
             let keys: std::collections::HashSet<u64> =
                 self.thumbs.keys().map(|id| menu::thumb_key(id)).collect();
             self.renderer.retain_thumbs(&|k| keys.contains(&k));
             let ids: std::collections::HashSet<String> = self.thumbs.keys().cloned().collect();
-            crate::thumbs::retain(&cache_dir, &|id| ids.contains(id));
+            thumbs::retain(&self.data_dir.join("thumbs"), &|id| ids.contains(id));
+            // Cos moglo sie zmienic, gdy zlecenia byly w drodze (nowa kreska).
+            self.ensure_thumbs();
         }
-        self.arm_thumbs(left);
+        // Klatka z nowymi kafelkami najwyzej co `THUMBS_TICK_MS`: przy setkach
+        // wynikow na sekunde okno nie ma rysowac po jednym.
+        self.arm_thumbs(true);
     }
 
     fn arm_thumbs(&mut self, want: bool) {
@@ -3774,18 +3798,15 @@ impl App {
         }
     }
 
-    /// Przy otwartym menu miniatury powstaja w klatce (widac, jak sie
-    /// pojawiaja). Przy zamknietym to rozgrzewka w tle - po starcie i po
-    /// zmianie listy notatek - zeby pierwsze otwarcie menu nie mialo czego
-    /// doczytywac. Rysik w zasiegu = nic nie robimy (latencja pierwszej probki
-    /// wazniejsza niz miniatury); tik wraca za 16 ms.
+    /// Tik miniatur: jedna klatka z kafelkami, ktore wlasnie doszly (jesli
+    /// widac), i zlecenie brakujacych. Uzbrajany po starcie, po zmianie listy
+    /// notatek i po kazdej porcji wynikow z watku; rozbraja sie sam.
     fn thumbs_tick(&mut self) {
+        self.arm_thumbs(false);
         if (self.menu.open || self.picker.open) && self.waves.is_none() && !self.hidden {
             self.render();
-        } else if self.mode == Mode::Idle && !(self.hover && self.last_input_pen) {
-            // Mysz nad oknem nie blokuje rozgrzewki - tylko rysik w zasiegu.
-            self.ensure_thumbs();
         }
+        self.ensure_thumbs();
     }
 
     // ----- AMOLED (Z7) -------------------------------------------------------
@@ -4221,6 +4242,10 @@ impl App {
         );
         if let Err(e) = presented {
             eprintln!("present: {e}");
+        }
+        if !self.first_frame_logged {
+            self.first_frame_logged = true;
+            eprintln!("startup: first frame {:.0} ms", crate::since_start_ms());
         }
         self.tail_buf = tail;
         self.ui_prims = prims;
@@ -4800,6 +4825,10 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_SYNC => {
             app.on_sync_events();
+            LRESULT(0)
+        }
+        thumbs::WM_THUMBS => {
+            app.on_thumbs();
             LRESULT(0)
         }
         WM_LIVE => {

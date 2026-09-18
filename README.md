@@ -167,11 +167,15 @@ narysowano, bo większość nie ma nazwy. Miniatura to kadr jak strona: w poziom
 cała kolumna (ta sama skala w każdym kafelku), w pionie od góry treści, żeby
 notatka zaczynająca się nisko nie dawała pustego kafelka. Każda powstaje raz,
 do własnej bitmapy, i potem jest już tylko przepisywana; bieżąca odświeża się,
-gdy notatka się zmieni. Narysowana miniatura trafia też na dysk
+gdy notatka się zmieni. Rysuje je **osobny wątek** (`thumbs::Worker` z własnym
+urządzeniem D3D/D2D — `ThumbRenderer`), od najnowszej notatki, a okno tylko wrzuca
+gotowe piksele do bitmap (ułamek ms) i rysuje klatkę najwyżej co 16 ms; 300 notatek
+na zimno to ~7,5 s pracy wątku, w trakcie których okno odpowiada w < 3 ms.
+Narysowana miniatura trafia też na dysk
 (`%APPDATA%\SpectreNotes\thumbs\<id>-<odcisk>-<w>x<h>.png`; odcisk = nazwy, rozmiary
 i czasy plików z operacjami notatki), więc kolejny start tylko dekoduje PNG
-(6 notatek: 26 ms zamiast ~340 ms rysowania); panel i okno wyboru używają tych samych
-plików. Mysz nad oknem nie wstrzymuje budowania w tle — tylko rysik w zasięgu.
+(300 notatek: 150 ms w wątku, wszystkie kafelki ~170 ms po pierwszej klatce);
+panel i okno wyboru używają tych samych plików.
 Cudze notatki z LAN mają takie same kafelki — miniaturę
 dostają po otwarciu, bo dopiero wtedy mamy ich treść.
 Tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,

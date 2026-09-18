@@ -33,10 +33,21 @@ mod ui;
 mod update;
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use spectre_shell_win::{install, instance, window};
 
+/// Chwila wejscia do `main` - do pomiaru startu (`startup:` w stderr).
+static T0: OnceLock<Instant> = OnceLock::new();
+
+/// Milisekundy od wejscia do `main`.
+pub fn since_start_ms() -> f32 {
+    T0.get().map_or(0.0, |t| t.elapsed().as_secs_f32() * 1000.0)
+}
+
 fn main() -> windows::core::Result<()> {
+    let _ = T0.set(Instant::now());
     if std::env::args().any(|a| a == "--bench" || a == "--fill-white" || a == "--console") {
         window::attach_parent_console();
     }
@@ -98,6 +109,7 @@ fn main() -> windows::core::Result<()> {
 
     let hwnd = window::create_window("SpectreNotes", "SpectreNotes", app::wndproc, 1400, 900)?;
     instance::mark(hwnd, tag);
+    eprintln!("startup: window created {:.0} ms", since_start_ms());
     app::install(hwnd, &space_dir, start_hidden)?;
     window::run_message_loop();
     Ok(())

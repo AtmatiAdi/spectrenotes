@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 
-use spectre_core::camera::COLUMN_W;
 use spectre_core::{Bbox, Camera, Document, StrokeId};
 use spectre_ink::{InkConfig, Segment};
 use spectre_proto::Rgba;
@@ -15,9 +14,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1Brush, ID2D1DeviceContext,
     ID2D1DeviceContext1, ID2D1Factory1, ID2D1GeometryRealization, ID2D1PathGeometry1,
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_BRUSH_PROPERTIES1,
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_NONE,
-    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_MAP_OPTIONS_READ, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
     D2D1_INTERPOLATION_MODE_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
@@ -105,7 +103,7 @@ pub enum UiPrim {
         color: Rgba,
         font: UiFont,
     },
-    /// Miniatura notatki z `Renderer::build_thumb`; nic nie rysuje, gdy jeszcze
+    /// Miniatura notatki (`Renderer::load_thumb`); nic nie rysuje, gdy jeszcze
     /// jej nie zbudowano (lista pokazuje wtedy sam kafelek z tytulem).
     Thumb {
         x: f32,
@@ -330,10 +328,6 @@ struct GeoEntry {
 const GEO_CACHE_BUDGET: usize = 6_000_000;
 /// Zoom w tym zakresie wzgledem zbudowanego nie wymaga przebudowy obrysu.
 const GEO_ZOOM_TOL: f32 = 1.5;
-/// Najcienszа kreska w miniaturze, w jej pikselach.
-const THUMB_MIN_PX: f32 = 1.2;
-/// Zapas nad trescia w kadrze miniatury, w jej pikselach.
-const THUMB_TOP_MARGIN_PX: f32 = 3.0;
 
 impl Renderer {
     pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
@@ -578,154 +572,8 @@ impl Renderer {
         self.avatar = None;
     }
 
-    /// Miniatura notatki do listy w menu: cala notatka narysowana raz do wlasnej
-    /// bitmapy, potem juz tylko przepisywana na ekran (`UiPrim::Thumb`).
-    ///
-    /// Kadr jest **jak strona**: w poziomie zawsze cala kolumna (miniatury roznych
-    /// notatek maja wtedy te sama skale i da sie je porownac), w pionie od gory
-    /// tresci - notatka zaczynajaca sie nisko nie daje pustego kafelka.
-    ///
-    /// Nie idzie przez `draw_document`: tamten cache geometrii jest kluczowany
-    /// samym `StrokeId` (autor + numer), a te same numery wystepuja w kazdej
-    /// notatce - miniatura jednej pokazywalaby kreski drugiej.
-    pub fn build_thumb(
-        &mut self,
-        key: u64,
-        doc: &Document,
-        ink: &InkConfig,
-        w: u32,
-        h: u32,
-    ) -> Result<()> {
-        if w == 0 || h == 0 {
-            return Ok(());
-        }
-        let zoom = w as f32 / COLUMN_W;
-        // Kadr zaczyna sie **nad** trescia: kreska lezaca dokladnie na jej gornej
-        // krawedzi wypadala pol piksela za kadrem i kafelek wygladal na pusty.
-        let margin = THUMB_TOP_MARGIN_PX / zoom;
-        let top = doc
-            .content_bbox()
-            .map_or(0.0, |b| (b.min_y - margin).max(0.0));
-        let cam = Camera {
-            scroll_x: 0.0,
-            scroll_y: top,
-            zoom,
-            shift: (0.0, 0.0),
-        };
-        let region = cam.visible(w as f32, h as f32);
-        unsafe {
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
-                ..Default::default()
-            };
-            let bmp = self.ctx.CreateBitmap(
-                D2D_SIZE_U {
-                    width: w,
-                    height: h,
-                },
-                None,
-                0,
-                &props,
-            )?;
-            self.ctx.SetTarget(&bmp);
-            self.ctx.BeginDraw();
-            self.ctx.Clear(Some(&BG_COLOR));
-            let res = self.draw_thumb_strokes(doc, &cam, ink, region);
-            self.ctx.EndDraw(None, None)?;
-            self.ctx.SetTarget(None);
-            res?;
-            self.thumbs.insert(key, bmp);
-        }
-        Ok(())
-    }
-
-    /// Kreski notatki bez cache'u realizacji - miniatura powstaje raz, wiec nie
-    /// ma czego cache'owac, a wspolny cache kluczowany `StrokeId` mieszalby
-    /// notatki. Geometria jest budowana tak, jakby zoom byl mniejszy: minimalna
-    /// grubosc (`MIN_WIDTH_PX`) rosnie wtedy do `THUMB_MIN_PX` piksela miniatury,
-    /// inaczej kreski zwezone ~20 razy bylyby niewidoczne.
-    unsafe fn draw_thumb_strokes(
-        &mut self,
-        doc: &Document,
-        cam: &Camera,
-        ink: &InkConfig,
-        rect: Bbox,
-    ) -> Result<()> {
-        self.ctx.SetTransform(&Matrix3x2 {
-            M11: cam.zoom,
-            M12: 0.0,
-            M21: 0.0,
-            M22: cam.zoom,
-            M31: -cam.scroll_x * cam.zoom,
-            M32: -cam.scroll_y * cam.zoom,
-        });
-        let geo_zoom = (cam.zoom * geometry::MIN_WIDTH_PX / THUMB_MIN_PX).max(1e-4);
-        let mut segs = std::mem::take(&mut self.seg_scratch);
-        let mut res = Ok(());
-        for (_, data, _) in doc.visible_in(rect) {
-            segs.clear();
-            stroke_segments(data, ink, &mut segs);
-            match geometry::build(&self.factory2d, &segs, geo_zoom) {
-                Ok(geo) => match self.brush(data.color) {
-                    Ok(brush) => self.ctx.FillGeometry(&geo, &brush, None),
-                    Err(e) => {
-                        res = Err(e);
-                        break;
-                    }
-                },
-                Err(e) => {
-                    res = Err(e);
-                    break;
-                }
-            }
-        }
-        self.seg_scratch = segs;
-        self.ctx.SetTransform(&Matrix3x2::identity());
-        res
-    }
-
-    /// Piksele miniatury (BGRA, wiersz po wierszu) - do zapisu w cache'u na
-    /// dysku. Bitmapa docelowa siedzi na GPU, wiec kopia przez bitmape
-    /// `CPU_READ` i `Map`.
-    pub fn thumb_pixels(&self, key: u64) -> Result<(u32, u32, Vec<u8>)> {
-        let Some(src) = self.thumbs.get(&key) else {
-            return Err(windows::core::Error::from_hresult(
-                windows::Win32::Foundation::E_FAIL,
-            ));
-        };
-        unsafe {
-            let size = src.GetPixelSize();
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-                ..Default::default()
-            };
-            let staging = self.ctx.CreateBitmap(size, None, 0, &props)?;
-            staging.CopyFromBitmap(None, src, None)?;
-            let map = staging.Map(D2D1_MAP_OPTIONS_READ)?;
-            let (w, h) = (size.width, size.height);
-            let mut out = Vec::with_capacity((w * h * 4) as usize);
-            for y in 0..h {
-                let row = map.bits.add((y * map.pitch) as usize);
-                out.extend_from_slice(std::slice::from_raw_parts(row, (w * 4) as usize));
-            }
-            staging.Unmap()?;
-            Ok((w, h, out))
-        }
-    }
-
-    /// Miniatura z cache'u na dysku (BGRA) - zamiast rysowania notatki.
+    /// Miniatura narysowana poza watkiem okna (`ThumbRenderer`) albo z cache'u
+    /// na dysku: piksele BGRA do bitmapy, ktora `UiPrim::Thumb` przepisuje na ekran.
     pub fn load_thumb(&mut self, key: u64, w: u32, h: u32, bgra: &[u8]) -> Result<()> {
         if w == 0 || h == 0 || bgra.len() != (w * h * 4) as usize {
             return Err(windows::core::Error::from_hresult(
@@ -1405,7 +1253,7 @@ unsafe fn solid(ctx: &ID2D1DeviceContext, r: f32, g: f32, b: f32, a: f32) -> Res
         .cast()
 }
 
-fn pick_low_power_adapter(factory: &IDXGIFactory6) -> Result<(IDXGIAdapter1, String)> {
+pub(crate) fn pick_low_power_adapter(factory: &IDXGIFactory6) -> Result<(IDXGIAdapter1, String)> {
     unsafe {
         let mut index = 0u32;
         loop {

@@ -481,3 +481,13 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 }
+
+/// Operacje notatki wprost z jej katalogu (`<note>/ops`), bez `Space` - dla
+/// watkow, ktore znaja tylko sciezke (miniatury).
+pub fn read_note_ops(note_dir: &Path) -> io::Result<Vec<Op>> {
+    let ops_dir = note_dir.join("ops");
+    if !ops_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    read_ops_dir(&ops_dir)
+}
