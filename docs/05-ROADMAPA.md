@@ -481,16 +481,24 @@ Pierwsza osoba z zewnątrz (niekola) + własne. Zamknięte w v0.3.1:
       nie wysyłały żadnego — teraz pętla wątku wysyła `Done` po każdym zadaniu.
 - [x] #14/#16 zaproszenie widoczne też na górze zakładki Notatki.
 
+- [x] #4 *Ustawienia → Pen → Ignore pressure below* (off, 2–20 %): kontakt z naciskiem
+      pod progiem = rysik w powietrzu (kreska kończy się, następna próbka nad progiem
+      zaczyna nową), nacisk nad progiem przeskalowany od progu (`pen_min_pressure`).
+- [x] #5 *Pen → Width at lightest touch* (5–50 % grubości pióra, domyślnie 12 %):
+      `InkConfig::min_width_ratio` z configu, zmiana przebudowuje wszystkie kreski
+      (`pen_min_width`). Wykres krzywej nacisku — przy refaktorze narzędzi.
+
 Do omówienia z użytkownikiem (potrzebny rysik / decyzja):
-- [ ] #4 „czułość wykrywania pisania" — co dokładnie (próg nacisku startu kreski? odrzucanie dłoni?).
-- [ ] #5 minimalna grubość przy zerowym nacisku rośnie dziś proporcjonalnie (12 % `base_width`);
-      jeśli ma rosnąć szybciej — jaka krzywa (decyzja o odczuciu pióra).
-- [ ] #6 cienkie kreski grubieją miejscami po puszczeniu — do odtworzenia z rysikiem
-      (podejrzenie: realizacja D2D vs `FillGeometry` przy `THIN_PX`, albo nakładanie
-      wstęgi na ostrych załamaniach); prośba o zrzut z powiększeniem.
-- [ ] #7 4K  %: „100 %" to dziś 1 jednostka = 1 piksel fizyczny, więc kolumna
-      (2880) mieści się w 3840 px — tester widzi mniej niż oczekuje; do ustalenia, czy
-      100 % ma znaczyć „dopasuj szerokość" na każdym ekranie.
+- [ ] #6 cienkie kreski grubieją miejscami po puszczeniu — **nie odtworzone** wejściem
+      testowym (drżenie, błądzenie losowe, zygzaki, nacisk 0,02–0,1, pióro 0,6–3,2,
+      zoom 1: mokra i sucha kreska różnią się ≤ 7 px AA na 500 px). Jedyny znaleziony
+      efekt: realizacja D2D z cache'u rysowana przy zoomie do 1,5× innym jest ~1,6 %
+      jaśniejsza (grubszy obrys AA) — widać dopiero po zoomie, nie po puszczeniu.
+      Prośba o zrzut z powiększeniem (Send feedback) i grubość pióra.
+- [ ] #7 „inny obszar przy 100 %": kamera nie zna DPI — 100 % = 1 jednostka na
+      piksel fizyczny, kolumna 2880 = 2880 px na obu maszynach (obie 2880 px szer.,
+      125 % vs 175 %). Jedyna różnica to chrome skalowany DPI (pasek 60 vs 84 px,
+      zakładki 45 vs 63 px). Do sprawdzenia u testera: zrzut przy 100 % z obu maszyn.
 
 ## Etap 7 — Dystrybucja
 

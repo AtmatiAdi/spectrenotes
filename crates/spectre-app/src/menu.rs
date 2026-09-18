@@ -119,6 +119,10 @@ pub enum Setting {
     PdfPaper,
     /// Krzyzyk kursora takze pod piorem.
     PenCursor,
+    /// Prog nacisku, ponizej ktorego kontakt nie rysuje (issue #4).
+    PenMinPressure,
+    /// Grubosc przy najlzejszym dotknieciu, procent grubosci piora (issue #5).
+    PenMinWidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +224,10 @@ pub struct MenuState<'a> {
     /// Eksport PDF na bialym tle.
     pub pdf_paper: bool,
     pub pen_cursor: bool,
+    /// Prog nacisku w procentach (0 = wylaczony) i grubosc przy najlzejszym
+    /// dotknieciu w procentach grubosci piora.
+    pub pen_min_pressure_pct: u32,
+    pub pen_min_width_pct: u32,
     /// Ostatnia udana wymiana z GitHubem (fetch/push), ostatni zapis na dysk
     /// i ostatnia wymiana operacji z peerem w LAN. Naglowek pokazuje jedna
     /// z nich (najmocniejsza dostepna) z licznikiem tykajacym co sekunde,
@@ -1229,7 +1237,26 @@ impl Menu {
         y += 10.0 * k;
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.
-        let groups: [(&str, Vec<SettingRow>); 7] = [
+        let groups: [(&str, Vec<SettingRow>); 8] = [
+            (
+                "Pen",
+                vec![
+                    (
+                        Setting::PenMinPressure,
+                        "Ignore pressure below",
+                        if s.pen_min_pressure_pct == 0 {
+                            "off".to_string()
+                        } else {
+                            format!("{} %", s.pen_min_pressure_pct)
+                        },
+                    ),
+                    (
+                        Setting::PenMinWidth,
+                        "Width at lightest touch",
+                        format!("{} %", s.pen_min_width_pct),
+                    ),
+                ],
+            ),
             (
                 "Display",
                 vec![

@@ -212,6 +212,12 @@ falach, bo notatka wciąż nie jest wybrana. W Ustawieniach reaguje tylko **wart
 (przycisk), etykieta jest bierna.
 Zaproszenia do space'ów widać też na górze zakładki Notatki (#16); notatki otwarte
 z LAN nie trafiają do „moich" notatek — są tylko w *Shared on LAN* (#11).
+Pióro (*Ustawienia → Pen*): **Ignore pressure below** (off, 2–20 %) — kontakt zgłoszony
+przez sterownik z naciskiem pod progiem traktujemy jak rysik w powietrzu: kreska się
+kończy, a następna próbka nad progiem zaczyna nową; nacisk nad progiem jest
+przeskalowany, więc krzywa grubości zaczyna się od progu (#4). **Width at lightest
+touch** (5–50 % grubości pióra, domyślnie 12 %) — grubość przy zerowym nacisku; to
+parametr rysowania, więc zmiana przebudowuje wszystkie kreski, także stare (#5).
 Kursor: pod piórem schowany (czubek rysika jest wskaźnikiem; *Ustawienia → Display →
 Cursor under the pen* przywraca krzyżyk), pod myszą krzyżyk, w czasie fal AMOLED
 zawsze schowany (#3, #13). **Nigdy nie zakrywa paska

@@ -343,6 +343,9 @@ pub struct App {
     /// Kursor (krzyzyk) takze pod piorem; domyslnie schowany - czubek rysika
     /// sam jest wskaznikiem (issue #3). `pen_cursor=1` w config.
     pen_cursor: bool,
+    /// Nacisk (0..1), ponizej ktorego kontakt piora nie rysuje (issue #4);
+    /// `pen_min_pressure` w config, procent.
+    pen_min_pressure: f32,
     /// Ostatnie wejscie wskaznika to prawdziwe pioro (nie mysz).
     last_input_pen: bool,
     /// Dotkniecie listy menu w toku: co bylo pod piorem, gdzie zaczelo,
@@ -493,8 +496,18 @@ impl App {
             .map_err(|e| std::io::Error::other(format!("renderer: {e}")))?;
         let tray = Tray::add(hwnd, "SpectreNotes")
             .map_err(|e| std::io::Error::other(format!("tray: {e}")))?;
-        let ink = InkConfig::default();
         let config = Config::load();
+        let mut ink = InkConfig::default();
+        // Grubosc przy najlzejszym dotknieciu jako procent grubosci piora (issue #5).
+        if let Some(p) = config.get("pen_min_width").and_then(|s| s.parse::<u32>().ok()) {
+            ink.min_width_ratio = (p.clamp(1, 80) as f32) / 100.0;
+        }
+        let pen_min_pressure = config
+            .get("pen_min_pressure")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0)
+            .min(50) as f32
+            / 100.0;
         let dock = config
             .get("dock")
             .and_then(Dock::parse)
@@ -673,6 +686,7 @@ impl App {
             update_check,
             pdf_paper,
             pen_cursor,
+            pen_min_pressure,
             last_input_pen: false,
             menu_touch: None,
             relaunch: None,
@@ -910,15 +924,29 @@ impl App {
 
     /// Wejscie testowe (`WM_COPYDATA`, tylko z `SPECTRENOTES_TEST_INPUT` w
     /// srodowisku): skrypt testu podaje pioro tekstem, bez ruszania prawdziwej
-    /// myszy i bez zabierania fokusu. Komendy: `down X Y [barrel|eraser]`,
-    /// `move X Y`, `up`, `hover X Y` - wspolrzedne w pikselach okna. Probki ida
-    /// ta sama droga co z `WM_POINTER`, tylko bez dekodera.
+    /// myszy i bez zabierania fokusu. Komendy: `down X Y [barrel|eraser] [pN]`,
+    /// `move X Y [pN]`, `up`, `hover X Y` - wspolrzedne w pikselach okna, `pN`
+    /// = nacisk 0..1 (domyslnie 0,5); `width W` ustawia grubosc piora, `zoom Z` zoom. Probki
+    /// ida ta sama droga co z `WM_POINTER`, tylko bez dekodera.
     fn test_input(&mut self, cmd: &str) {
         let mut it = cmd.split_whitespace();
         let Some(op) = it.next() else {
             return;
         };
         let mut num = || it.next().and_then(|s| s.parse::<f32>().ok());
+        if op == "width" {
+            if let Some(w) = num() {
+                self.set_width(w);
+            }
+            return;
+        }
+        if op == "zoom" {
+            if let Some(z) = num() {
+                self.zoom_center(z / self.cam.zoom);
+                self.render();
+            }
+            return;
+        }
         let pos = match op {
             "up" => self.last_screen,
             _ => match (num(), num()) {
@@ -927,19 +955,26 @@ impl App {
             },
         };
         let mut buttons = self.buttons;
+        let mut pressure = 0.5;
         if op == "down" {
             buttons = PenButtons::default();
-            match it.next() {
-                Some("barrel") => buttons.barrel = true,
-                Some("eraser") => buttons.eraser = true,
-                _ => {}
+        }
+        for tok in it {
+            match tok {
+                "barrel" if op == "down" => buttons.barrel = true,
+                "eraser" if op == "down" => buttons.eraser = true,
+                t => {
+                    if let Some(p) = t.strip_prefix('p').and_then(|s| s.parse::<f32>().ok()) {
+                        pressure = p;
+                    }
+                }
             }
         }
         let batch = PenBatch {
             samples: vec![Sample {
                 x: pos.0,
                 y: pos.1,
-                pressure: 0.5,
+                pressure,
                 tilt_x: 0.0,
                 tilt_y: 0.0,
                 t_us: self.started.elapsed().as_micros() as u64,
@@ -972,9 +1007,32 @@ impl App {
     fn feed(&mut self, batch: &PenBatch) {
         let share = self.live.has_peers();
         let mut shared = Vec::with_capacity(if share { batch.samples.len() } else { 0 });
+        let thr = self.pen_min_pressure;
         for s in &batch.samples {
+            // Prog nacisku (issue #4): kontakt zgloszony przez sterownik z
+            // naciskiem ponizej progu to rysik w powietrzu - kreska sie tu
+            // konczy, a kolejna probka nad progiem zaczyna nastepna. Nacisk
+            // nad progiem jest przeskalowany, zeby krzywa grubosci zaczynala
+            // sie od progu, nie od zera.
+            if s.pressure < thr {
+                if self.stroke.len() > 0 {
+                    self.split_stroke();
+                    shared.clear();
+                }
+                continue;
+            }
             let (x, y) = self.cam.to_canvas(s.x, s.y);
-            let s = Sample { x, y, ..*s };
+            let pressure = if thr > 0.0 {
+                (s.pressure - thr) / (1.0 - thr)
+            } else {
+                s.pressure
+            };
+            let s = Sample {
+                x,
+                y,
+                pressure,
+                ..*s
+            };
             self.stroke.push(s);
             if share {
                 shared.push(s);
@@ -1003,6 +1061,16 @@ impl App {
         self.mode = Mode::Draw;
         self.wet_seq = 0;
         self.feed(batch);
+    }
+
+    /// Kreska konczy sie w trakcie kontaktu (nacisk spadl pod prog): to, co
+    /// jest, idzie do dokumentu, a nastepne probki zaczna nowa kreske
+    /// (peerzy dostana `seq = 0`, czyli nowa mokra).
+    fn split_stroke(&mut self) {
+        self.end_stroke();
+        self.stroke.clear();
+        self.wet_pending.clear();
+        self.wet_seq = 0;
     }
 
     /// Pozycja rysika nad notatka do peerow (obecnosc), z ograniczeniem tempa.
@@ -1605,6 +1673,40 @@ impl App {
                     .set("pen_cursor", if self.pen_cursor { "1" } else { "0" });
                 self.config.save();
                 self.apply_cursor();
+            }
+            Setting::PenMinPressure => {
+                // Cykl progu: off -> 2 % -> 4 % -> 6 % -> 8 % -> 10 % -> 15 % -> 20 % -> off.
+                let pct = (self.pen_min_pressure * 100.0).round() as u32;
+                let next = match pct {
+                    0 => 2,
+                    p if p < 10 => p + 2,
+                    p if p < 15 => 15,
+                    p if p < 20 => 20,
+                    _ => 0,
+                };
+                self.pen_min_pressure = next as f32 / 100.0;
+                self.config.set("pen_min_pressure", format!("{next}"));
+                self.config.save();
+            }
+            Setting::PenMinWidth => {
+                // Cykl: 5 % -> 12 % -> 20 % -> 30 % -> 40 % -> 50 % -> 5 %.
+                let pct = (self.ink.min_width_ratio * 100.0).round() as u32;
+                let next = match pct {
+                    p if p < 12 => 12,
+                    p if p < 20 => 20,
+                    p if p < 30 => 30,
+                    p if p < 40 => 40,
+                    p if p < 50 => 50,
+                    _ => 5,
+                };
+                self.ink.min_width_ratio = next as f32 / 100.0;
+                self.stroke.set_config(self.ink);
+                self.config.set("pen_min_width", format!("{next}"));
+                self.config.save();
+                // Krzywa grubosci to parametr rysowania: wszystkie kreski
+                // (takze stare) trzeba zbudowac od nowa.
+                self.renderer.clear_geometry();
+                self.dirty = Dirty::Full;
             }
             Setting::PdfPaper => {
                 self.pdf_paper = !self.pdf_paper;
@@ -2886,7 +2988,7 @@ impl App {
                         continue;
                     }
                     let w = self.remote_wet.entry(author).or_insert_with(|| RemoteWet {
-                        builder: StrokeBuilder::new(InkConfig::default()),
+                        builder: StrokeBuilder::new(self.ink),
                         color: data.color,
                         pending: Vec::new(),
                     });
@@ -4019,6 +4121,8 @@ impl App {
                 update_check: self.update_check,
                 pdf_paper: self.pdf_paper,
                 pen_cursor: self.pen_cursor,
+                pen_min_pressure_pct: (self.pen_min_pressure * 100.0).round() as u32,
+                pen_min_width_pct: (self.ink.min_width_ratio * 100.0).round() as u32,
                 synced: self.sync.last_remote_ok,
                 saved: self.saved,
                 peer: self.live.last_ops,
