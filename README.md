@@ -259,7 +259,7 @@ rysowania**, jej rysik jako kropka, tytuł natychmiast — niezależnie od GitHu
 Hasło nie idzie siecią (dowód SHA-256 z kluczem pochodnym i nonce'ami), ale treść
 płynie jawnym TCP — poufność daje LAN albo Tailscale. Cudze operacje lądują w plikach
 `via-*.ops` w katalogu autora, więc git dalej nie ma jak się skonfliktować (ADR 0007).
-**Cudza notatka otwarta z LAN leży poza space'ami** — w `%APPDATA%SpectreNotesan`,
+**Cudza notatka otwarta z LAN leży poza space'ami** — w `%APPDATA%\SpectreNotes\lan\`,
 katalogu bez gita: nie idzie do Twojego repo i nie jest „Twoją" notatką (widać ją
 tylko w *Shared on LAN*). **Space'y współdzielone a LAN**: wszystkie notatki space'u
 współdzielonego są w LAN udostępniane automatycznie (bez hasła) z nazwą space'u;
