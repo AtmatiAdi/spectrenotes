@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "inkdemo"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "spectre-ink",
  "spectre-shell-win",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "spectre-app"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "spectre-core",
  "spectre-ink",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "spectre-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "proptest",
  "spectre-proto",
@@ -659,21 +659,21 @@ dependencies = [
 
 [[package]]
 name = "spectre-ink"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "spectre-proto",
 ]
 
 [[package]]
 name = "spectre-proto"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "spectre-render"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "spectre-core",
  "spectre-ink",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "spectre-shell-win"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "spectre-proto",
  "windows",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "spectre-sync"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "git2",
  "sha2",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "spectre-update"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "spectre-shell-win",
  "windows",
@@ -711,7 +711,7 @@ dependencies = [
 
 [[package]]
 name = "spectrenotes-setup"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "spectre-shell-win",
  "spectre-update",
