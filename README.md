@@ -203,8 +203,11 @@ zarejestrowana na koncie AtmatiAdi: Client ID w `github.rs`, sekret **poza repo*
 Panel jest nieprzezroczysty; dotknięcie poza nim zamyka go. **Pióro na liście**: element
 wybiera się przy **puszczeniu** rysika (nie przy kontakcie), a przeciągnięcie w pionie
 przewija listę — bez tego ustawienia przełączały się „same" przy próbie przewinięcia
-(issue #8). Okno startuje z otwartym panelem (Notatki; przy pierwszym uruchomieniu —
-Konto z logowaniem), pasek narzędzi jest domyślnie przypięty (issues #2, #15).
+(issue #8). Okno startuje z **osobnym oknem wyboru notatki** (kafelki jak w panelu, tyle kolumn,
+ile się mieści; dotknięcie kafelka otwiera, poza oknem — zostajesz w bieżącej; przy
+pierwszym uruchomieniu zamiast niego panel Konto z logowaniem), pasek narzędzi jest
+domyślnie przypięty (issues #2, #15). W Ustawieniach reaguje tylko **wartość** po prawej
+(przycisk), etykieta jest bierna.
 Zaproszenia do space'ów widać też na górze zakładki Notatki (#16); notatki otwarte
 z LAN nie trafiają do „moich" notatek — są tylko w *Shared on LAN* (#11).
 Kursor: pod piórem schowany (czubek rysika jest wskaźnikiem; *Ustawienia → Display →
@@ -256,6 +259,14 @@ rysowania**, jej rysik jako kropka, tytuł natychmiast — niezależnie od GitHu
 Hasło nie idzie siecią (dowód SHA-256 z kluczem pochodnym i nonce'ami), ale treść
 płynie jawnym TCP — poufność daje LAN albo Tailscale. Cudze operacje lądują w plikach
 `via-*.ops` w katalogu autora, więc git dalej nie ma jak się skonfliktować (ADR 0007).
+**Cudza notatka otwarta z LAN leży poza space'ami** — w `%APPDATA%SpectreNotesan`,
+katalogu bez gita: nie idzie do Twojego repo i nie jest „Twoją" notatką (widać ją
+tylko w *Shared on LAN*). **Space'y współdzielone a LAN**: wszystkie notatki space'u
+współdzielonego są w LAN udostępniane automatycznie (bez hasła) z nazwą space'u;
+osoba, która ma ten space (przyjęła zaproszenie), widzi je w *Shared on LAN* i sesja
+live otwiera się u niej sama — kreska idzie od razu, a plik ląduje w jej katalogu tego
+space'u (tam, gdzie git i tak by go przyniósł). Kto space'u nie ma, tej notatki nie
+zobaczy. Protokół live v3 (starsze wersje aplikacji nie połączą się).
 Stan w Konto (*Sieć lokalna*) i w HUD-zie (peerzy, opóźnienie mokrej kreski);
 wyłączenie w *Ustawienia → Sieć lokalna*. Zerwane połączenie wykrywane w ~12 s
 (heartbeat). **Windows Firewall zapyta o zgodę przy pierwszym uruchomieniu** — bez

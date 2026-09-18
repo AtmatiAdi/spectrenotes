@@ -20,7 +20,7 @@ use spectre_proto::{AuthorId, StrokeData};
 use crate::live::share::Proof;
 
 /// Wersja protokolu live. Rozne wersje nie rozmawiaja ze soba.
-pub const PROTO_VERSION: u16 = 2;
+pub const PROTO_VERSION: u16 = 3;
 
 /// Typy ramek. Wartosci sa czescia protokolu.
 const T_HELLO: u8 = 10;
@@ -54,6 +54,10 @@ pub struct SharedNote {
     pub note: String,
     pub title: String,
     pub protected: bool,
+    /// Space wspoldzielony, do ktorego notatka nalezy (nazwa katalogu);
+    /// pusty = zwykle udostepnienie z prywatnego space'u. Odbiorca, ktory
+    /// jest w tym space'ie, odklada ja do niego (git tez ja tam przyniesie).
+    pub space: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,6 +151,7 @@ impl Msg {
                     encode_str(&s.note, &mut p);
                     encode_str(&s.title, &mut p);
                     p.push(s.protected as u8);
+                    encode_str(&s.space, &mut p);
                 }
                 T_SHARED
             }
@@ -235,6 +240,7 @@ impl Msg {
                         note: decode_str(&mut r).ok()?,
                         title: decode_str(&mut r).ok()?,
                         protected: r.u8().ok()? != 0,
+                        space: decode_str(&mut r).ok()?,
                     });
                 }
                 Msg::Shared(list)
@@ -337,11 +343,13 @@ mod tests {
                     note: "01J8".into(),
                     title: "Plan".into(),
                     protected: true,
+                    space: String::new(),
                 },
                 SharedNote {
                     note: "01J9".into(),
                     title: String::new(),
                     protected: false,
+                    space: "projekt".into(),
                 },
             ]),
             Msg::Open {

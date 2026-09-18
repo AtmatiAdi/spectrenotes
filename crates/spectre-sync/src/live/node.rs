@@ -108,6 +108,11 @@ pub enum Job {
     Peers(Vec<SocketAddr>),
     /// Jednorazowe polaczenie pod adres (testy).
     Connect(SocketAddr),
+    /// Pelna lista space'ow (nazwa, katalog) - po zalozeniu albo przyjeciu
+    /// zaproszenia; notatki space'ow innych niz pierwszy (domyslny) sa
+    /// udostepniane w LAN automatycznie, bez hasla (peer, ktory jest w tym
+    /// samym space'ie, widzi je w "Shared on LAN").
+    Spaces(Vec<(String, std::path::PathBuf)>),
     Quit,
 }
 
@@ -166,8 +171,11 @@ pub struct Node {
 impl Node {
     /// Nasluch TCP na losowym porcie, multicast na `MCAST_PORT`, watki w tle.
     /// `wake` budzi okno po kazdej porcji zdarzen.
+    /// `spaces` = (nazwa, katalog), pierwszy to domyslny; `lan_root` = katalog
+    /// na cudze notatki otwarte z sieci (poza gitem).
     pub fn start(
-        root: &std::path::Path,
+        spaces: Vec<(String, std::path::PathBuf)>,
+        lan_root: Option<std::path::PathBuf>,
         me: &AuthorName,
         wake: Box<dyn Fn() + Send>,
     ) -> io::Result<Self> {
@@ -179,7 +187,6 @@ impl Node {
         let (events, rx) = mpsc::channel::<Event>();
         let discovering = Arc::new(AtomicBool::new(true));
 
-        let root = root.to_path_buf();
         let me = me.clone();
 
         {
@@ -210,7 +217,7 @@ impl Node {
         {
             let tx = tx.clone();
             thread::Builder::new().name("live".into()).spawn(move || {
-                let replica = match Replica::open(&root, &me) {
+                let replica = match Replica::open(&spaces, lan_root.as_deref(), &me) {
                     Ok(r) => r,
                     Err(e) => {
                         let _ = events.send(Event::Error(format!("live: {e}")));
@@ -523,6 +530,11 @@ impl State {
                     });
                     c.knows.insert(key.clone(), last);
                 }
+                // Pierwsze operacje nowej notatki w space'ie wspoldzielonym:
+                // peerzy z tego space'u maja ja zobaczyc od razu.
+                if prev == 0 && self.auto_shared(&note) {
+                    self.announce_shares();
+                }
                 false
             }
             Job::Wet { note, seq, data } => {
@@ -553,6 +565,8 @@ impl State {
                 for id in ids {
                     self.push_missing(id, &notes);
                 }
+                // Git mogl przyniesc nowe notatki space'ow wspoldzielonych.
+                self.announce_shares();
                 false
             }
             Job::Visible(v) => {
@@ -624,6 +638,13 @@ impl State {
                 self.spawn_connect(addr);
                 false
             }
+            Job::Spaces(list) => {
+                if let Err(e) = self.replica.set_spaces(&list) {
+                    return self.emit(Event::Error(format!("live: spaces: {e}")));
+                }
+                self.announce_shares();
+                false
+            }
             Job::Quit => {
                 for c in self.conns.values() {
                     c.send(&Msg::Bye);
@@ -652,15 +673,48 @@ impl State {
         }
     }
 
+    /// Moje udostepnienia jawne plus wszystkie notatki space'ow
+    /// wspoldzielonych (kazdy poza pierwszym, domyslnym) - te bez hasla,
+    /// z nazwa space'u, zeby peer wiedzial, gdzie je odlozyc.
     fn shared_list(&self) -> Vec<SharedNote> {
-        self.shares
+        let mut out: Vec<SharedNote> = self
+            .shares
             .iter()
             .map(|(note, s)| SharedNote {
                 note: note.clone(),
                 title: s.title.clone(),
                 protected: s.key.is_some(),
+                // Tylko space wspoldzielony; notatka z domyslnego to zwykle
+                // udostepnienie (odbiorca ma wlasny "default" - to nie ten sam).
+                space: self
+                    .replica
+                    .space_of(note)
+                    .filter(|s| self.replica.space_names().first().is_none_or(|d| d != s))
+                    .unwrap_or("")
+                    .to_string(),
             })
-            .collect()
+            .collect();
+        for space in self.replica.space_names().into_iter().skip(1) {
+            for note in self.replica.notes_in(&space) {
+                if self.shares.contains_key(&note) {
+                    continue;
+                }
+                out.push(SharedNote {
+                    title: self.replica.note_title(&note),
+                    note,
+                    protected: false,
+                    space: space.clone(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Czy notatka jest udostepniona automatycznie (space wspoldzielony).
+    fn auto_shared(&self, note: &str) -> bool {
+        self.replica
+            .space_of(note)
+            .is_some_and(|s| self.replica.space_names().first().is_none_or(|d| d != s))
     }
 
     fn announce_shares(&self) {
@@ -869,7 +923,7 @@ impl State {
                     return false;
                 }
                 let ok = match self.shares.get(&note) {
-                    None => false,
+                    None => self.auto_shared(&note),
                     Some(Share { key: None, .. }) => true,
                     Some(Share { key: Some(k), .. }) => {
                         proof == share::proof(k, &note, c.nonce_mine, c.nonce_theirs)
@@ -928,11 +982,21 @@ impl State {
                 if !self.conns.get(&id).is_some_and(|c| c.has_open(&note)) {
                     return false;
                 }
-                let (fresh, new_note) =
-                    match self
-                        .replica
-                        .store_remote(&note, &author_dir, author, &records)
-                    {
+                // Space wg oferty peera - nieznana notatka trafia do niego, gdy
+                // go mamy, inaczej do `lan`.
+                let hint: Option<String> = self.conns.get(&id).and_then(|c| {
+                    c.offers
+                        .iter()
+                        .find(|o| o.note == note)
+                        .map(|o| o.space.clone())
+                });
+                let (fresh, new_note) = match self.replica.store_remote(
+                    &note,
+                    &author_dir,
+                    author,
+                    &records,
+                    hint.as_deref(),
+                ) {
                         Ok(r) => r,
                         Err(e) => return self.emit(Event::Error(format!("live: write: {e}"))),
                     };
@@ -1224,7 +1288,8 @@ mod tests {
         let wakes = Arc::new(AtomicUsize::new(0));
         let w = wakes.clone();
         let n = Node::start(
-            root,
+            vec![("default".to_string(), root.to_path_buf())],
+            None,
             who,
             Box::new(move || {
                 w.fetch_add(1, Ordering::Relaxed);

@@ -18,6 +18,8 @@ use crate::sync::{Account as SyncAccount, Mark, Status as SyncStatus};
 use crate::ui::{Dock, Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
 pub const PANEL_W: f32 = 340.0;
+/// Wpis listy spoza `App::spaces`: cudza notatka otwarta z LAN (osobny katalog).
+pub const LAN_SLOT: usize = usize::MAX;
 /// Szerokosc miniatury w kafelku dla danej skali DPI - aplikacja buduje bitmape
 /// dokladnie tej wielkosci, zeby nie rysowac na zapas ani nie rozciagac.
 pub fn card_thumb_w(scale: f32) -> f32 {
@@ -41,6 +43,8 @@ const SYNC_BTN: f32 = 38.0;
 const TAB_H: f32 = 44.0;
 const ROW_H: f32 = 40.0;
 const HEAD_H: f32 = 34.0;
+/// Szerokosc kolumny wartosci w ustawieniach (przycisk po prawej).
+const SETTING_VALUE_W: f32 = 104.0;
 const PAD: f32 = 14.0;
 const WHEEL_STEP: f32 = 80.0;
 
@@ -246,9 +250,6 @@ pub struct MenuState<'a> {
     pub space_views: &'a [SpaceView],
     pub friends: &'a [String],
     pub invitations: &'a [InvitationView],
-    /// Notatki otwarte z LAN (cudze, replikowane lokalnie): nie sa "moimi"
-    /// notatkami - lista pokazuje je tylko w "Shared on LAN" (issue #11).
-    pub lan_notes: &'a [String],
 }
 
 /// Space w zakladce Konto.
@@ -891,8 +892,10 @@ impl Menu {
         let k = self.scale;
         // Foldery: jawne + wynikajace z notatek, alfabetycznie.
         let mut folders: Vec<String> = s.folders.to_vec();
-        let mine = |i: &usize| !s.lan_notes.contains(&s.notes[*i].id);
-        for n in s.notes.iter().filter(|n| !s.lan_notes.contains(&n.id)) {
+        // Cudze notatki z LAN (`LAN_SLOT`) nie sa "moimi" - lista pokazuje je
+        // tylko w "Shared on LAN" (issue #11).
+        let mine = |i: &usize| s.notes[*i].space != LAN_SLOT;
+        for n in s.notes.iter().filter(|n| n.space != LAN_SLOT) {
             if !n.folder.is_empty() && !folders.contains(&n.folder) {
                 folders.push(n.folder.clone());
             }
@@ -1092,6 +1095,70 @@ impl Menu {
         ROW_H * k
     }
 
+    /// Wiersz ustawienia: etykieta po lewej (bez reakcji), wartosc po prawej
+    /// jako przycisk z obrysem - tylko ona przelacza (issue #8: uzytkownik
+    /// chce trafiac w wartosc, nie w caly wiersz).
+    fn setting_row(
+        &mut self,
+        list: Rect,
+        y: f32,
+        key: Setting,
+        label: &str,
+        value: &str,
+        out: &mut Vec<UiPrim>,
+    ) -> f32 {
+        let k = self.scale;
+        let h = ROW_H * k;
+        let value_w = SETTING_VALUE_W * k;
+        let v = Rect {
+            x: list.x + list.w - (PAD * k) - value_w,
+            y: y + 4.0 * k,
+            w: value_w,
+            h: h - 8.0 * k,
+        };
+        out.push(UiPrim::Text {
+            x: list.x + (PAD * k) + 8.0 * k,
+            y,
+            w: list.w - PAD * 2.0 * k - value_w - 16.0 * k,
+            h,
+            text: label.to_string(),
+            color: FG,
+            font: UiFont::Ui,
+        });
+        let hit = MenuHit::Setting(key);
+        let hot = self.hot == Some(hit);
+        if hot {
+            out.push(UiPrim::Rect {
+                x: v.x,
+                y: v.y,
+                w: v.w,
+                h: v.h,
+                color: HOT,
+                r: 6.0 * k,
+            });
+        }
+        out.push(UiPrim::Outline {
+            x: v.x,
+            y: v.y,
+            w: v.w,
+            h: v.h,
+            color: if hot { FG_DIM } else { LINE },
+            width: 1.0,
+            r: 6.0 * k,
+        });
+        out.push(UiPrim::Text {
+            x: v.x,
+            y: v.y,
+            w: v.w,
+            h: v.h,
+            text: value.to_string(),
+            color: ACCENT,
+            font: UiFont::Center,
+        });
+        self.rows.push((hit, v));
+        h
+    }
+
     fn build_settings(&mut self, s: &MenuState, list: Rect, out: &mut Vec<UiPrim>) -> f32 {
         let k = self.scale;
         let mut y = list.y - self.scroll + 6.0 * k;
@@ -1151,34 +1218,14 @@ impl Menu {
                 out,
             );
         }
-        {
-            let r = Rect {
-                x: list.x,
-                y,
-                w: list.w,
-                h: (ROW_H * k),
-            };
-            self.row(MenuHit::Setting(Setting::UpdateCheck), r, out, false);
-            out.push(UiPrim::Text {
-                x: r.x + (PAD * k) + 8.0 * k,
-                y: r.y,
-                w: r.w - PAD * 2.0 * k - 90.0 * k,
-                h: r.h,
-                text: "Check automatically".to_string(),
-                color: FG,
-                font: UiFont::Ui,
-            });
-            out.push(UiPrim::Text {
-                x: r.x + r.w - (PAD * k) - 90.0 * k,
-                y: r.y,
-                w: 82.0 * k,
-                h: r.h,
-                text: on_off(s.update_check).to_string(),
-                color: ACCENT,
-                font: UiFont::Ui,
-            });
-            y += ROW_H * k;
-        }
+        y += self.setting_row(
+            list,
+            y,
+            Setting::UpdateCheck,
+            "Check automatically",
+            on_off(s.update_check),
+            out,
+        );
         y += 10.0 * k;
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.
@@ -1289,32 +1336,7 @@ impl Menu {
             }
             y += self.section(list, y, title, out);
             for (key, label, value) in items {
-                let r = Rect {
-                    x: list.x,
-                    y,
-                    w: list.w,
-                    h: (ROW_H * k),
-                };
-                self.row(MenuHit::Setting(key), r, out, false);
-                out.push(UiPrim::Text {
-                    x: r.x + (PAD * k) + 8.0 * k,
-                    y: r.y,
-                    w: r.w - PAD * 2.0 * k - 90.0 * k,
-                    h: r.h,
-                    text: label.to_string(),
-                    color: FG,
-                    font: UiFont::Ui,
-                });
-                out.push(UiPrim::Text {
-                    x: r.x + r.w - (PAD * k) - 90.0 * k,
-                    y: r.y,
-                    w: 82.0 * k,
-                    h: r.h,
-                    text: value,
-                    color: ACCENT,
-                    font: UiFont::Ui,
-                });
-                y += ROW_H * k;
+                y += self.setting_row(list, y, key, label, &value, out);
             }
         }
 

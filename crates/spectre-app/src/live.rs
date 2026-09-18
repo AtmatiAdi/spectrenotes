@@ -3,7 +3,7 @@
 //! komunikat `WM_LIVE`, ktorym watek live budzi okno. Cala logika sieciowa
 //! i dyskowa jest w `spectre-sync`; tutaj tylko stan do HUD-u i menu.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use spectre_sync::live::{Event, Job, Node};
@@ -30,6 +30,8 @@ pub struct Offer {
     pub note: String,
     pub title: String,
     pub protected: bool,
+    /// Space wspoldzielony, z ktorego notatka pochodzi (pusty = zwykle udostepnienie).
+    pub space: String,
 }
 
 pub struct LiveWorker {
@@ -52,9 +54,22 @@ pub struct LiveWorker {
 }
 
 impl LiveWorker {
-    pub fn start(hwnd: HWND, root: &Path, author: &AuthorName, enabled: bool) -> Self {
+    /// `spaces` = (nazwa, katalog), domyslny pierwszy; `lan_root` = katalog na
+    /// cudze notatki z sieci (poza gitem).
+    pub fn start(
+        hwnd: HWND,
+        spaces: Vec<(String, PathBuf)>,
+        lan_root: PathBuf,
+        author: &AuthorName,
+        enabled: bool,
+    ) -> Self {
         let hwnd_raw = hwnd.0 as isize;
-        let node = match Node::start(root, author, Box::new(move || wake(hwnd_raw))) {
+        let node = match Node::start(
+            spaces,
+            Some(lan_root),
+            author,
+            Box::new(move || wake(hwnd_raw)),
+        ) {
             Ok(n) => Some(n),
             Err(e) => {
                 eprintln!("live: {e}");
@@ -142,6 +157,7 @@ impl LiveWorker {
                             note: n.note.clone(),
                             title: n.title.clone(),
                             protected: n.protected,
+                            space: n.space.clone(),
                         });
                     }
                 }

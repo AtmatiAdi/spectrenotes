@@ -25,6 +25,7 @@ mod lan;
 mod live;
 mod menu;
 mod pdf;
+mod picker;
 mod spaces;
 mod sync;
 mod ui;

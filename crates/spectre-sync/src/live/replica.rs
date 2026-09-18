@@ -29,39 +29,167 @@ use crate::store::{read_author_ops, read_sorted_dirs, Space, CHUNK_CAP_BYTES};
 /// Klucz stanu: (notatka, katalog autora).
 pub type Key = (String, String);
 
-pub struct Replica {
+/// Jeden katalog notatek widziany przez live: space z rejestru (domyslny
+/// albo wspoldzielony, synchronizowany gitem) lub `lan` - lokalny skladzik
+/// cudzych notatek otwartych z sieci, ktory do gita nie idzie.
+struct Slot {
+    name: String,
     space: Space,
+}
+
+pub struct Replica {
+    slots: Vec<Slot>,
+    /// Indeks slotu `lan`; `None` = cudze notatki laduja w pierwszym slocie
+    /// (tak dzialaly testy i wersje przed space'ami).
+    lan: Option<usize>,
+    /// Ktory slot trzyma notatke (ULID jest unikalny globalnie).
+    where_is: BTreeMap<String, usize>,
     me: AuthorName,
     /// Ostatni lamport kazdego autora w kazdej notatce, wg plikow na dysku.
     known: BTreeMap<Key, (AuthorId, u64)>,
 }
 
 impl Replica {
-    /// Otwiera space i skanuje wszystkie notatki (raz, na starcie watku live).
-    pub fn open(root: &Path, me: &AuthorName) -> io::Result<Self> {
+    /// Otwiera space'y (nazwa, katalog) i skanuje wszystkie notatki (raz,
+    /// na starcie watku live). `lan_root` = katalog na cudze notatki z sieci.
+    pub fn open(
+        spaces: &[(String, PathBuf)],
+        lan_root: Option<&Path>,
+        me: &AuthorName,
+    ) -> io::Result<Self> {
         let mut r = Self {
-            space: Space::open_or_create(root)?,
+            slots: Vec::new(),
+            lan: None,
+            where_is: BTreeMap::new(),
             me: me.clone(),
             known: BTreeMap::new(),
         };
-        r.rescan_all()?;
+        r.set_spaces(spaces)?;
+        if let Some(root) = lan_root {
+            r.slots.push(Slot {
+                name: "lan".to_string(),
+                space: Space::open_or_create(root)?,
+            });
+            r.lan = Some(r.slots.len() - 1);
+            r.rescan_slot(r.slots.len() - 1)?;
+        }
         Ok(r)
+    }
+
+    /// Nowa lista space'ow (po zalozeniu albo przyjeciu zaproszenia):
+    /// nieznane katalogi sa otwierane i skanowane, znane zostaja.
+    pub fn set_spaces(&mut self, spaces: &[(String, PathBuf)]) -> io::Result<()> {
+        for (name, root) in spaces {
+            if self.slots.iter().any(|s| s.space.root() == root) {
+                continue;
+            }
+            let slot = Slot {
+                name: name.clone(),
+                space: Space::open_or_create(root)?,
+            };
+            // Slot `lan` zostaje ostatni.
+            let idx = match self.lan {
+                Some(l) => {
+                    self.slots.insert(l, slot);
+                    self.lan = Some(l + 1);
+                    for v in self.where_is.values_mut() {
+                        if *v >= l {
+                            *v += 1;
+                        }
+                    }
+                    l
+                }
+                None => {
+                    self.slots.push(slot);
+                    self.slots.len() - 1
+                }
+            };
+            self.rescan_slot(idx)?;
+        }
+        Ok(())
     }
 
     pub fn me(&self) -> &AuthorName {
         &self.me
     }
 
-    pub fn space_name(&self) -> String {
-        self.space
-            .root()
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
+    fn is_lan(&self, idx: usize) -> bool {
+        Some(idx) == self.lan
+    }
+
+    /// Nazwa space'u, w ktorym lezy notatka (`None` = nieznana albo `lan`).
+    pub fn space_of(&self, note: &str) -> Option<&str> {
+        let idx = *self.where_is.get(note)?;
+        if self.is_lan(idx) {
+            return None;
+        }
+        Some(&self.slots[idx].name)
+    }
+
+    /// Notatki space'u (do automatycznego udostepniania space'ow wspoldzielonych).
+    pub fn notes_in(&self, space: &str) -> Vec<String> {
+        self.where_is
+            .iter()
+            .filter(|(_, &i)| !self.is_lan(i) && self.slots[i].name == space)
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// Tytul notatki z pamieci podrecznej meta (pusty = bez tytulu).
+    pub fn note_title(&self, note: &str) -> String {
+        self.space_for(note).note_meta(note).title
+    }
+
+    /// Nazwy space'ow (bez `lan`), w kolejnosci slotow.
+    pub fn space_names(&self) -> Vec<String> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.is_lan(*i))
+            .map(|(_, s)| s.name.clone())
+            .collect()
+    }
+
+    fn space_for(&self, note: &str) -> &Space {
+        let idx = self
+            .where_is
+            .get(note)
+            .copied()
+            .or(self.lan)
+            .unwrap_or(0);
+        &self.slots[idx].space
+    }
+
+    /// Gdzie odlozyc nieznana notatke: do space'u z podpowiedzi peera (gdy
+    /// go mamy - jestesmy w tym space'ie), inaczej do `lan`.
+    fn place(&mut self, note: &str, hint: Option<&str>) -> usize {
+        if let Some(&i) = self.where_is.get(note) {
+            return i;
+        }
+        let idx = hint
+            .filter(|h| !h.is_empty())
+            .and_then(|h| {
+                self.slots
+                    .iter()
+                    .enumerate()
+                    .position(|(i, s)| !self.is_lan(i) && s.name == h)
+            })
+            .or(self.lan)
+            .unwrap_or(0);
+        self.where_is.insert(note.to_string(), idx);
+        idx
     }
 
     pub fn rescan_all(&mut self) -> io::Result<()> {
-        for note in self.space.list_notes()? {
+        for i in 0..self.slots.len() {
+            self.rescan_slot(i)?;
+        }
+        Ok(())
+    }
+
+    fn rescan_slot(&mut self, idx: usize) -> io::Result<()> {
+        for note in self.slots[idx].space.list_notes()? {
+            self.where_is.insert(note.clone(), idx);
             self.rescan_note(&note)?;
         }
         Ok(())
@@ -69,7 +197,17 @@ impl Replica {
 
     /// Po merge gita: pliki tej notatki mogly urosnac (albo pojawic sie).
     pub fn rescan_note(&mut self, note: &str) -> io::Result<()> {
-        let ops_dir = self.space.note_dir(note).join("ops");
+        if !self.where_is.contains_key(note) {
+            // Notatka przyszla gitem do ktoregos space'u - znajdz go.
+            if let Some(i) = self
+                .slots
+                .iter()
+                .position(|s| s.space.note_dir(note).is_dir())
+            {
+                self.where_is.insert(note.to_string(), i);
+            }
+        }
+        let ops_dir = self.space_for(note).note_dir(note).join("ops");
         if !ops_dir.is_dir() {
             return Ok(());
         }
@@ -121,6 +259,16 @@ impl Replica {
 
     /// Operacje lokalne, ktore aplikacja juz zapisala w swoim pliku.
     pub fn note_local(&mut self, note: &str, ops: &[Op]) {
+        if !self.where_is.contains_key(note) {
+            // Nowa notatka zalozona przez aplikacje - jej katalog juz jest.
+            if let Some(i) = self
+                .slots
+                .iter()
+                .position(|s| s.space.note_dir(note).is_dir())
+            {
+                self.where_is.insert(note.to_string(), i);
+            }
+        }
         let Some(last) = ops.iter().map(|o| o.lamport).max() else {
             return;
         };
@@ -159,20 +307,23 @@ impl Replica {
 
     /// Rekordy `.ops` autora w notatce o lamporcie > `after`, z dysku.
     pub fn records_after(&self, note: &str, author_dir: &str, after: u64) -> io::Result<Vec<u8>> {
-        let dir = self.space.note_dir(note).join("ops").join(author_dir);
+        let dir = self.space_for(note).note_dir(note).join("ops").join(author_dir);
         let ops = read_author_ops(&dir)?;
         Ok(encode_records(ops.iter().filter(|o| o.lamport > after)))
     }
 
     /// Operacje od peera: dopisanie do naszego pliku `via-*` i lista tych,
     /// ktore byly nowe (do zastosowania w dokumencie). `new_note` = notatki
-    /// nie bylo na dysku.
+    /// nie bylo na dysku. `space_hint` = space, do ktorego
+    /// notatka nalezy wg peera (nieznana notatka trafia tam, gdy go mamy;
+    /// inaczej do `lan`).
     pub fn store_remote(
         &mut self,
         note: &str,
         author_dir: &str,
         author: AuthorId,
         records: &[u8],
+        space_hint: Option<&str>,
     ) -> io::Result<(Vec<Op>, bool)> {
         if !valid_dir_name(author_dir) {
             return Err(io::Error::new(
@@ -184,8 +335,9 @@ impl Replica {
             // Wlasne operacje wracaja przez trzeciego peera - nasz plik jest zrodlem.
             return Ok((Vec::new(), false));
         }
-        let new_note = !self.space.note_dir(note).is_dir();
-        self.space.ensure_note(note)?;
+        let slot = self.place(note, space_hint);
+        let new_note = !self.slots[slot].space.note_dir(note).is_dir();
+        self.slots[slot].space.ensure_note(note)?;
         let key = (note.to_string(), author_dir.to_string());
         let last = self.known.get(&key).map(|(_, l)| *l).unwrap_or(0);
 
@@ -202,7 +354,7 @@ impl Replica {
             return Ok((Vec::new(), new_note));
         }
 
-        let dir = self.space.note_dir(note).join("ops").join(author_dir);
+        let dir = self.space_for(note).note_dir(note).join("ops").join(author_dir);
         std::fs::create_dir_all(&dir)?;
         let path = self.via_path(&dir)?;
         {
@@ -332,8 +484,8 @@ mod tests {
             s.sync().unwrap();
         }
 
-        let mut a = Replica::open(&ra, &adi).unwrap();
-        let mut b = Replica::open(&rb, &kuba).unwrap();
+        let mut a = Replica::open(&[("default".to_string(), ra.clone())], None, &adi).unwrap();
+        let mut b = Replica::open(&[("default".to_string(), rb.clone())], None, &kuba).unwrap();
         assert_eq!(a.summary().len(), 1);
         assert_eq!(a.summary()[0].last, 2);
         assert!(b.summary().is_empty());
@@ -355,7 +507,7 @@ mod tests {
         else {
             panic!()
         };
-        let (fresh, new_note) = b.store_remote(n, author_dir, *author, records).unwrap();
+        let (fresh, new_note) = b.store_remote(n, author_dir, *author, records, None).unwrap();
         assert!(new_note);
         assert_eq!(fresh.len(), 2);
         assert_eq!(b.last(&note, &adi.dir_name()), 2);
@@ -369,7 +521,7 @@ mod tests {
 
         // Powtorka tych samych rekordow = nic nowego, plik nie rosnie.
         let len = via.metadata().unwrap().len();
-        let (again, _) = b.store_remote(n, author_dir, *author, records).unwrap();
+        let (again, _) = b.store_remote(n, author_dir, *author, records, None).unwrap();
         assert!(again.is_empty());
         assert_eq!(via.metadata().unwrap().len(), len);
 
@@ -402,7 +554,7 @@ mod tests {
 
         // Wlasne operacje wracajace okrezna droga sa ignorowane.
         let (own, _) = a
-            .store_remote(&note, &adi.dir_name(), adi.id(), records)
+            .store_remote(&note, &adi.dir_name(), adi.id(), records, None)
             .unwrap();
         assert!(own.is_empty());
 

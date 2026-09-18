@@ -30,6 +30,7 @@ use crate::feedback::{self, Feedback, Hit as FeedbackHit};
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::pdf;
+use crate::picker::{self, Picker};
 use crate::spaces::{self, SpaceInfo};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, RepoRef, SyncWorker, WM_SYNC};
 use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
@@ -145,14 +146,26 @@ enum Mode {
 /// Dotkniecie listy menu w toku (`Mode::Menu`).
 #[derive(Debug, Clone, Copy)]
 struct MenuTouch {
-    hit: MenuHit,
+    target: TouchTarget,
     start_y: f32,
     last_y: f32,
     moved: bool,
 }
 
+/// Co bylo pod piorem przy dotknieciu listy: element panelu albo kafelek
+/// okna wyboru notatki (oba przewijaja sie przeciagnieciem).
+#[derive(Debug, Clone, Copy)]
+enum TouchTarget {
+    Menu(MenuHit),
+    Picker(picker::Hit),
+}
+
 /// Od ilu px ruchu w pionie dotkniecie listy staje sie przewijaniem.
 const MENU_DRAG_PX: f32 = 6.0;
+
+/// Indeks "space'u" cudzych notatek z LAN we wpisach listy (`NoteEntry::space`):
+/// nie jest slotem w `App::spaces`, tylko osobnym katalogiem `App::lan_space`.
+pub use crate::menu::LAN_SLOT;
 
 /// Co trzeba zrobic z warstwa sucha przed nastepna klatka.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -200,6 +213,9 @@ pub struct App {
     hwnd: HWND,
     /// Space'y: `[0]` domyslny (prywatny), dalej wspoldzielone z rejestru.
     spaces: Vec<SpaceSlot>,
+    /// Cudze notatki otwarte z LAN (`<dane>an`): poza rejestrem space'ow
+    /// i poza gitem; wpisy na liscie maja `space == LAN_SLOT` (issue #11).
+    lan_space: Space,
     /// `%APPDATA%\SpectreNotes`: config, token, rejestr space'ow.
     data_dir: PathBuf,
     /// Znajomi (loginy GitHub) z `friends.txt` space'u domyslnego.
@@ -306,6 +322,8 @@ pub struct App {
     code_copied: bool,
     /// Okno "Send feedback" (nad wszystkim, modalne).
     feedback: Feedback,
+    /// Okno wyboru notatki na start (issues #2, #15).
+    picker: Picker,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -405,14 +423,15 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
             app.arm_partner_timer();
             // Okno otwiera sie z lista notatek (dotkniecie canvasu ja chowa);
             // przy pierwszym uruchomieniu - z logowaniem (issues #2, #15).
-            let first_run = placement.is_none();
-            app.menu.set_tab(if first_run {
-                menu::Tab::Account
-            } else {
-                menu::Tab::Notes
-            });
-            if !app.menu.open {
-                app.toggle_menu();
+            // Okno wyboru notatki (osobne od menu); przy pierwszym uruchomieniu
+            // zamiast niego panel z logowaniem (issues #2, #15).
+            if placement.is_none() {
+                app.menu.set_tab(menu::Tab::Account);
+                if !app.menu.open {
+                    app.toggle_menu();
+                }
+            } else if app.notes.iter().filter(|n| n.space != LAN_SLOT).count() > 1 {
+                app.picker.show();
             }
         }
         for slot in 0..app.spaces.len() {
@@ -454,8 +473,14 @@ impl App {
             let id = spaces[0].space.create_note()?;
             notes.push(entry_for(&spaces[0].space, 0, id));
         }
+        let lan_space = Space::open_or_create(&data_dir.join("lan"))?;
+        notes.extend(load_entries(&lan_space, LAN_SLOT).unwrap_or_default());
         let folders = all_folders(&spaces);
-        let note_idx = notes.len() - 1;
+        // Ostatnia wlasna notatka (nie cudza z LAN).
+        let note_idx = notes
+            .iter()
+            .rposition(|e| e.space != LAN_SLOT)
+            .unwrap_or(0);
         let cur = &spaces[notes[note_idx].space].space;
         let (store, doc) = open_note(cur, &notes[note_idx].id, &author)?;
         refresh_entry(cur, &mut notes[note_idx], &doc);
@@ -534,7 +559,17 @@ impl App {
         }
         let partner_log_path = data_dir.join("partner.log");
         let live_enabled = config.get("live") != Some("0");
-        let mut live = LiveWorker::start(hwnd, space.root(), &author, live_enabled);
+        let live_spaces: Vec<(String, PathBuf)> = spaces
+            .iter()
+            .map(|s| (s.info.name.clone(), s.info.root.clone()))
+            .collect();
+        let mut live = LiveWorker::start(
+            hwnd,
+            live_spaces,
+            data_dir.join("lan"),
+            &author,
+            live_enabled,
+        );
         let space_name = space
             .root()
             .file_name()
@@ -566,6 +601,7 @@ impl App {
         Ok(Self {
             hwnd,
             spaces,
+            lan_space,
             data_dir,
             friends,
             invitations: Vec::new(),
@@ -624,6 +660,7 @@ impl App {
             topmost_ticks: 0,
             code_copied: false,
             feedback: Feedback::new(&update_repo),
+            picker: Picker::new(),
             toolbar,
             menu,
             config,
@@ -741,6 +778,24 @@ impl App {
             self.render();
             return;
         }
+        // Okno wyboru notatki: kafelek wybiera sie przy puszczeniu (jak lista
+        // menu - przeciagniecie przewija), dotkniecie poza oknem zamyka je.
+        if self.picker.open {
+            match self.picker.hit(x, y) {
+                Some(h) => {
+                    self.mode = Mode::Menu;
+                    self.menu_touch = Some(MenuTouch {
+                        target: TouchTarget::Picker(h),
+                        start_y: y,
+                        last_y: y,
+                        moved: false,
+                    });
+                }
+                None => self.picker.close(),
+            }
+            self.render();
+            return;
+        }
         if let Some(t) = self.toolbar.title_hit(x, y) {
             self.title_tap(t);
         } else if let Some(h) = self.menu.hit(x, y) {
@@ -748,7 +803,7 @@ impl App {
                 // Lista: decyzja przy puszczeniu (dotkniecie) albo w ruchu (przewijanie).
                 self.mode = Mode::Menu;
                 self.menu_touch = Some(MenuTouch {
-                    hit: h,
+                    target: TouchTarget::Menu(h),
                     start_y: y,
                     last_y: y,
                     moved: false,
@@ -788,6 +843,8 @@ impl App {
         let eraser_cursor = b.eraser || self.eraser_tool;
         let ui_changed = if self.feedback.open {
             self.feedback.hover(pos.0, pos.1)
+        } else if self.picker.open {
+            self.picker.hover(pos.0, pos.1)
         } else if self.menu.contains(pos.0, pos.1) {
             self.menu.hover(pos.0, pos.1)
         } else {
@@ -1322,15 +1379,29 @@ impl App {
         t.moved = true;
         let dy = t.last_y - y;
         t.last_y = y;
-        self.menu.scroll_by(dy);
+        match t.target {
+            TouchTarget::Menu(_) => self.menu.scroll_by(dy),
+            TouchTarget::Picker(_) => self.picker.scroll_by(dy),
+        };
     }
 
     /// Puszczenie piora na liscie: bez ruchu = dotkniecie elementu.
     fn menu_release(&mut self) {
         if let Some(t) = self.menu_touch.take() {
             if !t.moved {
-                self.menu_activate(t.hit);
+                match t.target {
+                    TouchTarget::Menu(h) => self.menu_activate(h),
+                    TouchTarget::Picker(h) => self.picker_activate(h),
+                }
             }
+        }
+    }
+
+    /// Kafelek w oknie wyboru: otwarcie notatki i zamkniecie okna.
+    fn picker_activate(&mut self, h: picker::Hit) {
+        if let picker::Hit::Note(i) = h {
+            self.switch_note(i);
+            self.picker.close();
         }
     }
 
@@ -1643,6 +1714,7 @@ impl App {
             self.toolbar.thickness(),
         );
         self.feedback.layout(w as f32, h as f32, ui_scale);
+        self.picker.layout(w as f32, h as f32, ui_scale);
     }
 
     fn commit_folder_edit(&mut self) {
@@ -1709,23 +1781,41 @@ impl App {
     /// Po zmianie `Meta`: wpis na liscie i cache na dysku maja odzwierciedlac dokument.
     fn sync_entry(&mut self) {
         let slot = self.notes[self.note_idx].space;
-        refresh_entry(
-            &self.spaces[slot].space,
-            &mut self.notes[self.note_idx],
-            &self.doc,
-        );
+        let space = if slot == LAN_SLOT {
+            &self.lan_space
+        } else {
+            &self.spaces[slot].space
+        };
+        refresh_entry(space, &mut self.notes[self.note_idx], &self.doc);
     }
 
     // ----- space'y -----------------------------------------------------------
 
+    /// Katalog notatek slotu: space z listy albo `lan` dla `LAN_SLOT`.
+    fn slot_space(&self, slot: usize) -> &Space {
+        if slot == LAN_SLOT {
+            &self.lan_space
+        } else {
+            &self.spaces[slot].space
+        }
+    }
+
     /// Space biezacej notatki.
     fn cur_space(&self) -> &Space {
-        &self.spaces[self.notes[self.note_idx].space].space
+        self.slot_space(self.notes[self.note_idx].space)
     }
 
     /// Space notatki z listy.
     fn note_space(&self, idx: usize) -> &Space {
-        &self.spaces[self.notes[idx].space].space
+        self.slot_space(self.notes[idx].space)
+    }
+
+    /// Lista (nazwa, katalog) dla warstwy live - po kazdej zmianie space'ow.
+    fn live_spaces(&self) -> Vec<(String, PathBuf)> {
+        self.spaces
+            .iter()
+            .map(|s| (s.info.name.clone(), s.info.root.clone()))
+            .collect()
     }
 
     /// Repozytorium space'u dla watku sync.
@@ -1743,7 +1833,8 @@ impl App {
     /// notatka zostaje biezaca (po id), a gdy znikla - pierwsza z listy.
     fn reload_entries(&mut self) {
         let current = self.notes[self.note_idx].id.clone();
-        let notes = load_all_entries(&self.spaces);
+        let mut notes = load_all_entries(&self.spaces);
+        notes.extend(load_entries(&self.lan_space, LAN_SLOT).unwrap_or_default());
         if !notes.is_empty() {
             self.notes = notes;
         }
@@ -1803,6 +1894,7 @@ impl App {
                 self.sync.last = format!("space \"{}\" created", self.spaces[slot].info.name);
                 self.folders = all_folders(&self.spaces);
                 self.git_sync_space(slot, true);
+                self.live.send(LiveJob::Spaces(self.live_spaces()));
             }
             Err(e) => self.sync.last = format!("space: {e}"),
         }
@@ -1836,6 +1928,7 @@ impl App {
             self.sync.spaces.remove(slot);
         }
         self.collaborators.remove(&slot);
+        self.live.send(LiveJob::Spaces(self.live_spaces()));
         // Indeksy wyzszych space'ow przesuwaja sie o jeden.
         let shifted: Vec<(usize, Vec<String>)> = self
             .collaborators
@@ -1918,7 +2011,7 @@ impl App {
     /// zamykamy i otwieramy w nowym miejscu.
     fn move_note_to_space(&mut self, target: usize) {
         let from = self.notes[self.note_idx].space;
-        if target == from || target >= self.spaces.len() {
+        if target == from || target >= self.spaces.len() || from == LAN_SLOT {
             return;
         }
         self.end_action();
@@ -2741,8 +2834,12 @@ impl App {
                     }
                     if note != current {
                         if ops.iter().any(|o| matches!(o.kind, OpKind::Meta { .. })) {
-                            // Live pisze do space'u domyslnego.
-                            self.spaces[0].space.invalidate_meta(&note);
+                            let slot = self
+                                .notes
+                                .iter()
+                                .find(|e| e.id == note)
+                                .map_or(LAN_SLOT, |e| e.space);
+                            self.slot_space(slot).invalidate_meta(&note);
                             list_changed = true;
                         }
                         continue;
@@ -2833,7 +2930,10 @@ impl App {
                     }
                     repaint = true;
                 }
-                LiveEvent::Shared { .. } => repaint = true,
+                LiveEvent::Shared { .. } => {
+                    self.auto_open_space_offers();
+                    repaint = true;
+                }
                 LiveEvent::Opened {
                     instance,
                     author_dir,
@@ -3023,10 +3123,44 @@ impl App {
     // ----- siec: udostepnianie notatek (ADR 0008) --------------------------
 
     /// Lista cudzych udostepnien do menu, w kolejnosci `MenuHit::Offer(i)`.
-    fn offer_views(&self) -> Vec<OfferView> {
+    /// Oferty z LAN do pokazania: zwykle udostepnienia plus notatki space'ow
+    /// wspoldzielonych, w ktorych jestesmy (cudze space'y odpadaja - ich
+    /// notatki i tak by nie weszly bez repo).
+    fn visible_offers(&self) -> Vec<&crate::live::Offer> {
         self.live
             .offers
             .iter()
+            .filter(|o| {
+                // "default" peera to nie nasz "default" - liczy sie tylko
+                // space wspoldzielony, ktory mamy w rejestrze.
+                o.space.is_empty()
+                    || self
+                        .spaces
+                        .iter()
+                        .skip(1)
+                        .any(|s| s.info.name == o.space)
+            })
+            .collect()
+    }
+
+    /// Notatka ze space'u wspoldzielonego, ktory mamy, u peera w LAN: sesja
+    /// live otwiera sie sama (bez hasla) - obie strony i tak maja te notatke
+    /// przez git, live tylko skraca droge (kreska widoczna od razu).
+    fn auto_open_space_offers(&mut self) {
+        let auto: Vec<String> = self
+            .visible_offers()
+            .into_iter()
+            .filter(|o| !o.space.is_empty() && !self.lan_open.contains_key(&o.note))
+            .map(|o| o.note.clone())
+            .collect();
+        for note in auto {
+            self.live.send(LiveJob::Open { note, key: None });
+        }
+    }
+
+    fn offer_views(&self) -> Vec<OfferView> {
+        self.visible_offers()
+            .into_iter()
             .map(|o| OfferView {
                 note: o.note.clone(),
                 title: o.title.clone(),
@@ -3101,7 +3235,7 @@ impl App {
 
     /// Dotkniecie cudzej notatki: otworz (z haslem, gdy chroniona) albo zamknij.
     fn offer_tap(&mut self, i: usize) {
-        let Some(o) = self.live.offers.get(i).cloned() else {
+        let Some(o) = self.visible_offers().get(i).map(|o| (*o).clone()) else {
             return;
         };
         if self.lan.opened.contains_key(&o.note) {
@@ -3135,7 +3269,7 @@ impl App {
     /// Enter w polu hasla do cudzej notatki.
     fn commit_open_edit(&mut self) {
         if let Some((i, pw)) = self.menu.open_edit.take() {
-            let Some(o) = self.live.offers.get(i).cloned() else {
+            let Some(o) = self.visible_offers().get(i).map(|o| (*o).clone()) else {
                 return;
             };
             let key = spectre_sync::live::share::key_from_password(&pw);
@@ -3179,8 +3313,12 @@ impl App {
     /// w ktorej uzytkownik wlasnie jest.
     fn new_note(&mut self) {
         let folder = self.notes[self.note_idx].folder.clone();
-        // ...i w jej space'ie: notatka obok notatki wspoldzielonej tez jest wspolna.
-        let slot = self.notes[self.note_idx].space;
+        // ...i w jej space'ie: notatka obok notatki wspoldzielonej tez jest wspolna
+        // (obok cudzej z LAN - w domyslnym).
+        let slot = match self.notes[self.note_idx].space {
+            LAN_SLOT => 0,
+            s => s,
+        };
         match self.spaces[slot].space.create_note() {
             Ok(id) => {
                 self.notes
@@ -3357,7 +3495,7 @@ impl App {
     }
 
     fn menu_clock_tick(&mut self) {
-        if self.menu.open && self.waves.is_none() && !self.hidden {
+        if (self.menu.open || self.picker.open) && self.waves.is_none() && !self.hidden {
             self.render();
         } else {
             self.arm_menu_clock(false);
@@ -3449,7 +3587,7 @@ impl App {
                     let Some(slot) = self.notes.iter().find(|e| e.id == id).map(|e| e.space) else {
                         continue;
                     };
-                    let Ok(ops) = spectre_sync::store::read_ops(&self.spaces[slot].space, &id)
+                    let Ok(ops) = spectre_sync::store::read_ops(self.slot_space(slot), &id)
                     else {
                         continue;
                     };
@@ -3815,7 +3953,6 @@ impl App {
                     remote: self.sync.status(i).remote.is_some(),
                 })
                 .collect();
-            let lan_notes: Vec<String> = self.lan.opened.keys().cloned().collect();
             let invitation_views: Vec<menu::InvitationView> = self
                 .invitations
                 .iter()
@@ -3873,9 +4010,11 @@ impl App {
                 space_views: &space_views,
                 friends: &self.friends,
                 invitations: &invitation_views,
-                lan_notes: &lan_notes,
             };
             self.menu.build(&ms, &mut prims);
+        }
+        if self.picker.open {
+            self.picker.build(&self.notes, self.note_idx, &mut prims);
         }
         if self.feedback.open {
             self.feedback.signed_in = self.sync.login().is_some() || self.feedback_fake().is_some();
@@ -4286,7 +4425,10 @@ pub unsafe extern "system" fn wndproc(
             let delta = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as f32;
             // lparam kolka = pozycja ekranowa, tak samo jak w WM_NCHITTEST.
             let (mx, my) = window::nc_point_to_client(hwnd, lparam);
-            if app.menu.contains(mx, my) {
+            if app.picker.open {
+                let k = window::dpi_scale(hwnd);
+                app.picker.scroll_by(-delta / 120.0 * WHEEL_STEP_PX * k);
+            } else if app.menu.contains(mx, my) {
                 if app.menu.wheel(delta / 120.0) {
                     app.render();
                 }
@@ -4378,7 +4520,9 @@ pub unsafe extern "system" fn wndproc(
                     } else if vk == VK_F11 {
                         app.toggle_fullscreen();
                     } else if vk == VK_ESCAPE {
-                        if app.menu.open {
+                        if app.picker.open {
+                            app.picker.close();
+                        } else if app.menu.open {
                             app.toggle_menu();
                         } else if app.fullscreen.is_active() {
                             app.toggle_fullscreen();

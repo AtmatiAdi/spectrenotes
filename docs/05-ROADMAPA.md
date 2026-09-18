@@ -445,13 +445,24 @@ Plan (kolejność wdrożenia):
       w starym repo commit z usunięciem, w nowym z dodaniem. Blokada: notatka
       udostępniona na LAN najpierw musi przestać być udostępniana.
 - [x] Nowa notatka: w space'ie bieżącej notatki (jak folder).
-- [ ] Live LAN dla notatek ze space'ów współdzielonych (`Replica` zna jeden space).
+- [x] Live LAN dla notatek ze space'ów współdzielonych (2026-09-18): `Replica` zna
+      wszystkie space'y + katalog `lan/` na cudze notatki (poza gitem); `SharedNote.space`
+      w protokole (v3), notatki space'ów współdzielonych udostępniane automatycznie,
+      odbiorca ze space'em otwiera sesję sam i odkłada pliki do swojego katalogu space'u.
+      Zweryfikowane dwiema instancjami: notatka z `proj` u A → u B `spaces/proj/.../via-*.ops`
+      (624 B) i kafelek „in proj" + *Shared on LAN: open*; zwykłe udostępnienie → u B
+      `lan/notes/...` (160 B), poza listą „moich".
 - [ ] Wycofanie współpracownika z GUI (`remove_collaborator` gotowe).
 - [ ] Test na żywo z drugim kontem GitHub (zaproszenie → przyjęcie → wspólne notatki).
 
 ## Zgłoszenia z testów v0.3.0 (issues w `spectrenotes-releases`, 2026-09-17)
 
 Pierwsza osoba z zewnątrz (niekola) + własne. Zamknięte w v0.3.1:
+- [x] v0.3.3: #8 wartość ustawienia jako przycisk w prawej kolumnie (etykieta bierna);
+      #2/#15 osobne okno wyboru notatki na start (`picker.rs`: kafelki jak w panelu,
+      te same miniatury, tyle kolumn, ile się mieści, przewijanie przeciągnięciem,
+      dotknięcie poza oknem = zostań); #11 cudze notatki z LAN w `lan/` poza gitem;
+      LAN dla space'ów współdzielonych (wyżej, Etap 6¾).
 - [x] #2 pierwsze uruchomienie z logowaniem, pasek domyślnie przypięty; #15 start
       z listą notatek (panel otwarty, dotknięcie canvasu zamyka).
 - [x] #3 krzyżyk kursora pod piórem schowany (ustawienie *Cursor under the pen*);
