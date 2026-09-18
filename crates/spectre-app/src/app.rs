@@ -316,6 +316,8 @@ pub struct App {
     waves_dim_pct: u32,
     /// Pelny ekran wlaczony przez fale (ochrona calego panelu) - do cofniecia.
     waves_fullscreen: bool,
+    /// Okno wyboru notatki schowane przez fale - wraca razem z nimi.
+    picker_under_waves: bool,
     /// Ile szybkich odswiezen TOPMOST zostalo po wejsciu w pelny ekran.
     topmost_ticks: u32,
     /// Kod logowania skopiowany dotknieciem (napis pod kodem).
@@ -430,8 +432,8 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
                 if !app.menu.open {
                     app.toggle_menu();
                 }
-            } else if app.notes.iter().filter(|n| n.space != LAN_SLOT).count() > 1 {
-                app.picker.show();
+            } else {
+                app.show_picker_on_open();
             }
         }
         for slot in 0..app.spaces.len() {
@@ -657,6 +659,7 @@ impl App {
             waves_forced: false,
             waves_dim_pct,
             waves_fullscreen: false,
+            picker_under_waves: false,
             topmost_ticks: 0,
             code_copied: false,
             feedback: Feedback::new(&update_repo),
@@ -3683,6 +3686,11 @@ impl App {
         if had && self.toolbar.pinned {
             self.toolbar.visible = true;
         }
+        // Okno wyboru notatki tez schowalo sie pod fale (statyczne kafelki
+        // wypalaja jak menu) - uzytkownik nadal nie wybral, wiec wraca.
+        if had && std::mem::take(&mut self.picker_under_waves) {
+            self.picker.show();
+        }
         if self.waves_fullscreen {
             self.waves_fullscreen = false;
             if self.fullscreen.is_active() && !self.hidden {
@@ -3709,6 +3717,10 @@ impl App {
         self.apply_cursor();
         if self.menu.open {
             self.toggle_menu();
+        }
+        if self.picker.open {
+            self.picker.close();
+            self.picker_under_waves = true;
         }
         // Pasek nie znika w jednej klatce - wsuwa sie w krawedz pod wjezdzajacymi falami.
         if self.toolbar.begin_hide() {
@@ -3812,6 +3824,8 @@ impl App {
         self.save_placement();
         self.hidden = true;
         self.kill_amoled_timers();
+        self.picker.close();
+        self.picker_under_waves = false;
         self.release_partner("window hidden");
         self.live.send(LiveJob::Visible(false));
         self.hide_cursor_from_peers();
@@ -3832,9 +3846,20 @@ impl App {
         }
         self.arm_partner_timer();
         self.arm_amoled_timers();
+        // Powrot z traya / ikony to tez "uruchomienie": okno wyboru notatki
+        // jak na starcie.
+        self.show_picker_on_open();
         // Inne maszyny mogly cos dopisac, gdy okno bylo schowane.
         self.git_sync(false);
         self.render();
+    }
+
+    /// Okno wyboru notatki przy kazdym otwarciu okna (start, tray, ikona),
+    /// o ile jest z czego wybierac; nie przykrywa otwartego menu (logowanie).
+    fn show_picker_on_open(&mut self) {
+        if !self.menu.open && self.notes.iter().filter(|n| n.space != LAN_SLOT).count() > 1 {
+            self.picker.show();
+        }
     }
 
     fn toggle_visible(&mut self) {

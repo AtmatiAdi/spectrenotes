@@ -461,7 +461,7 @@ Pierwsza osoba z zewnątrz (niekola) + własne. Zamknięte w v0.3.1:
 - [x] v0.3.3: #8 wartość ustawienia jako przycisk w prawej kolumnie (etykieta bierna);
       #2/#15 osobne okno wyboru notatki na start (`picker.rs`: kafelki jak w panelu,
       te same miniatury, tyle kolumn, ile się mieści, przewijanie przeciągnięciem,
-      dotknięcie poza oknem = zostań); #11 cudze notatki z LAN w `lan/` poza gitem;
+      dotknięcie poza oknem = zostań; wraca też po X i powrocie z traya, fale je chowają); #11 cudze notatki z LAN w `lan/` poza gitem;
       LAN dla space'ów współdzielonych (wyżej, Etap 6¾).
 - [x] #2 pierwsze uruchomienie z logowaniem, pasek domyślnie przypięty; #15 start
       z listą notatek (panel otwarty, dotknięcie canvasu zamyka).

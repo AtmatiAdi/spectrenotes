@@ -206,7 +206,9 @@ przewija listę — bez tego ustawienia przełączały się „same" przy próbi
 (issue #8). Okno startuje z **osobnym oknem wyboru notatki** (kafelki jak w panelu, tyle kolumn,
 ile się mieści; dotknięcie kafelka otwiera, poza oknem — zostajesz w bieżącej; przy
 pierwszym uruchomieniu zamiast niego panel Konto z logowaniem), pasek narzędzi jest
-domyślnie przypięty (issues #2, #15). W Ustawieniach reaguje tylko **wartość** po prawej
+domyślnie przypięty (issues #2, #15). Okno wyboru pokazuje się przy **każdym** otwarciu okna —
+także po X i powrocie z traya / ikony; ochrona AMOLED chowa je jak resztę UI i przywraca po
+falach, bo notatka wciąż nie jest wybrana. W Ustawieniach reaguje tylko **wartość** po prawej
 (przycisk), etykieta jest bierna.
 Zaproszenia do space'ów widać też na górze zakładki Notatki (#16); notatki otwarte
 z LAN nie trafiają do „moich" notatek — są tylko w *Shared on LAN* (#11).
