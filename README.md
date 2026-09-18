@@ -119,7 +119,13 @@ w pełny ekran `TIMER_TOPMOST` przez 1,6 s co 200 ms powtarza `HWND_TOPMOST`, a
 w trakcie ochrony AMOLED raz na 5 s. Pasek narzędzi (i zakładki
 w pełnym ekranie) nie znika w jednej klatce: wsuwa się w swoją krawędź i blednie
 przez ~200 ms — także gdy chowa go ochrona AMOLED; podjazd rysika do krawędzi
-przerywa to od razu.
+przerywa to od razu. Trzecia pułapka to monitory: `WM_GETMINMAXINFO` liczy prostokąt
+dla monitora, na którym okno **jest w chwili pytania**, a świeżo utworzone stoi na
+głównym — odtwarzanie położenia na inny monitor (stacja dokująca) dawało rozmiar
+głównego, czyli okno większe niż ekran z uciętym X. Dlatego `apply_placement` najpierw
+przesuwa niepokazane okno w zapamiętane miejsce, a po pokazaniu (start, powrót z
+traya) `fix_maximized_rect` porównuje prostokąt z obszarem roboczym bieżącego monitora
+i poprawia go, jeśli się różni.
 Gdy pasek narzędzi jest zadokowany u góry, **wchłania** oba pola — tytuł,
 uchwyt i przyciski stają się jego elementami i znikają razem z nim; tytuł ma wtedy tę
 samą szerokość i to samo miejsce co zakładka (środek okna), nie rozciąga się na wolne
@@ -161,7 +167,12 @@ narysowano, bo większość nie ma nazwy. Miniatura to kadr jak strona: w poziom
 cała kolumna (ta sama skala w każdym kafelku), w pionie od góry treści, żeby
 notatka zaczynająca się nisko nie dawała pustego kafelka. Każda powstaje raz,
 do własnej bitmapy, i potem jest już tylko przepisywana; bieżąca odświeża się,
-gdy notatka się zmieni. Cudze notatki z LAN mają takie same kafelki — miniaturę
+gdy notatka się zmieni. Narysowana miniatura trafia też na dysk
+(`%APPDATA%\SpectreNotes\thumbs\<id>-<odcisk>-<w>x<h>.png`; odcisk = nazwy, rozmiary
+i czasy plików z operacjami notatki), więc kolejny start tylko dekoduje PNG
+(6 notatek: 26 ms zamiast ~340 ms rysowania); panel i okno wyboru używają tych samych
+plików. Mysz nad oknem nie wstrzymuje budowania w tle — tylko rysik w zasięgu.
+Cudze notatki z LAN mają takie same kafelki — miniaturę
 dostają po otwarciu, bo dopiero wtedy mamy ich treść.
 Tap otwiera notatkę, „przenieś tutaj" przy nagłówku folderu przenosi bieżącą,
 na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę,

@@ -416,6 +416,9 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
     }
+    if !start_hidden && window::fix_maximized_rect(hwnd, false) {
+        eprintln!("window: maximized rect corrected to the current monitor");
+    }
     if let Err(e) = tray::register_toggle_hotkey(hwnd, 'N') {
         eprintln!("hotkey Win+Shift+N is taken: {e}");
     }
@@ -3662,6 +3665,8 @@ impl App {
                 todo.push((id.clone(), None));
             }
         }
+        let cache_dir = self.data_dir.join("thumbs");
+        let (mut loaded, mut drawn) = (0u32, 0u32);
         for (id, live_lamport) in todo {
             let key = menu::thumb_key(&id);
             let built = self.thumbs.get(&id).copied();
@@ -3678,6 +3683,30 @@ impl App {
                 left = true;
                 break;
             }
+            let Some(slot) = self
+                .notes
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.space)
+                .or_else(|| self.lan_open.contains_key(&id).then_some(LAN_SLOT))
+            else {
+                continue;
+            };
+            let note_dir = self.slot_space(slot).note_dir(&id);
+            let fp = crate::thumbs::fingerprint(&note_dir);
+            // Najpierw cache na dysku: ta sama miniatura, bez czytania operacji
+            // i rysowania (`thumbs.rs`). Biezaca notatka tez - przy starcie jej
+            // dokument jest tym, co na dysku; kazda kolejna zmiana ma juz swoj
+            // lamport i rysuje sie z pamieci.
+            if built.is_none() {
+                if let Some((w, h, px)) = crate::thumbs::load(&cache_dir, &id, fp, tw, th) {
+                    if self.renderer.load_thumb(key, w, h, &px).is_ok() {
+                        self.thumbs.insert(id, live_lamport.unwrap_or(0));
+                        loaded += 1;
+                        continue;
+                    }
+                }
+            }
             let lamport = match live_lamport {
                 Some(l) => {
                     let doc = std::mem::replace(&mut self.doc, Document::new(self.author.id()));
@@ -3689,9 +3718,6 @@ impl App {
                     l
                 }
                 None => {
-                    let Some(slot) = self.notes.iter().find(|e| e.id == id).map(|e| e.space) else {
-                        continue;
-                    };
                     let Ok(ops) = spectre_sync::store::read_ops(self.slot_space(slot), &id)
                     else {
                         continue;
@@ -3710,13 +3736,26 @@ impl App {
                     doc.lamport()
                 }
             };
+            if let Ok((w, h, px)) = self.renderer.thumb_pixels(key) {
+                crate::thumbs::save(&cache_dir, &id, fp, w, h, &px);
+            }
+            drawn += 1;
             self.thumbs.insert(id, lamport);
+        }
+        if loaded + drawn > 0 {
+            eprintln!(
+                "thumbs: {loaded} from cache, {drawn} drawn ({:.1} ms), {:.0} ms after start",
+                t0.elapsed().as_secs_f32() * 1000.0,
+                self.started.elapsed().as_secs_f32() * 1000.0
+            );
         }
         // Bitmapy siedza w pamieci sterownika - usuniete notatki nie moga ich trzymac.
         if !left {
             let keys: std::collections::HashSet<u64> =
                 self.thumbs.keys().map(|id| menu::thumb_key(id)).collect();
             self.renderer.retain_thumbs(&|k| keys.contains(&k));
+            let ids: std::collections::HashSet<String> = self.thumbs.keys().cloned().collect();
+            crate::thumbs::retain(&cache_dir, &|id| ids.contains(id));
         }
         self.arm_thumbs(left);
     }
@@ -3741,17 +3780,11 @@ impl App {
     /// doczytywac. Rysik w zasiegu = nic nie robimy (latencja pierwszej probki
     /// wazniejsza niz miniatury); tik wraca za 16 ms.
     fn thumbs_tick(&mut self) {
-        if self.menu.open && self.waves.is_none() && !self.hidden {
+        if (self.menu.open || self.picker.open) && self.waves.is_none() && !self.hidden {
             self.render();
-        } else if self.mode == Mode::Idle && !self.hover {
+        } else if self.mode == Mode::Idle && !(self.hover && self.last_input_pen) {
+            // Mysz nad oknem nie blokuje rozgrzewki - tylko rysik w zasiegu.
             self.ensure_thumbs();
-            if !self.thumbs_pending {
-                eprintln!(
-                    "thumbs: {} ready, {:.0} ms after start",
-                    self.thumbs.len(),
-                    self.started.elapsed().as_secs_f32() * 1000.0
-                );
-            }
         }
     }
 
@@ -3946,6 +3979,8 @@ impl App {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hwnd);
         }
+        // Uklad monitorow mogl sie zmienic, gdy okno bylo w trayu (dok).
+        window::fix_maximized_rect(self.hwnd, self.fullscreen.is_active());
         self.arm_partner_timer();
         self.arm_amoled_timers();
         // Powrot z traya / ikony to tez "uruchomienie": okno wyboru notatki
@@ -4062,8 +4097,11 @@ impl App {
             self.toolbar.build(&st, &mut prims);
         }
         self.arm_menu_clock(self.menu.open && self.waves.is_none());
-        if self.menu.open && self.waves.is_none() {
+        // Panel i okno wyboru pokazuja miniatury - brakujace powstaja w klatce.
+        if (self.menu.open || self.picker.open) && self.waves.is_none() {
             self.ensure_thumbs();
+        }
+        if self.menu.open && self.waves.is_none() {
             let author = self.author.dir_name();
             let live_line = self.live.status_line();
             let offers = self.offer_views();

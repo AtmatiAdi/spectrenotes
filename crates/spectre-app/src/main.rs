@@ -28,6 +28,7 @@ mod pdf;
 mod picker;
 mod spaces;
 mod sync;
+mod thumbs;
 mod ui;
 mod update;
 

@@ -590,6 +590,43 @@ fn placement_str(wp: &WINDOWPLACEMENT) -> String {
     )
 }
 
+/// Okno zmaksymalizowane ma zajmowac **dokladnie** obszar roboczy monitora,
+/// na ktorym jest (w pelnym ekranie caly monitor). `WM_GETMINMAXINFO` liczy
+/// to dla monitora, na ktorym okno jest **w chwili pytania** - przy
+/// odtwarzaniu polozenia na inny monitor (stacja dokujaca, inny monitor
+/// glowny) albo po zmianie ukladu monitorow w trayu prostokat bywa z cudzego
+/// monitora: okno wystaje poza ekran i ucina przycisk X. Tu sprawdzamy stan
+/// faktyczny i poprawiamy. Zwraca, czy trzeba bylo poprawiac.
+pub fn fix_maximized_rect(hwnd: HWND, fullscreen: bool) -> bool {
+    if !is_maximized(hwnd) {
+        return false;
+    }
+    let Some((mon, work)) = monitor_rects(hwnd) else {
+        return false;
+    };
+    let want = if fullscreen { mon } else { work };
+    let mut r = RECT::default();
+    unsafe {
+        if GetWindowRect(hwnd, &mut r).is_err() {
+            return false;
+        }
+        if r.left == want.left && r.top == want.top && r.right == want.right && r.bottom == want.bottom
+        {
+            return false;
+        }
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            want.left,
+            want.top,
+            want.right - want.left,
+            want.bottom - want.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+    true
+}
+
 /// Odtworzenie polozenia zapisanego przez `placement_string`. `show = false`
 /// ustawia polozenie, ale okna nie pokazuje (start do traya).
 pub fn apply_placement(hwnd: HWND, s: &str, show: bool) -> bool {
@@ -619,7 +656,23 @@ pub fn apply_placement(hwnd: HWND, s: &str, show: bool) -> bool {
         ptMaxPosition: POINT { x: -1, y: -1 },
         ..Default::default()
     };
-    unsafe { SetWindowPlacement(hwnd, &wp).is_ok() }
+    unsafe {
+        // Najpierw samo przesuniecie (okno jeszcze niepokazane): maksymalizacja
+        // pyta `WM_GETMINMAXINFO` o monitor, na ktorym okno **jest**, a swiezo
+        // utworzone stoi na monitorze glownym - nie tam, gdzie zapisano
+        // polozenie. Bez tego okno na drugim monitorze dostawalo rozmiar
+        // glownego (i ucinalo przycisk X, gdy glowny jest wiekszy).
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            v[0],
+            v[1],
+            v[2],
+            v[3],
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        SetWindowPlacement(hwnd, &wp).is_ok()
+    }
 }
 
 /// Otwiera adres w domyslnej przegladarce (logowanie GitHub).

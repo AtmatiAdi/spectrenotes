@@ -15,8 +15,9 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1Brush, ID2D1DeviceContext,
     ID2D1DeviceContext1, ID2D1Factory1, ID2D1GeometryRealization, ID2D1PathGeometry1,
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_BRUSH_PROPERTIES1,
-    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
-    D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_NONE,
+    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+    D2D1_MAP_OPTIONS_READ, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
     D2D1_INTERPOLATION_MODE_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
@@ -687,6 +688,70 @@ impl Renderer {
         self.seg_scratch = segs;
         self.ctx.SetTransform(&Matrix3x2::identity());
         res
+    }
+
+    /// Piksele miniatury (BGRA, wiersz po wierszu) - do zapisu w cache'u na
+    /// dysku. Bitmapa docelowa siedzi na GPU, wiec kopia przez bitmape
+    /// `CPU_READ` i `Map`.
+    pub fn thumb_pixels(&self, key: u64) -> Result<(u32, u32, Vec<u8>)> {
+        let Some(src) = self.thumbs.get(&key) else {
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_FAIL,
+            ));
+        };
+        unsafe {
+            let size = src.GetPixelSize();
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                ..Default::default()
+            };
+            let staging = self.ctx.CreateBitmap(size, None, 0, &props)?;
+            staging.CopyFromBitmap(None, src, None)?;
+            let map = staging.Map(D2D1_MAP_OPTIONS_READ)?;
+            let (w, h) = (size.width, size.height);
+            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                let row = map.bits.add((y * map.pitch) as usize);
+                out.extend_from_slice(std::slice::from_raw_parts(row, (w * 4) as usize));
+            }
+            staging.Unmap()?;
+            Ok((w, h, out))
+        }
+    }
+
+    /// Miniatura z cache'u na dysku (BGRA) - zamiast rysowania notatki.
+    pub fn load_thumb(&mut self, key: u64, w: u32, h: u32, bgra: &[u8]) -> Result<()> {
+        if w == 0 || h == 0 || bgra.len() != (w * h * 4) as usize {
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_FAIL,
+            ));
+        }
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                ..Default::default()
+            };
+            let size = D2D_SIZE_U {
+                width: w,
+                height: h,
+            };
+            let bmp = self.ctx.CreateBitmap(size, None, 0, &props)?;
+            bmp.CopyFromMemory(None, bgra.as_ptr() as *const _, w * 4)?;
+            self.thumbs.insert(key, bmp);
+        }
+        Ok(())
     }
 
     pub fn has_thumb(&self, key: u64) -> bool {
