@@ -270,10 +270,14 @@ fn download(ctx: &Ctx, client: &Client, r: &Release, events: &Sender<Event>) -> 
         true
     };
     match client.fetch_verified(r, spectre_update::ASSET_EXE, &dest, &mut progress) {
-        Ok(path) => vec![Event::Downloaded {
-            info: info_of(r),
-            path,
-        }],
+        Ok(path) => {
+            // Skan Defendera teraz, w tle - nie przy restarcie po podmianie.
+            install::warmup(&path, Duration::from_secs(10));
+            vec![Event::Downloaded {
+                info: info_of(r),
+                path,
+            }]
+        }
         Err(e) => vec![Event::Error(e.to_string())],
     }
 }

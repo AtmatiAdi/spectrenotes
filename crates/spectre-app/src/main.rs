@@ -48,6 +48,12 @@ pub fn since_start_ms() -> f32 {
 
 fn main() -> windows::core::Result<()> {
     let _ = T0.set(Instant::now());
+    // `--warmup`: nic nie rob i wyjdz. Updater uruchamia tak swiezo pobrana
+    // binarke, zeby Defender przeskanowal ja teraz, w tle, a nie przy pierwszym
+    // prawdziwym starcie po podmianie (skan nowego pliku to +100-300 ms).
+    if std::env::args().any(|a| a == install::WARMUP_ARG) {
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--bench" || a == "--fill-white" || a == "--console") {
         window::attach_parent_console();
     }

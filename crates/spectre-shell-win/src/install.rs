@@ -42,6 +42,29 @@ pub const WINDOW_CLASS: &str = "SpectreNotes";
 /// wysyla ja dzialajacej instancji przed podmiana pliku.
 pub const WM_QUIT_APP: u32 = WM_APP + 5;
 
+/// Argument "uruchom i od razu wyjdz": pierwsze uruchomienie swiezo pobranej
+/// binarki, zeby Defender przeskanowal ja w tle (`warmup`).
+pub const WARMUP_ARG: &str = "--warmup";
+
+/// Rozgrzewka pobranej binarki: pierwsze uruchomienie nowego pliku to skan
+/// Defendera (+100-300 ms), a jego wynik zostaje przy pliku takze po `rename`.
+/// Uruchamiamy wiec `exe --warmup` (wychodzi natychmiast) zaraz po pobraniu,
+/// gdy uzytkownik jeszcze pracuje na starej wersji - restart po podmianie jest
+/// wtedy tak szybki jak kazdy inny. Czeka najwyzej `timeout`.
+pub fn warmup(exe: &Path, timeout: std::time::Duration) {
+    let Ok(mut child) = std::process::Command::new(exe).arg(WARMUP_ARG).spawn() else {
+        return;
+    };
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < timeout {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+    let _ = child.kill();
+}
+
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\SpectreNotes";
 
 /// `%LOCALAPPDATA%\SpectreNotes\app`.
@@ -115,6 +138,8 @@ pub fn install_self(version: &str, about_url: &str) -> std::io::Result<PathBuf> 
         .unwrap_or(0) as u32;
     register_uninstall(version, about_url, &dest, size_kb)?;
     add_firewall_rule(&dest);
+    // Instalator zaraz uruchomi te kopie - skan Defendera niech pojdzie teraz.
+    warmup(&dest, std::time::Duration::from_secs(10));
     Ok(dest)
 }
 

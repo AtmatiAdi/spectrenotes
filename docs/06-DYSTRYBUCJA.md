@@ -123,3 +123,20 @@ Alternatywa dla podpisu: odbiorca buduje ze źródeł (`.\dev.cmd -Install`,
 `cargo build --release`). Wymaga Rusta i VS Build Tools, więc realnie działa
 tylko dla osób technicznych — ale omija SmartScreen w całości. Tak zbudowana
 binarka też aktualizuje się z wydań.
+
+## Defender i pierwszy start nowej binarki
+
+Każdy **nowy plik exe** Defender skanuje przy pierwszym uruchomieniu — zanim
+proces dojdzie do `main`. Zmierzone (`tools/bench-startup.ps1`, ta sama binarka):
+świeża kopia 214–236 ms do okna, każdy kolejny start 108–125 ms. Wynik skanu
+zostaje przy pliku (także po `rename`), więc skan jest jednorazowy — ale przy
+częstych wydaniach to właśnie „start po aktualizacji", który użytkownik zapamiętuje.
+
+Nie da się skanu wyłączyć z poziomu aplikacji (i nie chcemy: wyłączenie
+Defendera dla katalogu, do którego updater wrzuca nowe pliki, to dziura), podpis
+kodu też go nie omija (podpis to SmartScreen/reputacja, nie skanowanie). Da się
+go **przesunąć w czas, gdy nikt nie czeka**: updater po pobraniu i weryfikacji
+sumy uruchamia `spectrenotes-<wersja>.exe --warmup` (proces wychodzi natychmiast,
+`install::warmup`, limit 10 s), a instalator robi to samo ze skopiowaną binarką
+przed jej uruchomieniem. Restart po podmianie startuje wtedy jak każdy inny:
+zmierzone 119–137 ms zamiast 214–236.
