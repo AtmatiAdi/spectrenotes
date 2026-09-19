@@ -386,8 +386,11 @@ jest na żądanie: procent na pasku albo `0`.
 ### Testy GUI bez ruszania myszy
 
 Proces uruchomiony ze zmienną `SPECTRENOTES_TEST_INPUT=1` przyjmuje pióro jako
-tekst przez `WM_COPYDATA` (UTF-8, jedna komenda na linię): `down X Y [barrel|eraser]`,
-`move X Y`, `up`, `hover X Y` — współrzędne w pikselach okna. Próbki idą tą samą
+tekst przez `WM_COPYDATA` (UTF-8, jedna komenda na linię): `down X Y [barrel|eraser] [pN]`,
+`move X Y [pN]`, `up`, `hover X Y` — współrzędne w pikselach okna, `pN` = nacisk 0..1;
+`width W` i `zoom Z` ustawiają grubość pióra i zoom. `SPECTRENOTES_NO_LAN=1` wyłącza
+warstwę LAN bez tworzenia gniazd (testy i benchmarki z nowych ścieżek binarki nie
+pytają zapory). Próbki idą tą samą
 drogą co z `WM_POINTER` (pasek, menu, canvas), tylko bez dekodera. Klawisze można
 podać `PostMessage(WM_KEYDOWN)`, przesuwanie okna sprawdzić pytaniem `WM_NCHITTEST`
 (2 = `HTCAPTION`). Skrypt testowy nie zabiera więc kursora ani fokusu osobie, która
@@ -446,6 +449,7 @@ idempotencja).
 | [`docs/04-ENERGIA-I-AMOLED.md`](docs/04-ENERGIA-I-AMOLED.md) | pobór mocy, wypalanie, wybór GPU |
 | [`docs/05-ROADMAPA.md`](docs/05-ROADMAPA.md) | kolejność prac i dlaczego taka |
 | [`docs/06-DYSTRYBUCJA.md`](docs/06-DYSTRYBUCJA.md) | aktualizacje, rozdawanie, SmartScreen |
+| [`docs/07-BENCHMARK.md`](docs/07-BENCHMARK.md) | rozmiar, start, RAM per wersja (`tools/bench-startup.ps1`) |
 | [`docs/adr/`](docs/adr/) | decyzje architektoniczne wraz z odrzuconymi wariantami |
 
 ## Wymagania budowania

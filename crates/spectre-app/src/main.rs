@@ -107,10 +107,13 @@ fn main() -> windows::core::Result<()> {
         }
     }
 
+    // Urzadzenie D3D (najdrozsza czesc startu: sterownik) laduje sie w tle,
+    // gdy glowny watek tworzy okno i czyta notatki; `Renderer::new` na nie czeka.
+    let device = spectre_render::Device::create_in_background();
     let hwnd = window::create_window("SpectreNotes", "SpectreNotes", app::wndproc, 1400, 900)?;
     instance::mark(hwnd, tag);
     eprintln!("startup: window created {:.0} ms", since_start_ms());
-    app::install(hwnd, &space_dir, start_hidden)?;
+    app::install(hwnd, &space_dir, start_hidden, Some(device))?;
     window::run_message_loop();
     Ok(())
 }

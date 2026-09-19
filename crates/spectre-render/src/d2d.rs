@@ -329,14 +329,24 @@ const GEO_CACHE_BUDGET: usize = 6_000_000;
 /// Zoom w tym zakresie wzgledem zbudowanego nie wymaga przebudowy obrysu.
 const GEO_ZOOM_TOL: f32 = 1.5;
 
-impl Renderer {
-    pub fn new(hwnd: HWND, width: u32, height: u32) -> Result<Self> {
+/// Urzadzenie D3D11 (i fabryka DXGI, z ktorej powstalo) - najdrozsza czesc
+/// startu (~60-70 ms na cieplo: ladowanie sterownika), niezalezna od okna.
+pub struct Device {
+    factory: IDXGIFactory6,
+    device: ID3D11Device,
+    adapter_name: String,
+}
+
+impl Device {
+    /// Adapter o najnizszym poborze mocy (docs/04) i urzadzenie na nim.
+    /// Wolne od okna i watku: `D3D11CreateDevice` mozna wolac gdziekolwiek,
+    /// a urzadzenie D3D11 jest wielowatkowe.
+    pub fn create() -> Result<Self> {
         unsafe {
             let factory: IDXGIFactory6 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))?;
             // Swiadomy wybor adaptera o najnizszym poborze mocy (docs/04): domyslna
             // heurystyka DXGI potrafi wybudzic dedykowana karte do rysowania notatek.
             let (adapter, adapter_name) = pick_low_power_adapter(&factory)?;
-
             let mut device: Option<ID3D11Device> = None;
             D3D11CreateDevice(
                 &adapter,
@@ -350,6 +360,49 @@ impl Renderer {
                 None,
             )?;
             let device = device.expect("D3D11CreateDevice: sukces bez urzadzenia");
+            Ok(Self {
+                factory,
+                device,
+                adapter_name,
+            })
+        }
+    }
+
+    /// Tworzenie w tle, od pierwszej linijki `main`: sterownik laduje sie,
+    /// gdy glowny watek czyta konfiguracje, liste notatek i tworzy okno.
+    /// `Renderer::new` czeka na wynik (`join`), wiec kolejnosc inicjalizacji
+    /// D3D -> DXGI -> D2D jest ta sama, co bez watku.
+    pub fn create_in_background() -> std::thread::JoinHandle<Result<Self>> {
+        std::thread::Builder::new()
+            .name("d3d-device".into())
+            .spawn(Self::create)
+            .expect("watek urzadzenia D3D")
+    }
+}
+
+impl Renderer {
+    /// `device`: gotowe (albo tworzone w tle) urzadzenie z `Device`; `None` =
+    /// utworz teraz.
+    pub fn new(
+        hwnd: HWND,
+        width: u32,
+        height: u32,
+        device: Option<std::thread::JoinHandle<Result<Device>>>,
+    ) -> Result<Self> {
+        let t0 = std::time::Instant::now();
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
+        let Device {
+            factory,
+            device,
+            adapter_name,
+        } = match device {
+            Some(h) => h.join().map_err(|_| {
+                windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
+            })??,
+            None => Device::create()?,
+        };
+        unsafe {
+            let t_dev = ms(t0);
 
             let mut tearing: u32 = 0;
             let tearing_supported = factory
@@ -384,12 +437,14 @@ impl Renderer {
                 let _ = sc2.SetMaximumFrameLatency(1);
             }
 
+            let t_sc = ms(t0);
             let factory2d: ID2D1Factory1 =
                 D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dxgi_device: IDXGIDevice = device.cast()?;
             let device2d = factory2d.CreateDevice(&dxgi_device)?;
             let ctx = device2d.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
             let ctx1: ID2D1DeviceContext1 = ctx.cast()?;
+            let t_d2d = ms(t0);
             ctx.SetDpi(96.0, 96.0); // jednostki D2D == piksele fizyczne
             ctx.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             // Skala szarosci, nigdy ClearType - uklad subpikseli OLED daje kolorowe obwodki.
@@ -401,6 +456,12 @@ impl Renderer {
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let fonts = TextFormats::new(&dwrite, 1.0)?;
+            eprintln!(
+                "renderer: d3d device {t_dev:.0} ms, swapchain {:.0}, d2d {:.0}, dwrite {:.0}",
+                t_sc - t_dev,
+                t_d2d - t_sc,
+                ms(t0) - t_d2d
+            );
 
             let mut r = Self {
                 adapter_name,

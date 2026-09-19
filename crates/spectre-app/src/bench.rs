@@ -92,7 +92,7 @@ pub fn run() -> windows::core::Result<()> {
     }
     pump();
     let (w, h) = window::client_size(hwnd);
-    let mut r = Renderer::new(hwnd, w, h)?;
+    let mut r = Renderer::new(hwnd, w, h, None)?;
     let ink = InkConfig::default();
     println!(
         "GPU: {}   okno: {w}x{h}   tearing: {}",

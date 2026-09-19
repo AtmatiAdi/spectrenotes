@@ -64,6 +64,23 @@ impl LiveWorker {
         enabled: bool,
     ) -> Self {
         let hwnd_raw = hwnd.0 as isize;
+        // Testy i benchmarki (`SPECTRENOTES_NO_LAN`): zadnych gniazd - kazda
+        // nowa sciezka binarki pytalaby zapore o dostep do sieci.
+        if std::env::var_os("SPECTRENOTES_NO_LAN").is_some() {
+            return Self {
+                node: None,
+                enabled: false,
+                peers: Vec::new(),
+                lat_last_us: 0,
+                lat_avg_us: 0.0,
+                lat_max_us: 0,
+                wet_in: 0,
+                ops_in: 0,
+                last_ops: None,
+                offers: Vec::new(),
+                error: "LAN off (SPECTRENOTES_NO_LAN)".into(),
+            };
+        }
         let node = match Node::start(
             spaces,
             Some(lan_root),

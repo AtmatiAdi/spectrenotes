@@ -6,6 +6,9 @@ use spectre_core::hittest::stroke_hit;
 use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
 use spectre_render::{Overlay, PresentMode, Renderer, UiPrim, WetTail};
+
+/// Urzadzenie D3D tworzone w tle od startu `main` (`spectre_render::Device`).
+type DeviceHandle = Option<std::thread::JoinHandle<windows::core::Result<spectre_render::Device>>>;
 use spectre_shell_win::shield::HoldError;
 use spectre_shell_win::{capture, dialog, sysinfo};
 use spectre_shell_win::tray::{self, Tray, HOTKEY_TOGGLE, WM_TRAY};
@@ -400,8 +403,13 @@ pub struct App {
 
 /// `start_hidden`: start do traya (autostart `--tray`) - polozenie odtworzone,
 /// okno niepokazane, timery bezczynnosci nie chodza (Z2).
-pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
-    let app = Box::new(App::new(hwnd, space_dir).map_err(|e| {
+pub fn install(
+    hwnd: HWND,
+    space_dir: &Path,
+    start_hidden: bool,
+    device: DeviceHandle,
+) -> Result<()> {
+    let app = Box::new(App::new(hwnd, space_dir, device).map_err(|e| {
         eprintln!("error: {e}");
         windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
     })?);
@@ -461,7 +469,7 @@ pub fn install(hwnd: HWND, space_dir: &Path, start_hidden: bool) -> Result<()> {
 }
 
 impl App {
-    fn new(hwnd: HWND, space_dir: &Path) -> std::io::Result<Self> {
+    fn new(hwnd: HWND, space_dir: &Path, device: DeviceHandle) -> std::io::Result<Self> {
         let data_dir = Config::path()
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -513,7 +521,7 @@ impl App {
         let space = &spaces[0].space;
 
         let (w, h) = window::client_size(hwnd);
-        let mut renderer = Renderer::new(hwnd, w, h)
+        let mut renderer = Renderer::new(hwnd, w, h, device)
             .map_err(|e| std::io::Error::other(format!("renderer: {e}")))?;
         eprintln!("startup: renderer ready {:.0} ms", crate::since_start_ms());
         let tray = Tray::add(hwnd, "SpectreNotes")
