@@ -136,7 +136,14 @@ głównym — odtwarzanie położenia na inny monitor (stacja dokująca) dawało
 głównego, czyli okno większe niż ekran z uciętym X. Dlatego `apply_placement` najpierw
 przesuwa niepokazane okno w zapamiętane miejsce, a po pokazaniu (start, powrót z
 traya) `fix_maximized_rect` porównuje prostokąt z obszarem roboczym bieżącego monitora
-i poprawia go, jeśli się różni.
+i poprawia go, jeśli się różni — tak samo po `WM_DISPLAYCHANGE`/`WM_DPICHANGED`
+(przepięcie stacji dokującej) i w każdym tiku fal (`ensure_waves_fullscreen`,
+z prostokątem **całego** monitora). Ta sama funkcja domyka drugą dziurę: wejście
+w pełny ekran odpuszcza, gdy system nie poda prostokąta monitora (układ ekranów
+zmienia się właśnie pod ręką), a wtedy fale płynęły po oknie zmaksymalizowanym,
+z paskiem zadań nad notatką; teraz ochrona próbuje ponownie w każdym tiku i dopiero
+udane wejście zapamiętuje jako **swoje** (do zdjęcia po ochronie). Nieudane wejście
+zostawia linię w `partner.log`.
 Gdy pasek narzędzi jest zadokowany u góry, **wchłania** oba pola — tytuł,
 uchwyt i przyciski stają się jego elementami i znikają razem z nim; tytuł ma wtedy tę
 samą szerokość i to samo miejsce co zakładka (środek okna), nie rozciąga się na wolne
@@ -237,7 +244,8 @@ przeglądarce z wpisaną treścią (bez załączników). Dalej grupy funkcjonaln
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (włącz/wyłącz; **tylko
 na ekranie laptopa** — na zewnętrznym monitorze fale nie startują, panel wbudowany
-rozpoznawany po typie złącza; **tylko zmaksymalizowane lub pełny ekran** — domyślnie
+rozpoznawany po typie złącza, a praca na innym ekranie nie trzyma panelu rozświetlonego
+(stacja dokująca — patrz *Ochrona AMOLED liczy bezczynność człowieka*); **tylko zmaksymalizowane lub pełny ekran** — domyślnie
 włączone: w zwykłym oknie fale nie startują i Spectre nie dostaje próśb, bo skok okna na
 cały ekran w trakcie pracy obok był uciążliwy; gdy ochrona czuwa, przed tytułem notatki
 stoi tarcza 🛡 — potwierdzenie, że okno jest tam, gdzie ma chronić; czas bezczynności
@@ -403,6 +411,18 @@ Odliczanie do fal bierze bezczynność **całego systemu** (`GetLastInputInfo`),
 nie tylko tego okna. Okno nieaktywne nie dostaje żadnych komunikatów wejścia,
 więc bez tego ochrona wchodziła (razem z pełnym ekranem) w trakcie pisania
 w innej aplikacji. `W` (wymuszony podgląd) omija sprawdzenie.
+
+Z jednym wyjątkiem: przy **tylko na ekranie laptopa** chronimy jeden panel,
+a praca na innym monitorze go nie dotyczy. Gdy kursor **i** okno pierwszego
+planu są na innym ekranie (stacja dokująca), wejście nie liczy się do
+odliczania (`display::input_elsewhere`) — notatka na panelu laptopa gaśnie tak,
+jakby użytkownik odszedł od biurka, mimo że on cały czas pisze na monitorze
+stacji. Warunek jest celowo ostrożny: wystarczy, że kursor albo pierwszy plan
+wrócą na panel, i wejście znów się liczy (a rysik nad samą notatką idzie przez
+`WM_POINTER`, więc budzi ją natychmiast, w jednej klatce). Ochrona wchodzi
+wtedy **bez zabierania pierwszego planu** (`SWP_NOACTIVATE`) — aplikacja, w
+której się pracuje, zostaje aktywna. Bez tego ustawienia chronimy ekran, na
+którym użytkownik właśnie pracuje, i każde wejście odsuwa fale.
 
 ### DPI i piksele
 

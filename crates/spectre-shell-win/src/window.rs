@@ -442,6 +442,12 @@ impl Fullscreen {
                 // planie. Przy kilku monitorach klikniecie w inny ekran odbiera
                 // pierwszy plan i pasek wychodzilby nad notatke; nad oknem
                 // "zawsze na wierzchu" nie wychodzi.
+                //
+                // SWP_NOACTIVATE: w pelny ekran wchodzi tez sama ochrona AMOLED,
+                // a ta startuje, gdy uzytkownik pracuje gdzie indziej - notatka
+                // ma sie rozlozyc na swoim panelu, nie zabrac pierwszego planu
+                // aplikacji na monitorze stacji. Gdy to uzytkownik wlacza pelny
+                // ekran, okno i tak jest juz aktywne.
                 if self.was_maximized() {
                     let _ = SetWindowPos(
                         hwnd,
@@ -450,7 +456,7 @@ impl Fullscreen {
                         mon.top,
                         mon.right - mon.left,
                         mon.bottom - mon.top,
-                        SWP_FRAMECHANGED,
+                        SWP_FRAMECHANGED | SWP_NOACTIVATE,
                     );
                 } else {
                     let _ = SetWindowPos(
@@ -460,8 +466,12 @@ impl Fullscreen {
                         0,
                         0,
                         0,
-                        SWP_NOMOVE | SWP_NOSIZE,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                     );
+                    // Maksymalizacja przez `ShowWindow` aktywuje okno - tu nie ma
+                    // na to innego API, wiec ta droga (okno **zwykle** wchodzi
+                    // w pelny ekran) potrafi zabrac pierwszy plan. Ochrona AMOLED
+                    // z ustawieniem "Maximized only" (domyslnym) tu nie trafia.
                     let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                 }
                 // Gdy pierwszy plan ma sam pasek zadan (ostatnie klikniecie w zegar,

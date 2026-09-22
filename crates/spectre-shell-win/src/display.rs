@@ -12,10 +12,11 @@ use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_PATH_INFO,
     DISPLAYCONFIG_SOURCE_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
 };
-use windows::Win32::Foundation::{ERROR_SUCCESS, HWND};
+use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow};
 
 /// Nazwy GDI (`\\.\DISPLAYn`) aktywnych wyjsc, ktore sa panelem wbudowanym.
 fn internal_displays() -> Vec<String> {
@@ -94,6 +95,34 @@ pub fn window_display(hwnd: HWND) -> Option<(String, bool)> {
         internal.iter().any(|d| d.eq_ignore_ascii_case(&device))
     };
     Some((device, is_internal))
+}
+
+/// Czy uzytkownik pracuje teraz na innym ekranie niz to okno: i kursor,
+/// i okno pierwszego planu sa na innym monitorze.
+///
+/// `GetLastInputInfo` liczy wejscie **calego systemu**, wiec przy stacji
+/// dokujacej pisanie na monitorze stacji trzymalo panel laptopa rozswietlony
+/// bez konca. Gdy chronimy tylko panel laptopa, praca gdzie indziej go nie
+/// dotyczy - ma gasnac tak samo, jakby uzytkownik odszedl od biurka. Warunek
+/// jest celowo ostrozny (kursor **i** pierwszy plan): wystarczy, ze jedno
+/// z dwoch wroci na nasz ekran, i wejscie znow sie liczy. Rysik nad sama
+/// notatka idzie przez `WM_POINTER` i gasi ochrone natychmiast, bez tej drogi.
+pub fn input_elsewhere(hwnd: HWND) -> bool {
+    unsafe {
+        let mine = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let fg = GetForegroundWindow();
+        if fg == hwnd {
+            return false;
+        }
+        if !fg.is_invalid() && MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) == mine {
+            return false;
+        }
+        let mut p = POINT::default();
+        if GetCursorPos(&mut p).is_ok() && MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST) == mine {
+            return false;
+        }
+        true
+    }
 }
 
 #[cfg(test)]

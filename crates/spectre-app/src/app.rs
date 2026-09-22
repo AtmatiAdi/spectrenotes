@@ -359,6 +359,8 @@ pub struct App {
     waves_dim_pct: u32,
     /// Pelny ekran wlaczony przez fale (ochrona calego panelu) - do cofniecia.
     waves_fullscreen: bool,
+    /// Czy w tym wejsciu ochrony zapisano juz klopot z pelnym ekranem.
+    waves_fs_warned: bool,
     /// Okno wyboru notatki schowane przez fale - wraca razem z nimi.
     picker_under_waves: bool,
     /// Ile szybkich odswiezen TOPMOST zostalo po wejsciu w pelny ekran.
@@ -756,6 +758,7 @@ impl App {
             waves_forced: false,
             waves_dim_pct,
             waves_fullscreen: false,
+            waves_fs_warned: false,
             picker_under_waves: false,
             topmost_ticks: 0,
             code_copied: false,
@@ -1632,8 +1635,19 @@ impl App {
         }
     }
 
+    /// Okno w pelnym ekranie ma **caly** prostokat monitora. Sprawdzenie jest
+    /// porownaniem dwoch prostokatow, wiec chodzi razem z `raise` (co 5 s pod
+    /// falami): gdy cos przestawilo okno na obszar roboczy - przepiecie
+    /// monitorow przy stacji, zmiana DPI, Windows po zmianie ukladu - wraca
+    /// na caly panel, zamiast zostac z paskiem zadan na wierzchu.
+    /// Zwraca, czy trzeba bylo poprawiac.
+    fn keep_fullscreen_rect(&self) -> bool {
+        self.fullscreen.is_active() && !self.hidden && window::fix_maximized_rect(self.hwnd, true)
+    }
+
     fn topmost_tick(&mut self) {
         self.fullscreen.raise(self.hwnd);
+        let _ = self.keep_fullscreen_rect();
         unsafe {
             if !self.fullscreen.is_active() {
                 let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
@@ -4134,6 +4148,7 @@ impl App {
     /// ekran - poprzedni rozmiar okna. Zwraca, czy fale trwaly.
     fn stop_waves(&mut self) -> bool {
         let had = self.waves.take().is_some();
+        self.waves_fs_warned = false;
         if had {
             self.apply_cursor();
         }
@@ -4182,12 +4197,41 @@ impl App {
         if self.toolbar.begin_hide() {
             self.arm_anim();
         }
-        if !self.fullscreen.is_active() {
-            self.toggle_fullscreen();
-            self.waves_fullscreen = true;
-        }
+        self.ensure_waves_fullscreen();
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_TICK_MS, None);
+        }
+    }
+
+    /// Fale maja przejsc przez **caly panel**, wiec okno musi byc w pelnym
+    /// ekranie; inaczej pasy plyna po oknie zmaksymalizowanym, z paskiem zadan
+    /// nad notatka.
+    ///
+    /// Wejscie w ten tryb potrafi sie nie udac: `Fullscreen::toggle` odpuszcza,
+    /// gdy system nie poda prostokata monitora - a przy stacji dokujacej uklad
+    /// ekranow zmienia sie pod reka. Dlatego probujemy w kazdym tiku fal, az
+    /// sie uda, i dopiero wtedy zapamietujemy, ze to **nasz** pelny ekran
+    /// (do zdjecia po ochronie). Gdy tryb juz trwa, pilnujemy samego prostokata.
+    fn ensure_waves_fullscreen(&mut self) {
+        if self.fullscreen.is_active() {
+            if self.keep_fullscreen_rect() {
+                self.log_fullscreen_once("fullscreen rect corrected to the whole monitor");
+            }
+            return;
+        }
+        self.toggle_fullscreen();
+        self.waves_fullscreen = self.fullscreen.is_active();
+        if !self.waves_fullscreen {
+            self.log_fullscreen_once("waves without fullscreen: no monitor rect for the window");
+        }
+    }
+
+    /// Tik fal chodzi co 60 ms, a `partner.log` ma byc czytelny: jedna linia
+    /// na jedno wejscie ochrony (licznik zeruje `stop_waves`).
+    fn log_fullscreen_once(&mut self, line: &str) {
+        if !self.waves_fs_warned {
+            self.waves_fs_warned = true;
+            self.partner_log(line);
         }
     }
 
@@ -4218,17 +4262,32 @@ impl App {
         }
     }
 
+    /// Bezczynnosc, ktora liczy sie dla chronionego ekranu.
+    ///
+    /// Zwykle to bezczynnosc **calego systemu**, nie tego okna: okno nieaktywne
+    /// nie dostaje komunikatow wejscia, wiec bez tego ochrona wchodzila (razem
+    /// z pelnym ekranem) w trakcie pisania w innej aplikacji obok.
+    ///
+    /// Przy "tylko ekran laptopa" chroniony ekran jest jeden, a reszta biurka
+    /// nie ma z nim nic wspolnego: praca na monitorze stacji dokujacej nie ma
+    /// trzymac panelu laptopa rozswietlonego (`display::input_elsewhere`).
+    /// Notatka lezy wtedy pod falami, a rysik nad nia budzi ja natychmiast,
+    /// bo `WM_POINTER` idzie wprost do okna.
+    fn protect_idle_ms(&self) -> u32 {
+        protect_idle(
+            window::system_idle_ms(),
+            self.waves_laptop_only,
+            spectre_shell_win::display::input_elsewhere(self.hwnd),
+        )
+    }
+
     /// Tik fal: pierwszy po czasie bezczynnosci (start), kolejne co `WAVES_TICK_MS`.
     /// Znacznik czasu kroku (`waves_tick`) przestawia wylacznie `render()` - tu go
     /// tylko zerujemy przy starcie. (Ustawianie go tutaj dawalo dt ~ 0 w kazdej
     /// klatce: fala nigdy nie wychodzila z fade-inu i byla niewidoczna.)
     fn waves_tick(&mut self) {
-        // Bezczynnosc liczymy dla **calego systemu**, nie tylko dla tego okna.
-        // Okno nieaktywne nie dostaje zadnych komunikatow wejscia, wiec bez tego
-        // ochrona wchodzila (razem z pelnym ekranem) w trakcie pisania w innej
-        // aplikacji. `W` (wymuszony podglad) omija to.
         if let Some(ms) = waves_delay(
-            window::system_idle_ms(),
+            self.protect_idle_ms(),
             self.waves_idle_s * 1000,
             self.waves_forced,
         ) {
@@ -4250,6 +4309,8 @@ impl App {
                 return;
             }
             self.start_waves();
+        } else {
+            self.ensure_waves_fullscreen();
         }
         self.render();
     }
@@ -4735,7 +4796,21 @@ fn open_note(
     Ok((store, doc))
 }
 
-/// Decyzja tiku ochrony AMOLED przy danej bezczynnosci **systemu**:
+/// Bezczynnosc, ktora liczy sie dla chronionego ekranu (`protect_idle_ms`
+/// wstawia tu stan systemu). Przy "tylko ekran laptopa" chronimy jeden panel,
+/// wiec praca na innym monitorze - kursor **i** pierwszy plan gdzie indziej,
+/// czyli stacja dokujaca - jest dla niego tym samym, co odejscie od biurka.
+/// Bez tego ustawienia chronimy ekran, na ktorym uzytkownik wlasnie pracuje,
+/// i kazde wejscie sie liczy.
+fn protect_idle(system_idle_ms: u32, laptop_only: bool, input_elsewhere: bool) -> u32 {
+    if laptop_only && input_elsewhere {
+        u32::MAX
+    } else {
+        system_idle_ms
+    }
+}
+
+/// Decyzja tiku ochrony AMOLED przy danej bezczynnosci (`protect_idle`):
 /// `Some(ms)` - jeszcze nie czas, przestaw timer na tyle milisekund (czlowiek
 /// pracuje, choćby w innej aplikacji); `None` - czas na fale.
 ///
@@ -5316,6 +5391,10 @@ pub unsafe extern "system" fn wndproc(
         WM_DISPLAYCHANGE | WM_DPICHANGED => {
             app.pen.invalidate();
             app.partner_soon();
+            // Uklad ekranow sie zmienil (stacja dokujaca, inny monitor glowny):
+            // okno zmaksymalizowane i pelnoekranowe moze stac w prostokacie
+            // z poprzedniego ukladu.
+            window::fix_maximized_rect(hwnd, app.fullscreen.is_active());
             app.relayout();
             app.render();
             LRESULT(0)
@@ -5381,6 +5460,30 @@ mod tests {
         // Wymuszony podglad (`W`) i wylaczona ochrona nie czekaja na nic.
         assert_eq!(waves_delay(0, want, true), None);
         assert_eq!(waves_delay(0, 0, false), None);
+    }
+
+    /// Stacja dokujaca: notatka lezy na panelu laptopa, uzytkownik pisze na
+    /// monitorze stacji. Przy "tylko ekran laptopa" to wejscie nie dotyczy
+    /// chronionego panelu - ma gasnac tak, jakby nikogo nie bylo.
+    #[test]
+    fn praca_na_innym_ekranie_nie_trzyma_panelu_laptopa() {
+        let want = 30_000;
+        // Wejscie co chwila (bezczynnosc 0), ale gdzie indziej: czas na fale.
+        assert_eq!(protect_idle(0, true, true), u32::MAX);
+        assert_eq!(waves_delay(protect_idle(0, true, true), want, false), None);
+        // Kursor albo pierwszy plan wrocil na panel: wejscie znow sie liczy.
+        assert_eq!(protect_idle(0, true, false), 0);
+        assert_eq!(
+            waves_delay(protect_idle(0, true, false), want, false),
+            Some(want)
+        );
+        // Bez "tylko ekran laptopa" chronimy ekran, na ktorym sie pracuje -
+        // kazde wejscie odsuwa fale, tak jak dotad.
+        assert_eq!(protect_idle(0, false, true), 0);
+        assert_eq!(
+            waves_delay(protect_idle(0, false, true), want, false),
+            Some(want)
+        );
     }
 }
 

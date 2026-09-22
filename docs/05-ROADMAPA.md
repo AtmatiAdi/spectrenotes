@@ -147,6 +147,31 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       (`QueryDisplayConfig`, `OUTPUT_TECHNOLOGY_INTERNAL`), nie po „monitor główny";
       na zewnętrznym odliczanie trwa, ochrona startuje po przeniesieniu okna.
       Zweryfikowane: na `DISPLAY1` (panel) fale startują, na `DISPLAY6` nie
+- [x] **Praca na stacji dokującej nie trzyma panelu laptopa rozświetlonego**
+      (2026-09-23, prośba użytkownika: „powinna ignorować wszelakie inputy które są
+      spoza głównego monitora gdy Laptop screen only jest włączone"). Odliczanie
+      brało bezczynność całego systemu, więc pisanie na monitorze stacji odsuwało
+      fale w nieskończoność — panel z notatką świecił przez cały dzień pracy.
+      Teraz przy *Laptop screen only* wejście liczy się tylko wtedy, gdy kursor
+      **albo** okno pierwszego planu jest na naszym ekranie (`display::input_elsewhere`,
+      `protect_idle`); ochrona wchodzi **bez zabierania pierwszego planu**
+      (`SWP_NOACTIVATE` przy wejściu w pełny ekran). Zmierzone na stacji (3 ekrany,
+      panel `DISPLAY1` u dołu): przy wejściu co 1 s (`mouse_event(MOVE,0,0)`, kursor
+      i pierwszy plan na `DISPLAY7`) okno przechodzi w pełny ekran po 4 s i zostaje
+      w nim przez całą próbę, a Notatnik obok nie traci fokusu; kursor przeniesiony
+      na panel budzi notatkę w 0,7 s, hover rysikiem — natychmiast
+- [x] **Ochrona nie zawsze wchodziła w pełny ekran** (2026-09-23). Zgłoszenia
+      „nie robi się fullscreen" nie udało się odtworzyć (zmierzone: okno
+      zmaksymalizowane na panelu, ochrona z timera i z `W`, także gdy pierwszy plan
+      ma inna aplikacja — za każdym razem 2880×1800 zamiast 2880×1740), ale
+      w kodzie została dziura: `Fullscreen::toggle` po cichu odpuszcza, gdy system
+      nie poda prostokąta monitora (przepięcie ekranów przy stacji), a `start_waves`
+      i tak zapisywało „to nasz pełny ekran" — fale płynęły wtedy po oknie
+      zmaksymalizowanym, z paskiem zadań nad notatką. Teraz `ensure_waves_fullscreen`
+      próbuje w każdym tiku fal, zapamiętuje dopiero udane wejście i pilnuje
+      prostokąta (`fix_maximized_rect` z prostokątem całego monitora — także po
+      `WM_DISPLAYCHANGE`/`WM_DPICHANGED`); nieudane wejście zostawia linię
+      w `partner.log`
 - [x] **Współpraca ze Spectre** (osobne repo `C:\Projects\Spectre`): widoczna notatka na
       panelu = prośba o wstrzymanie czarnej nakładki Spectre, jako **dzierżawa** 30 s
       odnawiana co 10 s (`RegisterWindowMessage("Spectre.ShieldHold")` → okno
