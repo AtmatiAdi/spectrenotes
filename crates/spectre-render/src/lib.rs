@@ -14,6 +14,8 @@ pub mod geometry;
 mod tess;
 mod thumb;
 
-pub use d2d::{Device, DimMask, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail, DIM_STEP};
+pub use d2d::{
+    Device, DimMask, Lift, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail, DIM_STEP,
+};
 pub use tess::stroke_segments;
 pub use thumb::ThumbRenderer;

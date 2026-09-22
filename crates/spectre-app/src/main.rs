@@ -26,6 +26,7 @@ mod live;
 mod menu;
 mod pdf;
 mod picker;
+mod select;
 mod spaces;
 mod sync;
 mod thumbs;

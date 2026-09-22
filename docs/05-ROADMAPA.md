@@ -114,7 +114,18 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       **samym końcu paska**, za kłódką komputera (2026-09-15) — na początku, przy
       menu, łapał się przypadkiem; w doku u góry koniec paska trzyma zapas od
       uchwytu przesuwania okna, żeby dwa ⠿ nie stały obok siebie
-- [ ] Więcej narzędzi (zaznaczanie, kształty) — po Etapie 5, wymaga `StrokeTransform`
+- [x] **Zaznaczanie obrysem i przekształcanie treści** (2026-09-22, `select.rs`):
+      lasso bierze kreski otoczone **w całości**, ramka z uchwytami przesuwa (wnętrze),
+      skaluje (rogi, proporcjonalnie — przeciwległy róg stoi, grubość kreski mnoży się
+      przez skalę) i obraca (uchwyt nad ramką); dotknięcie poza ramką **odstawia** tam
+      treść i kończy zaznaczenie. Osobnej operacji `StrokeTransform` nie było potrzeba:
+      gest kończy się `Document::replace_strokes` (nagrobki + nowe kreski) zapisanym
+      jako **jedna** akcja historii (`Action::Replaced`), więc CRDT zostaje zbiorem
+      rosnącym (ADR 0004) i nic nie zmienia się w formacie operacji. W trakcie gestu
+      dokument stoi: kreski są wyłączone z warstwy suchej (`Renderer::set_hidden`)
+      i rysowane co klatkę z **cache'owanych obrysów** w transformacji zaznaczenia
+      (`spectre_render::Lift`) — 162 kreski przenoszone naraz: 1,7 ms/klatkę (Arc, 25 %)
+- [ ] Więcej narzędzi (kształty) — po Etapie 5
 - [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
 - [x] Menu (☰ na pasku narzędzi, `M`) z nagłówkiem konta (avatar z GitHuba, nazwa,
       wiek synchronizacji, przycisk sync): lista notatek w folderach (folder = `Meta`

@@ -66,6 +66,12 @@ struct Entry {
 enum Action {
     Added(Vec<StrokeId>),
     Erased(Vec<(StrokeId, StrokeData)>),
+    /// Podmiana: stare kreski wymazane, nowe (przeksztalcone) dodane. Dla
+    /// uzytkownika to jeden ruch zaznaczenia, wiec cofa sie w calosci.
+    Replaced {
+        erased: Vec<(StrokeId, StrokeData)>,
+        added: Vec<StrokeId>,
+    },
 }
 
 pub struct Document {
@@ -232,6 +238,47 @@ impl Document {
         ops
     }
 
+    /// Podmiana kresek: stare znikaja, nowe wchodza na ich miejsce jako
+    /// **jedna** akcja w historii. Tak dziala przesuniecie, skalowanie
+    /// i obrot zaznaczenia - kreska jest niezmienna, a nagrobek nieodwracalny
+    /// (ADR 0004), wiec "edycja" to zawsze wymazanie plus dodanie.
+    ///
+    /// Zwraca operacje do zapisania/wyslania i **nowe** identyfikatory
+    /// (zaznaczenie musi od teraz wskazywac na nie).
+    pub fn replace_strokes(
+        &mut self,
+        ids: &[StrokeId],
+        data: &[StrokeData],
+    ) -> (Vec<Op>, Vec<StrokeId>) {
+        let mut ops = Vec::new();
+        let mut erased = Vec::new();
+        let mut added = Vec::new();
+        for (old, new) in ids.iter().zip(data) {
+            let Some(e) = self.strokes.get(old) else {
+                continue;
+            };
+            if self.erased.contains(old) {
+                continue;
+            }
+            erased.push((*old, e.data.clone()));
+            ops.push(self.local_op(OpKind::StrokeErase { id: *old }));
+            let id = self.fresh_id();
+            added.push(id);
+            ops.push(self.local_op(OpKind::StrokeAdd {
+                id,
+                data: new.clone(),
+            }));
+        }
+        if !added.is_empty() {
+            self.redo.clear();
+            self.undo.push(Action::Replaced {
+                erased,
+                added: added.clone(),
+            });
+        }
+        (ops, added)
+    }
+
     pub fn set_meta(&mut self, key: &str, value: &str) -> Op {
         self.local_op(OpKind::Meta {
             key: key.to_string(),
@@ -302,6 +349,35 @@ impl Document {
                 }
                 (ops, Action::Added(ids))
             }
+            // Cofniecie podmiany: nowe kreski znikaja, stare wracaja (pod
+            // nowymi id). Odwrotnoscia jest ta sama akcja z zamieniona
+            // kolejnoscia, wiec redo odtwarza ruch zaznaczenia.
+            Action::Replaced { erased, added } => {
+                let mut ops = Vec::new();
+                let mut now_erased = Vec::new();
+                for id in added {
+                    if let Some(e) = self.strokes.get(&id) {
+                        if !self.erased.contains(&id) {
+                            now_erased.push((id, e.data.clone()));
+                            ops.push(self.local_op(OpKind::StrokeErase { id }));
+                        }
+                    }
+                }
+                let mut now_added = Vec::new();
+                for (old, data) in erased {
+                    let id = self.fresh_id();
+                    now_added.push(id);
+                    ops.push(self.local_op(OpKind::StrokeAdd { id, data }));
+                    self.remap(old, id);
+                }
+                (
+                    ops,
+                    Action::Replaced {
+                        erased: now_erased,
+                        added: now_added,
+                    },
+                )
+            }
         }
     }
 
@@ -317,6 +393,18 @@ impl Document {
                 }
                 Action::Erased(list) => {
                     for (id, _) in list.iter_mut() {
+                        if *id == old {
+                            *id = new;
+                        }
+                    }
+                }
+                Action::Replaced { erased, added } => {
+                    for (id, _) in erased.iter_mut() {
+                        if *id == old {
+                            *id = new;
+                        }
+                    }
+                    for id in added.iter_mut() {
                         if *id == old {
                             *id = new;
                         }
@@ -551,6 +639,58 @@ mod tests {
         d.undo();
         assert_eq!(d.live_count(), 0);
         assert!(d.undo().is_empty());
+    }
+
+    /// Przesuniecie zaznaczenia: podmiana kresek to jedna akcja historii -
+    /// jedno cofniecie wraca do stanu sprzed ruchu, jedno ponowienie odtwarza go.
+    #[test]
+    fn podmiana_kresek_cofa_sie_jako_jeden_ruch() {
+        let mut d = Document::new(AuthorId(1));
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let op = d.add_stroke(stroke(3, i as f32 + 1.0));
+            if let OpKind::StrokeAdd { id, .. } = op.kind {
+                ids.push(id);
+            }
+        }
+        let moved: Vec<StrokeData> = ids
+            .iter()
+            .map(|id| {
+                let mut s = d.get(*id).unwrap().clone();
+                for p in &mut s.samples {
+                    p.x += 100.0;
+                }
+                s
+            })
+            .collect();
+        let (ops, new_ids) = d.replace_strokes(&ids, &moved);
+        assert_eq!(ops.len(), 6, "3 nagrobki + 3 nowe kreski");
+        assert_eq!(new_ids.len(), 3);
+        assert_eq!(d.live_count(), 3);
+        assert!(ids.iter().all(|id| !d.is_live(*id)));
+        let xs = |d: &Document| -> Vec<f32> {
+            let mut v: Vec<f32> = d.visible().map(|(_, s, _)| s.samples[0].x).collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v
+        };
+        assert_eq!(xs(&d), vec![101.0, 102.0, 103.0]);
+
+        d.undo();
+        assert_eq!(d.live_count(), 3);
+        assert_eq!(
+            xs(&d),
+            vec![1.0, 2.0, 3.0],
+            "jedno cofniecie cofa caly ruch"
+        );
+        d.redo();
+        assert_eq!(xs(&d), vec![101.0, 102.0, 103.0]);
+        // Kolejne cofniecia schodza do stanu sprzed kresek - historia sprzed
+        // podmiany musi wskazywac na kreski, ktore odzyly pod nowymi id.
+        d.undo();
+        d.undo();
+        d.undo();
+        d.undo();
+        assert_eq!(d.live_count(), 0);
     }
 
     #[test]

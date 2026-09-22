@@ -132,6 +132,9 @@ pub enum Action {
     Menu,
     Pen,
     Eraser,
+    /// Zaznaczanie obrysem: lasso, a potem przesuwanie, skalowanie i obrot
+    /// zaznaczonej tresci (`select.rs`).
+    Select,
     Color(usize),
     WidthDown,
     WidthUp,
@@ -164,6 +167,8 @@ pub struct UiState<'a> {
     pub palette: &'a [Rgba],
     pub color_idx: usize,
     pub eraser: bool,
+    /// Narzedzie zaznaczania (lasso) wybrane.
+    pub select: bool,
     pub width: f32,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -294,6 +299,7 @@ impl Toolbar {
             (Action::Menu, 0.0, item),
             (Action::Pen, px(8.0), item),
             (Action::Eraser, 0.0, item),
+            (Action::Select, 0.0, item),
         ];
         for i in 0..palette_len {
             order.push((
@@ -454,6 +460,12 @@ impl Toolbar {
     #[inline]
     fn px(&self, v: f32) -> f32 {
         px(v, self.scale)
+    }
+
+    /// Skala DPI z ostatniego `layout` - tym samym przelicznikiem rysuje sie
+    /// wszystko, co jest w pikselach logicznych (takze ramka zaznaczenia).
+    pub fn scale(&self) -> f32 {
+        self.scale
     }
 
     /// Szerokosc zakladki tytulu (i pola tytulu w pasku u gory): ulamek
@@ -942,8 +954,9 @@ impl Toolbar {
             let hot = self.hot == Some(it.action);
             let active = match it.action {
                 Action::Menu => s.menu_open,
-                Action::Pen => !s.eraser,
+                Action::Pen => !s.eraser && !s.select,
                 Action::Eraser => s.eraser,
+                Action::Select => s.select,
                 Action::Color(i) => i == s.color_idx && !s.eraser,
                 Action::ViewLock => s.view_locked,
                 _ => false,
@@ -1011,6 +1024,41 @@ impl Toolbar {
                     width: 1.5 * k,
                     r: 4.0 * k,
                 }),
+                Action::Select => {
+                    // Ramka z przerywanej linii - to samo, co zaznaczenie rysuje
+                    // na canvasie (tam ramka jest z `UiPrim::Line`, tu z kresek:
+                    // ikona jest wyrownana do osi, wiec prostokaty sa tansze).
+                    let (cx, cy) = (r.cx(), r.cy());
+                    let (hw, hh) = (10.0 * k, 9.0 * k);
+                    let t = 1.5 * k;
+                    let dash = 5.0 * k;
+                    for i in 0..3 {
+                        let x = cx - hw + i as f32 * (hw - dash * 0.5);
+                        for y in [cy - hh, cy + hh - t] {
+                            out.push(UiPrim::Rect {
+                                x,
+                                y,
+                                w: dash,
+                                h: t,
+                                color: fg,
+                                r: 0.0,
+                            });
+                        }
+                    }
+                    for j in 0..2 {
+                        let y = cy - hh + j as f32 * (hh * 2.0 - dash);
+                        for x in [cx - hw, cx + hw - t] {
+                            out.push(UiPrim::Rect {
+                                x,
+                                y,
+                                w: t,
+                                h: dash,
+                                color: fg,
+                                r: 0.0,
+                            });
+                        }
+                    }
+                }
                 Action::Color(i) => {
                     out.push(UiPrim::Circle {
                         x: r.cx(),
@@ -1217,6 +1265,20 @@ fn shift_fade(prims: &mut [UiPrim], dx: f32, dy: f32, alpha: f32) {
                 *y += dy;
                 fade(color);
             }
+            UiPrim::Line {
+                x0,
+                y0,
+                x1,
+                y1,
+                color,
+                ..
+            } => {
+                *x0 += dx;
+                *y0 += dy;
+                *x1 += dx;
+                *y1 += dy;
+                fade(color);
+            }
             UiPrim::Thumb { x, y, .. }
             | UiPrim::Avatar { x, y, .. }
             | UiPrim::Clip { x, y, .. } => {
@@ -1246,6 +1308,7 @@ mod tests {
             palette: &[Rgba::rgb(255, 255, 255)],
             color_idx: 0,
             eraser: false,
+            select: false,
             width: 1.0,
             can_undo: false,
             can_redo: false,

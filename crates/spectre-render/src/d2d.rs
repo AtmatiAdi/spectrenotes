@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
 use spectre_core::{Bbox, Camera, Document, StrokeId};
@@ -93,6 +93,16 @@ pub enum UiPrim {
         y: f32,
         radius: f32,
         color: Rgba,
+    },
+    /// Odcinek o dowolnym kacie - ramka zaznaczenia i obrys lassa nie sa
+    /// prostokatami wyrownanymi do osi.
+    Line {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: Rgba,
+        width: f32,
     },
     Text {
         x: f32,
@@ -219,9 +229,24 @@ pub struct WetTail {
     pub color: Rgba,
 }
 
+/// Zaznaczona tresc **uniesiona** nad warstwe sucha na czas gestu: te kreski
+/// sa wylaczone z warstwy suchej (`Renderer::set_hidden`) i rysowane co klatke
+/// w transformacji zaznaczenia. Dokument nie wie o niczym, dopoki uzytkownik
+/// nie odstawi zaznaczenia - dzieki temu przesuwanie, skalowanie i obrot nie
+/// kosztuja ani jednej operacji CRDT ani przebudowy warstwy suchej.
+#[derive(Clone, Copy)]
+pub struct Lift<'a> {
+    pub strokes: &'a [(StrokeId, spectre_proto::StrokeData)],
+    pub ink: &'a InkConfig,
+    /// Canvas -> canvas, jak `Matrix3x2`: `[M11, M12, M21, M22, M31, M32]`.
+    pub xform: [f32; 6],
+}
+
 /// Co narysowac na wierzchu klatki, poza dokumentem.
 #[derive(Default, Clone, Copy)]
 pub struct Overlay<'a> {
+    /// Zaznaczenie w trakcie przesuwania/skalowania/obrotu.
+    pub lift: Option<Lift<'a>>,
     pub hud: Option<&'a str>,
     /// Okrag gumki: (x, y, promien) w pikselach ekranu.
     pub cursor: Option<(f32, f32, f32)>,
@@ -299,6 +324,9 @@ pub struct Renderer {
     /// (tolerancja splaszczania byla liczona dla innej skali).
     geo_cache: HashMap<StrokeId, GeoEntry>,
     geo_cache_verts: usize,
+    /// Kreski pominiete w warstwie suchej: zaznaczenie w trakcie gestu jest
+    /// rysowane osobno (`Lift`), wiec pod spodem nie moze byc jego kopii.
+    hidden: HashSet<StrokeId>,
     /// Bufor teselacji wielokrotnego uzytku.
     seg_scratch: Vec<Segment>,
 }
@@ -488,6 +516,7 @@ impl Renderer {
                 ui_scale: 1.0,
                 geo_cache: HashMap::new(),
                 geo_cache_verts: 0,
+                hidden: HashSet::new(),
                 seg_scratch: Vec::with_capacity(4096),
             };
             r.create_size_dependent()?;
@@ -590,6 +619,13 @@ impl Renderer {
     /// unikalny tylko w obrebie notatki, wiec wpisy z poprzedniej notatki pasowalyby
     /// do id kresek nastepnej i pelna przebudowa rysowalaby cudza geometrie
     /// (objaw: biale poziome pasy z notatki testowej na innych notatkach po F11).
+    /// Kreski, ktorych warstwa sucha ma nie rysowac (uniesione zaznaczenie).
+    /// Pusta lista = wszystko wraca do dokumentu.
+    pub fn set_hidden(&mut self, ids: &[StrokeId]) {
+        self.hidden.clear();
+        self.hidden.extend(ids.iter().copied());
+    }
+
     pub fn clear_geometry(&mut self) {
         self.geo_cache.clear();
         self.geo_cache_verts = 0;
@@ -810,6 +846,9 @@ impl Renderer {
         self.ctx.SetTransform(&Self::cam_matrix(cam));
         let mut res = Ok(());
         for (id, data, _) in doc.visible_in(rect) {
+            if self.hidden.contains(&id) {
+                continue;
+            }
             let brush = match self.brush(data.color) {
                 Ok(b) => b,
                 Err(e) => {
@@ -1010,6 +1049,9 @@ impl Renderer {
             self.ctx.BeginDraw();
             self.ctx
                 .DrawImage(&dry, None, None, Default::default(), Default::default());
+            if let Some(lift) = overlay.lift {
+                self.draw_lift(&lift, cam)?;
+            }
             for (t, b) in overlay.tails.iter().zip(&tail_brushes) {
                 self.draw_segments(&t.segs, b, cam)?;
             }
@@ -1051,6 +1093,45 @@ impl Renderer {
             self.swapchain.Present(interval, flags).ok()?;
         }
         Ok(())
+    }
+
+    /// Uniesione zaznaczenie: te same obrysy co w dokumencie (cache geometrii
+    /// jest po `StrokeId`, wiec nic sie nie buduje od nowa), tylko w zlozeniu
+    /// transformacji zaznaczenia z transformacja kamery. Koszt klatki to jedno
+    /// `DrawGeometryRealization` na kreske - tyle, co narysowanie ich w warstwie
+    /// suchej, ktora ich w tym czasie nie ma.
+    unsafe fn draw_lift(&mut self, lift: &Lift, cam: &Camera) -> Result<()> {
+        let [a, b, c, d, e, f] = lift.xform;
+        let cam_m = Self::cam_matrix(cam);
+        // Zlozenie: najpierw zaznaczenie (canvas -> canvas), potem kamera.
+        let m = Matrix3x2 {
+            M11: a * cam_m.M11 + b * cam_m.M21,
+            M12: a * cam_m.M12 + b * cam_m.M22,
+            M21: c * cam_m.M11 + d * cam_m.M21,
+            M22: c * cam_m.M12 + d * cam_m.M22,
+            M31: e * cam_m.M11 + f * cam_m.M21 + cam_m.M31,
+            M32: e * cam_m.M12 + f * cam_m.M22 + cam_m.M32,
+        };
+        // Skala gestu wchodzi w zoom obrysu: przy powiekszaniu realizacja
+        // zbudowana dla mniejszej skali bylaby widocznie kanciasta.
+        let zoom = cam.zoom * (a * d - b * c).abs().sqrt().max(1e-3);
+        self.ctx.SetTransform(&m);
+        let mut res = Ok(());
+        for (id, data) in lift.strokes {
+            let brush = match self.brush(data.color) {
+                Ok(b) => b,
+                Err(e) => {
+                    res = Err(e);
+                    break;
+                }
+            };
+            if let Err(e) = self.draw_stroke(*id, data, lift.ink, zoom, &brush) {
+                res = Err(e);
+                break;
+            }
+        }
+        self.ctx.SetTransform(&Matrix3x2::identity());
+        res
     }
 
     /// Maska przyciemnienia: przeslanie do bitmapy (BGRA premultiplied, czern
@@ -1168,6 +1249,23 @@ impl Renderer {
                         radiusY: *radius,
                     };
                     self.ctx.FillEllipse(&e, &brush);
+                }
+                UiPrim::Line {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    color,
+                    width,
+                } => {
+                    let brush = self.brush(*color)?;
+                    self.ctx.DrawLine(
+                        Vector2 { X: *x0, Y: *y0 },
+                        Vector2 { X: *x1, Y: *y1 },
+                        &brush,
+                        *width,
+                        None,
+                    );
                 }
                 UiPrim::Text {
                     x,

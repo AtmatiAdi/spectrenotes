@@ -34,6 +34,7 @@ use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::pdf;
 use crate::picker::{self, Picker};
+use crate::select;
 use crate::spaces::{self, SpaceInfo};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, RepoRef, SyncWorker, WM_SYNC};
 use crate::thumbs;
@@ -52,6 +53,8 @@ const PALETTE: [Rgba; 6] = [
 
 const WHEEL_STEP_PX: f32 = 80.0;
 const ERASER_RADIUS_PX: f32 = 14.0;
+/// Co tyle pikseli ekranu obrys zaznaczenia dostaje nowy punkt.
+const LASSO_STEP_PX: f32 = 2.0;
 /// Co tyle odcinkow ostatecznych mokra kreska trafia do warstwy suchej
 /// (`wet_pending`); przy `max_seg_px` 1,5 to ~150 px kreski na jedna figure.
 const WET_BURN_SEGS: usize = 96;
@@ -143,12 +146,28 @@ enum Mode {
     Draw,
     Erase,
     Pan,
+    /// Rysowanie obrysu zaznaczenia (narzedzie "zaznacz").
+    Lasso,
+    /// Przesuwanie, skalowanie albo obrot zaznaczonej tresci.
+    Transform,
     /// Przeciaganie paska narzedzi za uchwyt do innej krawedzi.
     DragBar,
     /// Pioro na liscie menu: przeciagniecie przewija, puszczenie bez ruchu
     /// = dotkniecie elementu (issue #8 - ustawienia przelaczaly sie przy
     /// samym kontakcie, a listy nie dalo sie przewinac bez kolka).
     Menu,
+}
+
+/// Czego chce rysik przy tych przyciskach i tym narzedziu. Tryb okna jest
+/// drobniejszy (samo zaznaczanie to `Lasso` albo `Transform`), a zmiana
+/// przycisku w trakcie ruchu ma przerywac akcje tylko wtedy, gdy zmienia
+/// **zamiar**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Want {
+    Draw,
+    Erase,
+    Pan,
+    Select,
 }
 
 /// Dotkniecie listy menu w toku (`Mode::Menu`).
@@ -250,6 +269,15 @@ pub struct App {
     color_idx: usize,
     /// Gumka wybrana z paska/klawiatury - przycisk rysika i tak ma pierwszenstwo.
     eraser_tool: bool,
+    /// Narzedzie zaznaczania (lasso) wybrane z paska/klawiatury.
+    select_tool: bool,
+    /// Zaznaczona tresc: ramka, kopie kresek i gest w toku (`select.rs`).
+    selection: Option<select::Selection>,
+    /// Obrys w trakcie rysowania, w jednostkach canvasu.
+    lasso: Vec<(f32, f32)>,
+    /// Biezacy gest zaczal sie **poza** zaznaczeniem: to odstawienie tresci,
+    /// wiec po jego koncu zaznaczenie znika.
+    place_drop: bool,
 
     mode: Mode,
     buttons: PenButtons,
@@ -681,6 +709,10 @@ impl App {
             stroke: StrokeBuilder::new(ink),
             color_idx: 0,
             eraser_tool: false,
+            select_tool: false,
+            selection: None,
+            lasso: Vec::new(),
+            place_drop: false,
             mode: Mode::Idle,
             buttons: PenButtons::default(),
             hover: false,
@@ -800,23 +832,38 @@ impl App {
             return false; // przyciski nie przerywaja przenoszenia paska ani menu
         }
         let want = if batch.buttons.barrel {
-            Mode::Pan
-        } else if batch.buttons.eraser || self.eraser_tool {
-            Mode::Erase
+            Want::Pan
+        } else if batch.buttons.eraser {
+            Want::Erase
+        } else if self.select_tool {
+            Want::Select
+        } else if self.eraser_tool {
+            Want::Erase
         } else {
-            Mode::Draw
+            Want::Draw
         };
-        if self.mode == want {
+        if self.want_now() == Some(want) {
             return false;
         }
         self.end_action();
         match want {
-            Mode::Draw => self.begin_stroke(batch),
-            Mode::Erase => self.begin_erase(batch),
-            Mode::Pan => self.begin_pan(batch),
-            Mode::Idle | Mode::DragBar | Mode::Menu => {}
+            Want::Draw => self.begin_stroke(batch),
+            Want::Erase => self.begin_erase(batch),
+            Want::Pan => self.begin_pan(batch),
+            Want::Select => self.begin_select(),
         }
         true
+    }
+
+    /// Zamiar, ktory realizuje biezacy tryb; `None` = nic nie trwa.
+    fn want_now(&self) -> Option<Want> {
+        match self.mode {
+            Mode::Draw => Some(Want::Draw),
+            Mode::Erase => Some(Want::Erase),
+            Mode::Pan => Some(Want::Pan),
+            Mode::Lasso | Mode::Transform => Some(Want::Select),
+            Mode::Idle | Mode::DragBar | Mode::Menu => None,
+        }
     }
 
     fn end_action(&mut self) {
@@ -825,6 +872,8 @@ impl App {
             Mode::Erase => self.last_erase_canvas = None,
             Mode::DragBar => self.end_drag_bar(),
             Mode::Menu => self.menu_touch = None,
+            Mode::Lasso => self.end_lasso(),
+            Mode::Transform => self.end_transform(),
             Mode::Pan | Mode::Idle => {}
         }
         self.mode = Mode::Idle;
@@ -949,6 +998,8 @@ impl App {
                 Mode::DragBar => self.toolbar.drag_to(self.last_screen.0, self.last_screen.1),
                 Mode::Idle => {}
                 Mode::Menu => self.menu_drag(),
+                Mode::Lasso => self.lasso_feed(batch),
+                Mode::Transform => self.transform_feed(batch),
             }
             let (px, py) = self.last_screen;
             self.share_cursor(px, py);
@@ -965,6 +1016,8 @@ impl App {
             match self.mode {
                 Mode::Draw => self.feed(batch),
                 Mode::Erase => self.erase_with(batch),
+                Mode::Lasso => self.lasso_feed(batch),
+                Mode::Transform => self.transform_feed(batch),
                 _ => {}
             }
         }
@@ -979,13 +1032,31 @@ impl App {
     /// srodowisku): skrypt testu podaje pioro tekstem, bez ruszania prawdziwej
     /// myszy i bez zabierania fokusu. Komendy: `down X Y [barrel|eraser] [pN]`,
     /// `move X Y [pN]`, `up`, `hover X Y` - wspolrzedne w pikselach okna, `pN`
-    /// = nacisk 0..1 (domyslnie 0,5); `width W` ustawia grubosc piora, `zoom Z` zoom. Probki
+    /// = nacisk 0..1 (domyslnie 0,5); `width W` ustawia grubosc piora, `zoom Z`
+    /// zoom, `tool pen|eraser|select` narzedzie, `esc` konczy zaznaczenie. Probki
     /// ida ta sama droga co z `WM_POINTER`, tylko bez dekodera.
     fn test_input(&mut self, cmd: &str) {
         let mut it = cmd.split_whitespace();
         let Some(op) = it.next() else {
             return;
         };
+        // `tool pen|eraser|select` - to samo, co przyciski paska (test nie ma
+        // jak w nie trafic, zanim pasek sie pokaze).
+        if op == "tool" {
+            match it.next() {
+                Some("pen") => self.set_tool(false, false),
+                Some("eraser") => self.set_tool(true, false),
+                Some("select") => self.set_tool(false, true),
+                _ => {}
+            }
+            self.render();
+            return;
+        }
+        if op == "esc" {
+            self.clear_selection();
+            self.render();
+            return;
+        }
         let mut num = || it.next().and_then(|s| s.parse::<f32>().ok());
         if op == "width" {
             if let Some(w) = num() {
@@ -1214,6 +1285,132 @@ impl App {
         }
     }
 
+    // ----- zaznaczenie (select.rs) -------------------------------------------
+
+    /// Kontakt rysika przy narzedziu zaznaczania. Uchwyt albo wnetrze ramki
+    /// zaczynaja gest; punkt **poza** ramka i uchwytami odstawia tam
+    /// zaznaczona tresc (i konczy zaznaczenie); gdy nic nie jest zaznaczone,
+    /// zaczyna sie obrys.
+    fn begin_select(&mut self) {
+        let (sx, sy) = self.last_screen;
+        let (cx, cy) = self.cam.to_canvas(sx, sy);
+        let scale = self.toolbar.scale();
+        if let Some(sel) = &mut self.selection {
+            match sel.hit(&self.cam, scale, sx, sy) {
+                Some(kind) => {
+                    sel.begin(kind, cx, cy);
+                    self.place_drop = false;
+                }
+                None => {
+                    sel.begin_place(cx, cy);
+                    self.place_drop = true;
+                }
+            }
+            self.mode = Mode::Transform;
+            self.lift_selection();
+            return;
+        }
+        self.lasso.clear();
+        self.lasso.push((cx, cy));
+        self.mode = Mode::Lasso;
+    }
+
+    /// Zaznaczenie idzie na czas gestu na wierzch klatki: warstwa sucha
+    /// przestaje je rysowac, wiec pod przesuwana trescia nie zostaje jej kopia.
+    fn lift_selection(&mut self) {
+        let Some(sel) = &self.selection else {
+            return;
+        };
+        self.renderer.set_hidden(&sel.ids);
+        let b = sel.content_bbox();
+        self.dirty = self.dirty.add_region(b);
+    }
+
+    fn lasso_feed(&mut self, batch: &PenBatch) {
+        for s in &batch.samples {
+            let p = self.cam.to_canvas(s.x, s.y);
+            // Obrys nie potrzebuje gestosci piora: punkt co kilka pikseli ekranu.
+            let far = match self.lasso.last() {
+                Some(l) => (p.0 - l.0).hypot(p.1 - l.1) * self.cam.zoom >= LASSO_STEP_PX,
+                None => true,
+            };
+            if far {
+                self.lasso.push(p);
+            }
+        }
+    }
+
+    fn transform_feed(&mut self, batch: &PenBatch) {
+        let Some(s) = batch.samples.last() else {
+            return;
+        };
+        let (x, y) = self.cam.to_canvas(s.x, s.y);
+        if let Some(sel) = &mut self.selection {
+            sel.update(x, y);
+        }
+    }
+
+    /// Koniec obrysu: zaznaczeniem staje sie to, co obrys otoczyl w calosci.
+    fn end_lasso(&mut self) {
+        let poly = std::mem::take(&mut self.lasso);
+        self.selection = select::from_lasso(&self.doc, &poly);
+        self.status = match &self.selection {
+            Some(s) => format!("selection: {} strokes", s.ids.len()),
+            None => "selection: nothing fully inside the outline".to_string(),
+        };
+    }
+
+    /// Koniec gestu zaznaczenia: przeksztalcona tresc wchodzi do dokumentu
+    /// jako **jedna** akcja historii (`replace_strokes`), a warstwa sucha
+    /// wraca do rysowania kresek z dokumentu.
+    fn end_transform(&mut self) {
+        let Some(mut sel) = self.selection.take() else {
+            return;
+        };
+        let keep = !std::mem::take(&mut self.place_drop);
+        let xf = sel.end();
+        self.renderer.set_hidden(&[]);
+        self.dirty = self.dirty.add_region(sel.content_bbox());
+        if !xf.is_identity() {
+            // Kreska wymazana w miedzyczasie (merge, peer) wypada z zaznaczenia -
+            // inaczej podmiana rozjechalaby sie z lista kresek.
+            sel.retain_live(&self.doc);
+            let data = sel.transformed(&xf);
+            for d in &data {
+                self.dirty = self.dirty.add_region(Bbox::of(d));
+            }
+            let (ops, ids) = self.doc.replace_strokes(&sel.ids, &data);
+            self.persist(&ops);
+            sel.rebind(ids, data);
+        }
+        if keep && !sel.ids.is_empty() {
+            self.selection = Some(sel);
+        }
+    }
+
+    /// Wybor narzedzia z paska albo klawiatury. Wyjscie z zaznaczania konczy
+    /// zaznaczenie - tresc zostaje tam, gdzie ja odstawiono.
+    fn set_tool(&mut self, eraser: bool, select: bool) {
+        self.eraser_tool = eraser;
+        if self.select_tool && !select {
+            self.clear_selection();
+        }
+        self.select_tool = select;
+    }
+
+    /// Koniec zaznaczania: ramka znika, tresc zostaje tam, gdzie jest.
+    fn clear_selection(&mut self) -> bool {
+        self.lasso.clear();
+        let Some(sel) = self.selection.take() else {
+            return false;
+        };
+        self.renderer.set_hidden(&[]);
+        if sel.dragging() {
+            self.dirty = self.dirty.add_region(sel.content_bbox());
+        }
+        true
+    }
+
     fn begin_pan(&mut self, batch: &PenBatch) {
         if let Some(s) = batch.samples.last() {
             self.pan_start = ((s.x, s.y), (self.cam.scroll_x, self.cam.scroll_y));
@@ -1326,6 +1523,7 @@ impl App {
             palette: &PALETTE,
             color_idx: self.color_idx,
             eraser: self.eraser_tool,
+            select: self.select_tool,
             width: self.ink.base_width,
             can_undo: self.doc.can_undo(),
             can_redo: self.doc.can_redo(),
@@ -1418,11 +1616,12 @@ impl App {
                 self.toolbar.drag_to(x, y);
             }
             Action::Menu => self.toggle_menu(),
-            Action::Pen => self.eraser_tool = false,
-            Action::Eraser => self.eraser_tool = true,
+            Action::Pen => self.set_tool(false, false),
+            Action::Eraser => self.set_tool(true, false),
+            Action::Select => self.set_tool(false, true),
             Action::Color(i) => {
                 self.color_idx = i;
-                self.eraser_tool = false;
+                self.set_tool(false, false);
             }
             Action::WidthDown => self.set_width(self.ink.base_width - 0.1),
             Action::WidthUp => self.set_width(self.ink.base_width + 0.1),
@@ -2262,11 +2461,15 @@ impl App {
     }
 
     fn undo(&mut self) {
+        // Cofniecie potrafi wymazac wlasnie zaznaczone kreski (i odrodzic je
+        // pod nowymi id) - zaznaczenie nie mialoby na co wskazywac.
+        self.clear_selection();
         let ops = self.doc.undo();
         self.after_history(&ops);
     }
 
     fn redo(&mut self) {
+        self.clear_selection();
         let ops = self.doc.redo();
         self.after_history(&ops);
     }
@@ -2298,6 +2501,8 @@ impl App {
             return;
         }
         self.end_action();
+        // Zaznaczenie dotyczy kresek tej notatki - z niej nie wychodzi.
+        self.clear_selection();
         self.commit_title();
         self.sync_now();
         // Opuszczana notatka rysowana przy zamknietym menu ma miniature sprzed
@@ -2347,6 +2552,7 @@ impl App {
             return;
         }
         self.reload_pending = false;
+        self.clear_selection();
         self.sync_now();
         match open_note(
             self.cur_space(),
@@ -4181,6 +4387,16 @@ impl App {
         let title = self.title();
         let mut prims = std::mem::take(&mut self.ui_prims);
         prims.clear();
+        // Zaznaczenie jest czescia canvasu, nie chrome: obrys w trakcie
+        // rysowania albo ramka z uchwytami ida jako pierwsze, pod pasek i panel.
+        if self.waves.is_none() {
+            let k = self.toolbar.scale();
+            if self.mode == Mode::Lasso {
+                select::build_lasso(&self.lasso, &self.cam, k, &mut prims);
+            } else if let Some(sel) = &self.selection {
+                sel.build(&self.cam, k, &mut prims);
+            }
+        }
         let mut st = self.ui_state();
         st.title = &title;
         // Podczas ochrony AMOLED zadnego chrome: ekran to sama notatka pod pasami.
@@ -4291,11 +4507,22 @@ impl App {
         };
         let tail = std::mem::take(&mut self.tail_buf);
         let color = PALETTE[self.color_idx];
+        // Uniesiona tresc zaznaczenia: warstwa sucha jej teraz nie ma, klatka
+        // dorysowuje ja z gotowych obrysow w transformacji gestu.
+        let lift = match (&self.selection, self.mode) {
+            (Some(sel), Mode::Transform) => Some(spectre_render::Lift {
+                strokes: &sel.strokes,
+                ink: &self.ink,
+                xform: sel.xform().to_array(),
+            }),
+            _ => None,
+        };
         let presented = self.renderer.present(
             &tail,
             color,
             &self.cam,
             Overlay {
+                lift,
                 hud: hud.as_deref(),
                 cursor,
                 tails: &wet_tails,
@@ -4344,13 +4571,16 @@ impl App {
             Mode::Erase => "ERASER".to_string(),
             Mode::Draw => format!("pen #{}", self.color_idx + 1),
             Mode::Menu => "MENU".to_string(),
+            Mode::Lasso => "SELECTING".to_string(),
+            Mode::Transform => "MOVING SELECTION".to_string(),
             Mode::Idle if self.buttons.eraser || self.eraser_tool => "eraser".to_string(),
+            Mode::Idle if self.select_tool => "select".to_string(),
             Mode::Idle => format!("pen #{}", self.color_idx + 1),
         };
         format!(
             "SpectreNotes   note {}/{}   strokes: {}   {}   zoom {:.0}%\n\
              tool: {}   width: {:.1} px   scroll: {:.0},{:.0}   waves: {}   frame: {:.2} ms (max {:.1})   GPU: {}\n\
-             [1-6] color  [E] eraser  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top  [Ctrl+wheel] zoom\n\
+             [1-6] color  [E] eraser  [S] select  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top  [Ctrl+wheel] zoom\n\
              [barrel button]/[wheel] scroll   [PgUp/PgDn] notes  [Ctrl+N] new   [Win+Shift+N] show/hide\n\
              [F11] fullscreen  [H] hud  [V] vsync  [T] scrolling: {}  [Esc] hide  [Ctrl+Q] quit\n\
              git: {}
@@ -4769,7 +4999,15 @@ pub unsafe extern "system" fn wndproc(
                     app.eraser_tool = false;
                 }
                 // E
-                0x45 => app.eraser_tool = !app.eraser_tool,
+                0x45 => {
+                    let e = !app.eraser_tool;
+                    app.set_tool(e, false);
+                }
+                // S - zaznaczanie obrysem
+                0x53 => {
+                    let s = !app.select_tool;
+                    app.set_tool(false, s);
+                }
                 // H
                 0x48 => app.show_hud = !app.show_hud,
                 // V
@@ -4804,6 +5042,8 @@ pub unsafe extern "system" fn wndproc(
                     } else if vk == VK_ESCAPE {
                         if app.picker.open {
                             app.picker.close();
+                        } else if app.clear_selection() {
+                            // Zaznaczenie znika, tresc zostaje - reszta Esc czeka.
                         } else if app.menu.open {
                             app.toggle_menu();
                         } else if app.fullscreen.is_active() {
