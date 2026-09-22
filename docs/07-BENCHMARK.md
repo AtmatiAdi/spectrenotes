@@ -37,12 +37,35 @@ tego nie są zmianą.
 | 0.3.6 | 2788 | 568 / 625 | 126 (119) | 156 (148) | 87,4 (70,0) | 14,2 | 141 |
 | 0.3.7-dev | 2836 | 245 / 312 | 105 (98) | 134 (130) | 88,8 (71,0) | 14,0 | 219* |
 
-\* CPU dla 0.3.7-dev w powtórkach: 109–219 ms — szum, nie regresja.
+\*\* CPU dla 0.3.7-dev w powtórkach: 109–219 ms — szum, nie regresja.
 
 Wewnątrz procesu (0.3.7-dev, 5 startów na ciepło): okno 5 ms, notatka otwarta
 10 ms, urządzenie D3D 46–51 ms, swapchain 3, D2D 1, DWrite 1, renderer gotowy
 62–69 ms, **pierwsza klatka 81–91 ms**. Przed przeniesieniem urządzenia D3D do
 wątku (0.3.6): D3D 60–74 ms, renderer 75–92, pierwsza klatka 97–122.
+
+## Wyniki (2026-09-22, stacja dokująca, 3 monitory, obok działająca instancja użytkownika)
+
+Inne warunki niż 19 IX (wszystko ~2× wolniej — nie porównywać z tabelą wyżej,
+tylko wiersze między sobą; wszystkie trzy binarki jedna po drugiej):
+
+| wersja | exe kB | świeża okno/klatka | okno med (min) | klatka med (min) | RAM MB (priv) | tray MB | CPU ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 0.3.6 | 2788 | 601 / 886 | 294 (247) | 335 (303) | 87,6 (71,3) | 13,2 | 312 |
+| 0.3.7-dev (D3D w tle) | 2836 | 585 / 622 | 274 (204) | 317 (241) | 86,9 (71,1) | 13,2 | 266 |
+| 0.3.7 | 2848 | 542 / 590 | 232 (180) | 284 (230) | 74,1 (59,9) | 12,9 | 234 |
+
+Uwaga do „okno" w 0.3.7: okno pokazuje się **z gotową klatką** (pierwsza klatka
+rysowana pod maską DWM przed pokazaniem, issue #20), więc `IsWindowVisible`
+wypada później niż w 0.3.6, gdzie okno pojawiało się czarne i dopiero potem
+malowało. Miarodajna jest kolumna „klatka" i pomiar `GetWindowRect`/`DWMWA_CLOAKED`
+co 1 ms (`rectpoll.ps1`, profil zmaksymalizowany, 6 notatek): treść na ekranie
+**~205 ms** od `CreateProcess` w 0.3.7 wobec **~260 ms** w 0.3.6 — start szedł
+przez trzy rozmiary okna (1400×900 z `CreateWindow`, zwykły z placementu,
+zmaksymalizowany), każdy z `ResizeBuffers` i pełną klatką, plus ~30 ms na
+kontekst IME/TSF w pierwszym `WM_ACTIVATE`. Teraz jest jeden rozmiar, jedna
+klatka (~25 ms przy 2880×1740) i brak IME. RAM −13 MB — to biblioteki IME/TSF,
+które już się nie ładują.
 
 ## Co z tego wynika
 
