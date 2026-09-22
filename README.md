@@ -102,6 +102,17 @@ zapisuje się położenie sprzed pełnego ekranu — prostokąt monitora nie jes
 wyborem. Wejście i wyjście meldujemy powłoce przez `ITaskbarList2::MarkFullscreenWindow`,
 więc pasek zadań ustępuje od razu, zamiast czekać na heurystykę powłoki (ta wymaga
 pierwszego planu i zauważa rzecz po sekundzie czy dwóch).
+
+**Start bez skoku rozmiaru** (issue #20): okno powstaje od razu w docelowym prostokącie
+(dla zmaksymalizowanego — obszar roboczy monitora z zapisanego położenia), obszar klienta
+to całe okno od pierwszego `WM_NCCALCSIZE`, więc renderer i pierwsza klatka mają właściwy
+rozmiar; maksymalizacja idzie z miejsca, a pierwsze pokazanie pod maską DWM i bez animacji
+(wracają po 500 ms). Widoczne okno nie zmienia prostokąta ani razu, treść jest na ekranie
+~55 ms wcześniej niż przy trzech kolejnych rozmiarach. Przy okazji wyłączone IME
+(`ImmDisableIME`: pierwsza aktywacja okna kosztowała ~30 ms na kontekst TSF; kto pisze
+przez IME, ustawia `ime=1` w `config.txt`), a start do traya odtwarza maksymalizację
+przy pierwszym pokazaniu. Aplikacja **otwiera notatkę z poprzedniej sesji** (`last_note`
+w `config.txt`, issue #18); gdy jej nie ma — ostatnią własną.
 Technicznie pełny ekran to **maksymalizacja do całego monitora**: okno (bez
 `WS_CAPTION`, ale z `WS_THICKFRAME` — snap i Win+strzałki działają) odpowiada na
 `WM_GETMINMAXINFO` obszarem roboczym, a w pełnym ekranie prostokątem monitora.
@@ -195,9 +206,9 @@ tekstowym (Enter = nowy wiersz, Ctrl+Enter wysyła, Ctrl+V wkleja), *Attach a fi
 użytkownika, a zrzuty/pliki lądują w publicznym repo `spectrenotes-feedback` na jego
 koncie (Contents API — issue w cudzym repo nie przyjmie pliku; obrazek z surowego
 adresu GitHub renderuje w treści). Pod tekstem doklejana jest wersja, Windows, GPU,
-rozmiar okna i ostatni komunikat synca. W trakcie wysyłki pasek postępu odgrywa ~8 s
-scenariusz komentarzy (easter egg — potrafi się cofnąć), prawdziwy błąd przerywa go od
-razu i szkic zostaje. Bez logowania przycisk otwiera formularz nowego issue w
+rozmiar okna i ostatni komunikat synca. W trakcie wysyłki pasek postępu odgrywa ~5–6 s
+scenariusz komentarzy losowany za każdym razem z puli ~90 tekstów (easter egg — potrafi
+się cofnąć, tempo też losowe; issue #19), prawdziwy błąd przerywa go od razu i szkic zostaje. Bez logowania przycisk otwiera formularz nowego issue w
 przeglądarce z wpisaną treścią (bez załączników). Dalej grupy funkcjonalne: *Wyświetlanie* (vsync, tearing, pełny ekran,
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (włącz/wyłącz; **tylko

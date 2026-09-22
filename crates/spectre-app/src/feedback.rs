@@ -169,54 +169,263 @@ pub fn browser_url(target: &str, draft: &Draft, info: &Info) -> String {
 
 /// Krok scenariusza: komentarz, do jakiego postepu (0..1) pasek dojezdza
 /// i w ile milisekund. Cofniecia sa celowe.
+#[derive(Debug, Clone)]
 struct Step {
     text: &'static str,
     to: f32,
     ms: u64,
 }
 
-const SCRIPT: &[Step] = &[
-    Step { text: "Folding your feedback into a paper plane…", to: 0.14, ms: 900 },
-    Step { text: "Throwing it at GitHub…", to: 0.31, ms: 800 },
-    Step { text: "It bounced off the Octocat.", to: 0.22, ms: 650 },
-    Step { text: "Throwing again, harder…", to: 0.48, ms: 900 },
-    Step { text: "Attaching pixels one by one…", to: 0.66, ms: 1100 },
-    Step { text: "Dropped a few pixels. Picking them up…", to: 0.57, ms: 700 },
-    Step { text: "Convincing the server this is important…", to: 0.84, ms: 1000 },
-    Step { text: "Server says: \"hmm.\"", to: 0.80, ms: 500 },
-    Step { text: "Server says: \"…fine.\"", to: 0.96, ms: 700 },
-    Step { text: "Almost there. Really. Almost.", to: 0.99, ms: 900 },
+/// Pierwszy komentarz: cos sie zaczyna.
+const OPENERS: &[&str] = &[
+    "Folding your feedback into a paper plane…",
+    "Waking up the carrier pigeon…",
+    "Clearing throat…",
+    "Putting on the good font…",
+    "Looking for the send button. Found it.",
+    "Rolling the feedback into a tiny scroll…",
+    "Warming up the tubes…",
+    "Counting the words. Twice.",
+    "Reading it once more. Nodding.",
+    "Licking the stamp…",
+    "Untangling the network cable…",
+    "Taking a deep breath…",
 ];
+
+/// Postep do przodu: rzeczy sie dzieja.
+const FORWARD: &[&str] = &[
+    "Throwing it at GitHub…",
+    "Attaching pixels one by one…",
+    "Convincing the server this is important…",
+    "Negotiating with the firewall…",
+    "Translating to Octocat…",
+    "Compressing the screenshot with both hands…",
+    "Asking the router nicely…",
+    "Feeding the packets…",
+    "Sorting the bytes by colour…",
+    "Waiting for the Wi-Fi to notice us…",
+    "Signing the paper plane…",
+    "Adding a polite 'please'…",
+    "Explaining the bug to the cloud…",
+    "Bribing the load balancer with cookies…",
+    "Crossing the border of the LAN…",
+    "Walking the last mile on foot…",
+    "Rounding the corners of the request…",
+    "Stapling the screenshot to the issue…",
+    "Politely queuing behind a robot…",
+    "Whispering the URL to the DNS…",
+    "Tightening the loose bytes…",
+    "Sending the first half…",
+    "Sending the other half…",
+    "Ringing the doorbell at api.github.com…",
+    "Filling in the form in triplicate…",
+    "Trying the secret handshake…",
+    "Looking up 'TLS' in the dictionary…",
+    "Rehearsing the issue title…",
+    "Choosing a good label. None fit. Moving on.",
+    "Blowing on the cartridge…",
+    "Turning it off and on again. Just in case.",
+    "Encrypting with extra enthusiasm…",
+    "Carrying the pixels upstairs…",
+    "Checking the spelling of 'Octocat'…",
+    "Buffering. Fashionably.",
+    "Poking the server with a stick…",
+    "Wrapping it in bubble wrap…",
+    "Asking the server to hold the door…",
+    "Hopping over the proxy…",
+    "Threading the needle…",
+    "Rendering the 'sending' animation for real this time…",
+    "Herding the packets into a queue…",
+    "Reticulating splines…",
+    "Waving at the moderator…",
+    "Ordering the bits from low to high…",
+    "Serving the request with a smile…",
+    "Sneaking past the rate limit…",
+    "Applying a bit of tape…",
+];
+
+/// Cofniecie: cos poszlo nie tak, ale idziemy dalej.
+const SETBACKS: &[&str] = &[
+    "It bounced off the Octocat.",
+    "Dropped a few pixels. Picking them up…",
+    "Server says: \"hmm.\"",
+    "Autocorrect changed 'bug' to 'hug'. Fixing…",
+    "Wrong repo. Backing out slowly…",
+    "The pigeon came back. Trying again…",
+    "Packet fell under the desk. Reaching…",
+    "Oops, sent it to the printer. Recalling…",
+    "Wi-Fi blinked. Pretending it didn't.",
+    "The cloud asked for ID. Showing the screenshot…",
+    "Ran into a semicolon. Stepping around it…",
+    "Lost a byte. It was a boring one anyway.",
+    "Stack overflowed a little. Mopping…",
+    "Someone unplugged something. Plugging it back…",
+    "Got a 418. Apparently we are a teapot.",
+    "Took a wrong turn at the router…",
+    "The paper plane hit a window. Refolding…",
+    "Server sneezed. Bless it.",
+    "Rate limited by a very polite robot…",
+    "Screenshot was upside down. Flipping…",
+];
+
+/// Ostatnie slowo, zanim GitHub odpowie.
+const FINALS: &[&str] = &[
+    "Almost there. Really. Almost.",
+    "Server says: \"…fine.\"",
+    "Any second now. Probably.",
+    "Waiting for the green tick…",
+    "Holding the door for the response…",
+    "Ninety-nine percent. The hardest percent.",
+    "Knocking. Someone's coming.",
+    "Sealing the envelope…",
+];
+
+/// Ile krokow srodkowych ma scenariusz (bez otwarcia i zakonczenia).
+const MIDDLE_MIN: usize = 5;
+const MIDDLE_MAX: usize = 7;
+/// Najwyzej tyle cofniec, nigdy dwa pod rzad i nigdy jako pierwszy krok.
+const SETBACK_MAX: usize = 2;
+
+/// Losowy scenariusz: inne teksty i inne tempo za kazdym razem (issue #19).
+/// Krok do przodu trwa 500-900 ms, cofniecie 450-700 ms - razem ~5-6 s
+/// (stary, staly scenariusz: 8,2 s); otwarcie jest krotkie, zeby od razu
+/// bylo widac ruch.
+#[derive(Debug, Clone)]
+pub struct Script {
+    steps: Vec<Step>,
+}
+
+impl Script {
+    pub fn random() -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() ^ (d.as_secs() as u32))
+            .unwrap_or(0x9e37_79b9);
+        Self::seeded(nanos | 1)
+    }
+
+    /// Ten sam seed = ten sam scenariusz (testy).
+    pub fn seeded(seed: u32) -> Self {
+        let mut rng = Rng(seed);
+        let mut steps = vec![Step {
+            text: rng.pick(OPENERS),
+            to: rng.range(0.08, 0.16),
+            ms: rng.range_ms(450, 700),
+        }];
+        let middle = MIDDLE_MIN + rng.below(MIDDLE_MAX - MIDDLE_MIN + 1);
+        // Ktore kroki srodkowe cofaja: losowe pozycje, nie pierwsza, bez sasiadow.
+        let mut setback_at: Vec<usize> = Vec::new();
+        for _ in 0..SETBACK_MAX {
+            let i = 1 + rng.below(middle - 1);
+            if !setback_at.iter().any(|&j| j.abs_diff(i) <= 1) {
+                setback_at.push(i);
+            }
+        }
+        // Kroki do przodu dziela miedzy siebie droge do 0,93 (z losowym
+        // rozrzutem), cofniecia odejmuja swoje - to sie potem odrabia.
+        let mut forward_left = middle - setback_at.len();
+        let mut used: Vec<&'static str> = Vec::new();
+        let mut p = steps[0].to;
+        for i in 0..middle {
+            if setback_at.contains(&i) {
+                p = (p - rng.range(0.04, 0.12)).max(0.02);
+                steps.push(Step {
+                    text: rng.pick_fresh(SETBACKS, &mut used),
+                    to: p,
+                    ms: rng.range_ms(450, 700),
+                });
+            } else {
+                // Ostatni krok do przodu laduje dokladnie na 0,93; wczesniejsze
+                // biora losowa porcje tego, co zostalo.
+                forward_left -= 1;
+                p = if forward_left == 0 {
+                    0.93
+                } else {
+                    let share = (0.93 - p) / (forward_left + 1) as f32 * rng.range(0.7, 1.3);
+                    (p + share).min(0.9)
+                };
+                steps.push(Step {
+                    text: rng.pick_fresh(FORWARD, &mut used),
+                    to: p,
+                    ms: rng.range_ms(500, 900),
+                });
+            }
+        }
+        steps.push(Step {
+            text: rng.pick(FINALS),
+            to: 0.99,
+            ms: rng.range_ms(700, 1000),
+        });
+        Self { steps }
+    }
+
+    /// Postep i komentarz po `ms` od startu; `true` = scenariusz odegrany.
+    pub fn progress_at(&self, ms: u64) -> (f32, &'static str, bool) {
+        let mut t = 0u64;
+        let mut from = 0.0f32;
+        for s in &self.steps {
+            if ms < t + s.ms {
+                let f = (ms - t) as f32 / s.ms as f32;
+                return (from + (s.to - from) * f, s.text, false);
+            }
+            t += s.ms;
+            from = s.to;
+        }
+        let text = if ms > t + HONEST_AFTER_MS {
+            "OK, honestly: still waiting for GitHub…"
+        } else {
+            self.steps[self.steps.len() - 1].text
+        };
+        (from, text, true)
+    }
+
+    /// Dlugosc scenariusza w ms (testy).
+    #[cfg(test)]
+    pub fn total_ms(&self) -> u64 {
+        self.steps.iter().map(|s| s.ms).sum()
+    }
+}
+
+/// xorshift32 - do losowania tekstow, nie potrzebujemy jakosci.
+struct Rng(u32);
+
+impl Rng {
+    fn next(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() as usize) % n.max(1)
+    }
+    fn range(&mut self, a: f32, b: f32) -> f32 {
+        a + (b - a) * (self.next() as f32 / u32::MAX as f32)
+    }
+    fn range_ms(&mut self, a: u64, b: u64) -> u64 {
+        a + self.below((b - a) as usize + 1) as u64
+    }
+    fn pick(&mut self, pool: &[&'static str]) -> &'static str {
+        pool[self.below(pool.len())]
+    }
+    /// Bez powtorek w jednym scenariuszu.
+    fn pick_fresh(&mut self, pool: &[&'static str], used: &mut Vec<&'static str>) -> &'static str {
+        for _ in 0..8 {
+            let s = self.pick(pool);
+            if !used.contains(&s) {
+                used.push(s);
+                return s;
+            }
+        }
+        self.pick(pool)
+    }
+}
 
 /// Po scenariuszu bez odpowiedzi GitHuba: tyle czekamy, zanim przyznamy sie,
 /// ze to juz nie zart.
 const HONEST_AFTER_MS: u64 = 4000;
-
-/// Postep i komentarz po `ms` od startu; `true` = scenariusz odegrany.
-pub fn progress_at(ms: u64) -> (f32, &'static str, bool) {
-    let mut t = 0u64;
-    let mut from = 0.0f32;
-    for s in SCRIPT {
-        if ms < t + s.ms {
-            let f = (ms - t) as f32 / s.ms as f32;
-            return (from + (s.to - from) * f, s.text, false);
-        }
-        t += s.ms;
-        from = s.to;
-    }
-    let text = if ms > t + HONEST_AFTER_MS {
-        "OK, honestly: still waiting for GitHub…"
-    } else {
-        SCRIPT[SCRIPT.len() - 1].text
-    };
-    (from, text, true)
-}
-
-/// Dlugosc scenariusza (do testow).
-#[cfg(test)]
-fn script_ms() -> u64 {
-    SCRIPT.iter().map(|s| s.ms).sum()
-}
 
 // ----- okno ----------------------------------------------------------------------
 
@@ -237,6 +446,7 @@ pub enum Phase {
     Edit,
     Sending {
         since: Instant,
+        script: Script,
         result: Option<Result<Issue, String>>,
     },
     Sent(Issue),
@@ -318,6 +528,7 @@ impl Feedback {
     pub fn begin_send(&mut self) {
         self.phase = Phase::Sending {
             since: Instant::now(),
+            script: Script::random(),
             result: None,
         };
     }
@@ -335,8 +546,13 @@ impl Feedback {
 
     /// Klatka animacji; `true` = nadal trwa (timer ma tykac dalej).
     pub fn tick(&mut self) -> bool {
-        if let Phase::Sending { since, result } = &mut self.phase {
-            let (_, _, done) = progress_at(since.elapsed().as_millis() as u64);
+        if let Phase::Sending {
+            since,
+            script,
+            result,
+        } = &mut self.phase
+        {
+            let (_, _, done) = script.progress_at(since.elapsed().as_millis() as u64);
             if done {
                 if let Some(Ok(i)) = result.take() {
                     self.draft = Draft::default();
@@ -429,9 +645,10 @@ impl Feedback {
         let mut y = inner.y;
         match &self.phase {
             Phase::Edit => y = self.build_edit(inner, y, out),
-            Phase::Sending { since, .. } => {
+            Phase::Sending { since, script, .. } => {
                 let ms = since.elapsed().as_millis() as u64;
-                self.build_sending(inner, y, ms, out);
+                let (p, text, _) = script.progress_at(ms);
+                self.build_sending(inner, y, p, text, out);
             }
             Phase::Sent(issue) => {
                 let issue = issue.clone();
@@ -450,8 +667,7 @@ impl Feedback {
         match &self.phase {
             Phase::Edit => {
                 let n = self.draft.attachments.len() as f32;
-                PAD * 2.0 + 30.0 + LINE_H + 10.0 + TEXT_H + 10.0 + n * ROW_H + BTN_H + 10.0
-                    + BTN_H
+                PAD * 2.0 + 30.0 + LINE_H + 10.0 + TEXT_H + 10.0 + n * ROW_H + BTN_H + 10.0 + BTN_H
             }
             Phase::Sending { .. } => PAD * 2.0 + 30.0 + LINE_H + 24.0 + 10.0 + LINE_H,
             Phase::Sent(_) => PAD * 2.0 + 30.0 + LINE_H * 2.0 + 16.0 + BTN_H,
@@ -701,15 +917,24 @@ impl Feedback {
         y += self.buttons(
             inner,
             y,
-            &[(Hit::Close, "Cancel", false), (Hit::Send, send_label, empty)],
+            &[
+                (Hit::Close, "Cancel", false),
+                (Hit::Send, send_label, empty),
+            ],
             out,
         );
         y
     }
 
-    fn build_sending(&mut self, inner: Rect, mut y: f32, ms: u64, out: &mut Vec<UiPrim>) {
+    fn build_sending(
+        &mut self,
+        inner: Rect,
+        mut y: f32,
+        p: f32,
+        text: &str,
+        out: &mut Vec<UiPrim>,
+    ) {
         let k = self.scale;
-        let (p, text, _) = progress_at(ms);
         y += self.title(inner, y, "Sending…", out);
         y += self.line(inner, y, text, FG_DIM, out);
         y += 24.0 * k;
@@ -731,25 +956,28 @@ impl Feedback {
             r: bar_h * 0.5,
         });
         y += 10.0 * k;
-        self.line(
-            inner,
-            y,
-            &format!("{:.0} %", p * 100.0),
-            FG_DIM,
-            out,
-        );
+        self.line(inner, y, &format!("{:.0} %", p * 100.0), FG_DIM, out);
     }
 
     fn build_sent(&mut self, inner: Rect, mut y: f32, issue: &Issue, out: &mut Vec<UiPrim>) {
         let k = self.scale;
         y += self.title(inner, y, &format!("Sent - issue #{}", issue.number), out);
-        y += self.line(inner, y, "Thank you! You can follow it on GitHub.", FG_DIM, out);
+        y += self.line(
+            inner,
+            y,
+            "Thank you! You can follow it on GitHub.",
+            FG_DIM,
+            out,
+        );
         y += self.line(inner, y, &issue.url, FG_DIM, out);
         y += 16.0 * k;
         self.buttons(
             inner,
             y,
-            &[(Hit::Close, "Close", false), (Hit::OpenIssue, "Open on GitHub", false)],
+            &[
+                (Hit::Close, "Close", false),
+                (Hit::OpenIssue, "Open on GitHub", false),
+            ],
             out,
         );
     }
@@ -777,7 +1005,10 @@ impl Feedback {
         self.buttons(
             inner,
             y,
-            &[(Hit::Close, "Close", false), (Hit::Retry, "Back to the draft", false)],
+            &[
+                (Hit::Close, "Close", false),
+                (Hit::Retry, "Back to the draft", false),
+            ],
             out,
         );
     }
@@ -808,25 +1039,49 @@ mod tests {
 
     #[test]
     fn scenariusz_dojezdza_i_sie_cofa() {
-        let (p0, _, done0) = progress_at(0);
-        assert!(p0.abs() < 0.001 && !done0);
-        // Krok 3 cofa z 0,31 do 0,22.
-        let (a, _, _) = progress_at(900 + 800);
-        let (b, _, _) = progress_at(900 + 800 + 650);
-        assert!(a > b, "{a} {b}");
-        let total = script_ms();
-        let (p, text, done) = progress_at(total + 1);
-        assert!(done && p >= 0.98 && p < 1.0, "{p}");
-        assert_eq!(text, "Almost there. Really. Almost.");
-        let (_, text, _) = progress_at(total + HONEST_AFTER_MS + 1);
-        assert!(text.contains("honestly"));
-        // Monotoniczny w obrebie kroku, bez skokow miedzy krokami.
-        let mut prev = 0.0f32;
-        for ms in (0..total).step_by(10) {
-            let (p, _, _) = progress_at(ms);
-            assert!((p - prev).abs() < 0.2, "skok przy {ms}: {prev} -> {p}");
-            prev = p;
+        // Sto losowych scenariuszy: kazdy zaczyna od zera, konczy blisko 1,
+        // ma co najmniej jedno cofniecie, nie skacze i trwa 4-7 s.
+        let mut lengths = std::collections::BTreeSet::new();
+        let mut texts = std::collections::BTreeSet::new();
+        for seed in 1..=100u32 {
+            let s = Script::seeded(seed * 2_654_435_761);
+            let (p0, _, done0) = s.progress_at(0);
+            assert!(p0.abs() < 0.001 && !done0);
+            let total = s.total_ms();
+            assert!((3300..=8100).contains(&total), "seed {seed}: {total} ms");
+            lengths.insert(total);
+            let (p, text, done) = s.progress_at(total + 1);
+            assert!(done && p >= 0.98 && p < 1.0, "{p}");
+            // Ostatni krok to koncowka, nie skok z polowy paska.
+            let (before_final, _, _) = s.progress_at(total - s.steps[s.steps.len() - 1].ms - 1);
+            assert!(
+                before_final >= 0.8,
+                "seed {seed}: przed koncowka {before_final}"
+            );
+            assert!(FINALS.contains(&text));
+            let (_, text, _) = s.progress_at(total + HONEST_AFTER_MS + 1);
+            assert!(text.contains("honestly"));
+            let mut prev = 0.0f32;
+            let mut setbacks = 0;
+            let mut last_text = "";
+            for ms in (0..total).step_by(10) {
+                let (p, text, _) = s.progress_at(ms);
+                assert!((p - prev).abs() < 0.2, "skok przy {ms}: {prev} -> {p}");
+                if text != last_text {
+                    if SETBACKS.contains(&text) {
+                        setbacks += 1;
+                        assert!(!SETBACKS.contains(&last_text), "dwa cofniecia pod rzad");
+                    }
+                    last_text = text;
+                    texts.insert(text);
+                }
+                prev = p;
+            }
+            assert!(setbacks >= 1, "seed {seed}: bez cofniecia");
         }
+        // Losowosc: rozne dlugosci i wiele roznych tekstow w uzyciu.
+        assert!(lengths.len() > 50, "{}", lengths.len());
+        assert!(texts.len() > 60, "{}", texts.len());
     }
 
     #[test]

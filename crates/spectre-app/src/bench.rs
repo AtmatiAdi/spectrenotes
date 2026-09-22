@@ -85,8 +85,8 @@ fn time<F: FnMut()>(iters: usize, mut f: F) -> (f32, f32) {
 }
 
 pub fn run() -> windows::core::Result<()> {
-    window::init_process();
-    let hwnd = window::create_window("SpectreBench", "bench", proc_, 1400, 900)?;
+    window::init_process(false);
+    let hwnd = window::create_window("SpectreBench", "bench", proc_, 1400, 900, None)?;
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
     }

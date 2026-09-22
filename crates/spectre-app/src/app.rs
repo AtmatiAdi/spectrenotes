@@ -10,9 +10,9 @@ use spectre_render::{Overlay, PresentMode, Renderer, UiPrim, WetTail};
 /// Urzadzenie D3D tworzone w tle od startu `main` (`spectre_render::Device`).
 type DeviceHandle = Option<std::thread::JoinHandle<windows::core::Result<spectre_render::Device>>>;
 use spectre_shell_win::shield::HoldError;
-use spectre_shell_win::{capture, dialog, sysinfo};
 use spectre_shell_win::tray::{self, Tray, HOTKEY_TOGGLE, WM_TRAY};
 use spectre_shell_win::window::{self, Fullscreen};
+use spectre_shell_win::{capture, dialog, sysinfo};
 use spectre_shell_win::{PenBatch, PenButtons, PenDecoder};
 use spectre_sync::live::{Event as LiveEvent, Job as LiveJob};
 use spectre_sync::{AuthorName, NoteStore, Space};
@@ -28,16 +28,16 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::amoled::Waves;
 use crate::config::Config;
-use crate::lan::LanConfig;
 use crate::feedback::{self, Feedback, Hit as FeedbackHit};
+use crate::lan::LanConfig;
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::pdf;
 use crate::picker::{self, Picker};
 use crate::spaces::{self, SpaceInfo};
 use crate::sync::{Event as SyncEvent, Job as SyncJob, Mark, RepoRef, SyncWorker, WM_SYNC};
-use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 use crate::thumbs;
+use crate::ui::{Action, Dock, TitleAction, Toolbar, UiState};
 use crate::update::{State as UpdateState, Updater, WM_UPDATE};
 
 /// Paleta pod AMOLED: niskie luminancje, bez czystej bieli (docs/04).
@@ -103,6 +103,11 @@ const TOPMOST_SLOW_MS: u32 = 5000;
 /// Klatki paska postepu w oknie feedbacku (scenariusz trwa ~8 s).
 const TIMER_FEEDBACK: usize = 11;
 const FEEDBACK_TICK_MS: u32 = 33;
+/// Animacje DWM wracaja tyle ms po pierwszym pokazaniu okna (issue #20):
+/// DWM decyduje o animacji otwarcia przy najblizszym zlozeniu ekranu, wiec
+/// nie wolno ich wlaczyc od razu po `ShowWindow`.
+const TIMER_DWM: usize = 12;
+const DWM_TRANSITIONS_BACK_MS: u32 = 500;
 /// Fale przyciemnienia (Z7, `amoled.rs`): start po tylu ms bez wejscia, potem
 /// klatka co `WAVES_TICK_MS`. Kazde wejscie gasi je natychmiast; w tle (okno
 /// ukryte) timer nie chodzi.
@@ -399,6 +404,8 @@ pub struct App {
     frame_max_ms: f32,
     /// Pierwsza klatka juz zalogowana (`startup:`).
     first_frame_logged: bool,
+    /// Start do traya: zapisane polozenie okna czeka na pierwsze pokazanie.
+    pending_placement: Option<window::Placement>,
 }
 
 /// `start_hidden`: start do traya (autostart `--tray`) - polozenie odtworzone,
@@ -417,32 +424,35 @@ pub fn install(
     eprintln!("space: {}", space_dir.display());
     eprintln!("author: {}", app.author.dir_name());
     eprintln!("hotkey: Win+Shift+N   tray: click = show/hide, right-click = menu");
-    let placement = app.config.get("window").map(str::to_string);
+    let placement = app.config.get("window").and_then(window::Placement::parse);
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(app) as isize);
     }
-    // Od teraz WM_NCCALCSIZE obsluguje aplikacja - system musi przeliczyc ramke.
+    eprintln!("startup: app built {:.0} ms", crate::since_start_ms());
+    // Ramka policzona jeszcze raz z aplikacja na miejscu (WM_NCCALCSIZE idzie
+    // do niej tez przed instalacja - patrz `wndproc` - wiec nic sie nie zmienia).
     window::apply_frame_change(hwnd);
-    let restored = placement
-        .as_deref()
-        .map(|p| window::apply_placement(hwnd, p, !start_hidden))
-        .unwrap_or(false);
-    if !restored && !start_hidden {
-        unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOW);
+    if let Some(app) = unsafe { app_of(hwnd) } {
+        // Okno powstalo w docelowym prostokacie (`create_window` z tym samym
+        // polozeniem), renderer i kamera maja juz wlasciwy rozmiar - pozniejsze
+        // zmiany rozmiaru nie ruszaja zoomu.
+        app.first_size = false;
+        if start_hidden {
+            // Start do traya: polozenie odtwarzamy przy pierwszym pokazaniu
+            // (`show`) - `SetWindowPlacement` na schowanym oknie gubi stan
+            // maksymalizacji.
+            app.pending_placement = placement;
+            app.hidden = true;
+            app.live.send(LiveJob::Visible(false));
+        } else {
+            app.show_placed(placement.as_ref());
         }
-    }
-    if !start_hidden && window::fix_maximized_rect(hwnd, false) {
-        eprintln!("window: maximized rect corrected to the current monitor");
     }
     if let Err(e) = tray::register_toggle_hotkey(hwnd, 'N') {
         eprintln!("hotkey Win+Shift+N is taken: {e}");
     }
     if let Some(app) = unsafe { app_of(hwnd) } {
-        if start_hidden {
-            app.hidden = true;
-            app.live.send(LiveJob::Visible(false));
-        } else {
+        if !start_hidden {
             app.arm_amoled_timers();
             app.arm_partner_timer();
             // Okno otwiera sie z lista notatek (dotkniecie canvasu ja chowa);
@@ -492,6 +502,7 @@ impl App {
             }
         }
         let friends = spaces::load_friends(space_dir);
+        let config = Config::load();
         let mut notes = load_all_entries(&spaces);
         eprintln!(
             "startup: {} notes listed {:.0} ms",
@@ -505,10 +516,12 @@ impl App {
         let lan_space = Space::open_or_create(&data_dir.join("lan"))?;
         notes.extend(load_entries(&lan_space, LAN_SLOT).unwrap_or_default());
         let folders = all_folders(&spaces);
-        // Ostatnia wlasna notatka (nie cudza z LAN).
-        let note_idx = notes
-            .iter()
-            .rposition(|e| e.space != LAN_SLOT)
+        // Notatka z poprzedniej sesji (`last_note` w konfiguracji, issue #18);
+        // gdy jej nie ma (usunieta, inny space) - ostatnia wlasna, nie cudza z LAN.
+        let note_idx = config
+            .get("last_note")
+            .and_then(|id| notes.iter().position(|e| e.space != LAN_SLOT && e.id == id))
+            .or_else(|| notes.iter().rposition(|e| e.space != LAN_SLOT))
             .unwrap_or(0);
         let cur = &spaces[notes[note_idx].space].space;
         let (store, doc) = open_note(cur, &notes[note_idx].id, &author)?;
@@ -526,10 +539,12 @@ impl App {
         eprintln!("startup: renderer ready {:.0} ms", crate::since_start_ms());
         let tray = Tray::add(hwnd, "SpectreNotes")
             .map_err(|e| std::io::Error::other(format!("tray: {e}")))?;
-        let config = Config::load();
         let mut ink = InkConfig::default();
         // Grubosc przy najlzejszym dotknieciu jako procent grubosci piora (issue #5).
-        if let Some(p) = config.get("pen_min_width").and_then(|s| s.parse::<u32>().ok()) {
+        if let Some(p) = config
+            .get("pen_min_width")
+            .and_then(|s| s.parse::<u32>().ok())
+        {
             ink.min_width_ratio = (p.clamp(1, 80) as f32) / 100.0;
         }
         let pen_min_pressure = config
@@ -748,6 +763,7 @@ impl App {
             frame_ms: 0.0,
             frame_max_ms: 0.0,
             first_frame_logged: false,
+            pending_placement: None,
         })
     }
 
@@ -1886,6 +1902,11 @@ impl App {
     }
 
     fn save_placement(&mut self) {
+        // Okno nigdy niepokazane (start do traya, wyjscie z traya): w
+        // konfiguracji jest wciaz to, co odtworzymy - nie ma czego zapisywac.
+        if self.pending_placement.is_some() {
+            return;
+        }
         // W pelnym ekranie okno ma prostokat monitora, ktory nie jest niczyim
         // wyborem - do konfiguracji idzie polozenie sprzed wejscia w ten tryb.
         let p = self
@@ -2298,8 +2319,22 @@ impl App {
                 self.fit_width();
                 self.status.clear();
                 self.sync_entry();
+                self.remember_note();
             }
             Err(e) => self.status = format!("opening note: {e}"),
+        }
+    }
+
+    /// Biezaca notatka do konfiguracji - nastepny start otwiera ja (issue #18).
+    /// Notatki z LAN sa cudze i chwilowe, tych nie pamietamy.
+    fn remember_note(&mut self) {
+        let e = &self.notes[self.note_idx];
+        if e.space == LAN_SLOT {
+            return;
+        }
+        if self.config.get("last_note") != Some(e.id.as_str()) {
+            self.config.set("last_note", e.id.clone());
+            self.config.save();
         }
     }
 
@@ -2573,10 +2608,7 @@ impl App {
             })
             .collect();
         let stem = stem.trim();
-        let name = format!(
-            "{}.pdf",
-            if stem.is_empty() { "note" } else { stem }
-        );
+        let name = format!("{}.pdf", if stem.is_empty() { "note" } else { stem });
         let path = match std::env::var("SPECTRENOTES_PDF_OUT") {
             Ok(p) if self.test_input => PathBuf::from(p),
             _ => match dialog::save_file(self.hwnd, "Export note to PDF", &name, "pdf") {
@@ -2714,10 +2746,7 @@ impl App {
             version: spectre_update::CURRENT.to_string(),
             os: sysinfo::os_version(),
             gpu: self.renderer.adapter_name().to_string(),
-            window: format!(
-                "{w}x{h} @{:.2} {state}",
-                window::dpi_scale(self.hwnd)
-            ),
+            window: format!("{w}x{h} @{:.2} {state}", window::dpi_scale(self.hwnd)),
             sync: self.sync.last.clone(),
         }
     }
@@ -3275,12 +3304,7 @@ impl App {
             .filter(|o| {
                 // "default" peera to nie nasz "default" - liczy sie tylko
                 // space wspoldzielony, ktory mamy w rejestrze.
-                o.space.is_empty()
-                    || self
-                        .spaces
-                        .iter()
-                        .skip(1)
-                        .any(|s| s.info.name == o.space)
+                o.space.is_empty() || self.spaces.iter().skip(1).any(|s| s.info.name == o.space)
             })
             .collect()
     }
@@ -3726,9 +3750,9 @@ impl App {
             let note_dir = self.slot_space(slot).note_dir(&id);
             let source = match live_lamport {
                 // Otwarta notatka: kreski z pamieci (zapis na dysk moze jeszcze trwac).
-                Some(_) => thumbs::Source::Strokes(
-                    self.doc.visible().map(|(_, d, _)| d.clone()).collect(),
-                ),
+                Some(_) => {
+                    thumbs::Source::Strokes(self.doc.visible().map(|(_, d, _)| d.clone()).collect())
+                }
                 None => thumbs::Source::Disk(note_dir.clone()),
             };
             self.thumbs_worker.send(thumbs::Job {
@@ -4000,16 +4024,55 @@ impl App {
         window::trim_working_set();
     }
 
+    /// Pierwsze pokazanie okna: w zapisanym polozeniu (zwyklym albo
+    /// zmaksymalizowanym), pod maska DWM i bez animacji. `SetWindowPlacement`
+    /// pokazuje okno i dopiero potem maksymalizuje, a DWM gralby do tego
+    /// animacje powiekszania - uzytkownik ma zobaczyc od razu okno w rozmiarze
+    /// z poprzedniej sesji (issue #20). Maska schodzi tu, animacje wracaja z
+    /// timera (`TIMER_DWM`).
+    fn show_placed(&mut self, placement: Option<&window::Placement>) {
+        window::set_cloaked(self.hwnd, true);
+        window::set_dwm_transitions(self.hwnd, false);
+        let restored = placement
+            .map(|p| window::apply_placement(self.hwnd, p))
+            .unwrap_or(false);
+        if !restored {
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_SHOW);
+            }
+        }
+        if window::fix_maximized_rect(self.hwnd, false) {
+            eprintln!("window: maximized rect corrected to the current monitor");
+        }
+        // Okno zwykle nie zmienilo rozmiaru (powstalo w docelowym prostokacie),
+        // wiec nie bylo `WM_SIZE` i klatki - pod maska ma juz byc tresc, nie czern.
+        if !self.first_frame_logged {
+            self.render();
+        }
+        window::set_cloaked(self.hwnd, false);
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_DWM, DWM_TRANSITIONS_BACK_MS, None);
+        }
+    }
+
     fn show(&mut self) {
         self.show_requested = Some(Instant::now());
         self.hidden = false;
         self.live.send(LiveJob::Visible(true));
-        unsafe {
-            let _ = ShowWindow(self.hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(self.hwnd);
+        if let Some(p) = self.pending_placement.take() {
+            // Start do traya: polozenie z konfiguracji czekalo na to pokazanie.
+            self.show_placed(Some(&p));
+            unsafe {
+                let _ = SetForegroundWindow(self.hwnd);
+            }
+        } else {
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_SHOW);
+                let _ = SetForegroundWindow(self.hwnd);
+            }
+            // Uklad monitorow mogl sie zmienic, gdy okno bylo w trayu (dok).
+            window::fix_maximized_rect(self.hwnd, self.fullscreen.is_active());
         }
-        // Uklad monitorow mogl sie zmienic, gdy okno bylo w trayu (dok).
-        window::fix_maximized_rect(self.hwnd, self.fullscreen.is_active());
         self.arm_partner_timer();
         self.arm_amoled_timers();
         // Powrot z traya / ikony to tez "uruchomienie": okno wyboru notatki
@@ -4253,7 +4316,13 @@ impl App {
         }
         if !self.first_frame_logged {
             self.first_frame_logged = true;
-            eprintln!("startup: first frame {:.0} ms", crate::since_start_ms());
+            eprintln!(
+                "startup: first frame {:.0} ms (render {:.1} ms, {}x{})",
+                crate::since_start_ms(),
+                t0.elapsed().as_secs_f32() * 1000.0,
+                self.renderer.size().0,
+                self.renderer.size().1
+            );
         }
         self.tail_buf = tail;
         self.ui_prims = prims;
@@ -4536,6 +4605,15 @@ pub unsafe extern "system" fn wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     let Some(app) = app_of(hwnd) else {
+        // Jeszcze przed instalacja aplikacji (w `CreateWindowExW`): caly prostokat
+        // okna to obszar klienta - juz od poczatku, zeby renderer powstal w
+        // docelowym rozmiarze, bez przebudowy swapchaina po instalacji. Tu
+        // system pyta z `wParam = FALSE` (`nc_calc_size` oddaje to DefWindowProc,
+        // ktory odjalby ramke); zero bez zmiany prostokata znaczy to samo, co
+        // odpowiedz aplikacji na `TRUE`.
+        if msg == WM_NCCALCSIZE {
+            return LRESULT(0);
+        }
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     };
     let pointer_id = (wparam.0 & 0xffff) as u32;
@@ -4644,7 +4722,11 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_CHAR => {
-            let limit = if app.feedback.open { feedback::TEXT_MAX } else { 200 };
+            let limit = if app.feedback.open {
+                feedback::TEXT_MAX
+            } else {
+                200
+            };
             // Zaznaczone wszystko (Ctrl+A): pierwszy znak zastepuje tekst.
             if app.feedback.open && app.feedback.select_all {
                 if let Some(ch) = char::from_u32(wparam.0 as u32) {
@@ -4882,6 +4964,10 @@ pub unsafe extern "system" fn wndproc(
                 TIMER_ANIM => app.anim_tick(),
                 TIMER_TOPMOST => app.topmost_tick(),
                 TIMER_FEEDBACK => app.feedback_tick(),
+                TIMER_DWM => {
+                    let _ = KillTimer(Some(hwnd), TIMER_DWM);
+                    window::set_dwm_transitions(hwnd, true);
+                }
                 _ => {}
             }
             LRESULT(0)

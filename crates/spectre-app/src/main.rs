@@ -86,7 +86,10 @@ fn main() -> windows::core::Result<()> {
     }
     // Po aktualizacji: stara binarka lezy obok jako `.old.exe`.
     install::cleanup_old();
-    window::init_process();
+    // Konfiguracja tej maszyny juz tu: polozenie okna decyduje o prostokacie,
+    // w ktorym okno powstaje, a `ime=1` zostawia IME (patrz `init_process`).
+    let cfg = config::Config::load();
+    window::init_process(cfg.get("ime") == Some("1"));
 
     let space_dir = std::env::args()
         .skip(1)
@@ -116,7 +119,15 @@ fn main() -> windows::core::Result<()> {
     // Urzadzenie D3D (najdrozsza czesc startu: sterownik) laduje sie w tle,
     // gdy glowny watek tworzy okno i czyta notatki; `Renderer::new` na nie czeka.
     let device = spectre_render::Device::create_in_background();
-    let hwnd = window::create_window("SpectreNotes", "SpectreNotes", app::wndproc, 1400, 900)?;
+    let placement = cfg.get("window").and_then(window::Placement::parse);
+    let hwnd = window::create_window(
+        "SpectreNotes",
+        "SpectreNotes",
+        app::wndproc,
+        1400,
+        900,
+        placement.as_ref(),
+    )?;
     instance::mark(hwnd, tag);
     eprintln!("startup: window created {:.0} ms", since_start_ms());
     app::install(hwnd, &space_dir, start_hidden, Some(device))?;

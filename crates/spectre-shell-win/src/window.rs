@@ -3,7 +3,7 @@
 use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -31,10 +31,19 @@ pub type WndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESU
 /// - PER_MONITOR_AWARE_V2: bez tego na 2880x1800 przy 200% system rozciaga
 ///   bitmape okna - atrament jest rozmyty, a wspolrzedne przeliczane z bledem.
 /// - EnableMouseInPointer: mysz tez idzie przez WM_POINTER (jeden kod wejscia).
-pub fn init_process() {
+/// - ImmDisableIME: bez edytora metod wprowadzania (IME). Pierwsza aktywacja
+///   okna procesu z IME to ~30 ms na zalozenie kontekstu wejscia (TSF) -
+///   mierzone jako `WM_ACTIVATE` w `DefWindowProc`, zanim okno pokaze tresc.
+///   Tekstu jest tu tyle co tytul notatki; zwykla klawiatura (takze polskie
+///   znaki przez AltGr) chodzi bez IME. Kto pisze przez IME (CJK), ustawia
+///   `ime=1` w konfiguracji (`keep_ime`).
+pub fn init_process(keep_ime: bool) {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = EnableMouseInPointer(true);
+        if !keep_ime {
+            let _ = windows::Win32::UI::Input::Ime::ImmDisableIME(u32::MAX);
+        }
     }
 }
 
@@ -69,7 +78,83 @@ pub fn app_icon(size: i32) -> Option<HICON> {
     }
 }
 
-pub fn create_window(class: &str, title: &str, wndproc: WndProc, w: i32, h: i32) -> Result<HWND> {
+/// Zapisane polozenie okna (`placement_string`): prostokat zwykly i czy okno
+/// bylo zmaksymalizowane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub maximized: bool,
+}
+
+impl Placement {
+    /// `x,y,w,h,max` z konfiguracji; `None` dla smieci albo okna za malego.
+    pub fn parse(s: &str) -> Option<Self> {
+        let v: Vec<i32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        if v.len() != 5 || v[2] < 200 || v[3] < 150 {
+            return None;
+        }
+        Some(Self {
+            x: v[0],
+            y: v[1],
+            w: v[2],
+            h: v[3],
+            maximized: v[4] != 0,
+        })
+    }
+
+    fn normal_rect(&self) -> RECT {
+        RECT {
+            left: self.x,
+            top: self.y,
+            right: self.x + self.w,
+            bottom: self.y + self.h,
+        }
+    }
+
+    /// Prostokat, jaki okno bedzie mialo po odtworzeniu: zwykly, a dla
+    /// zmaksymalizowanego obszar roboczy monitora, na ktorym lezy zwykly
+    /// (najblizszego, gdy tamten monitor zniknal - stacja dokujaca).
+    pub fn target_rect(&self) -> RECT {
+        let normal = self.normal_rect();
+        if !self.maximized {
+            return normal;
+        }
+        unsafe {
+            let mon = MonitorFromRect(&normal, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                mi.rcWork
+            } else {
+                normal
+            }
+        }
+    }
+}
+
+/// Okno glowne, jeszcze niepokazane. `at` = zapisane polozenie: okno powstaje
+/// od razu w docelowym prostokacie (`Placement::target_rect`), wiec renderer
+/// i pierwsza klatka maja wlasciwy rozmiar, a odtworzenie polozenia nic juz
+/// nie przesuwa - bez tego start to trzy zmiany rozmiaru (domyslny, zwykly,
+/// zmaksymalizowany), kazda z przebudowa swapchaina i klatka (issue #20).
+/// Bez `at`: `w` x `h` tam, gdzie system chce.
+pub fn create_window(
+    class: &str,
+    title: &str,
+    wndproc: WndProc,
+    w: i32,
+    h: i32,
+    at: Option<&Placement>,
+) -> Result<HWND> {
+    let (x, y, w, h) = match at.map(Placement::target_rect) {
+        Some(r) => (r.left, r.top, r.right - r.left, r.bottom - r.top),
+        None => (CW_USEDEFAULT, CW_USEDEFAULT, w, h),
+    };
     unsafe {
         let hinstance = GetModuleHandleW(None)?;
         let class_name = wide(class);
@@ -104,8 +189,8 @@ pub fn create_window(class: &str, title: &str, wndproc: WndProc, w: i32, h: i32)
             PCWSTR(class_name.as_ptr()),
             PCWSTR(title.as_ptr()),
             WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            x,
+            y,
             w,
             h,
             None,
@@ -610,7 +695,10 @@ pub fn fix_maximized_rect(hwnd: HWND, fullscreen: bool) -> bool {
         if GetWindowRect(hwnd, &mut r).is_err() {
             return false;
         }
-        if r.left == want.left && r.top == want.top && r.right == want.right && r.bottom == want.bottom
+        if r.left == want.left
+            && r.top == want.top
+            && r.right == want.right
+            && r.bottom == want.bottom
         {
             return false;
         }
@@ -627,28 +715,54 @@ pub fn fix_maximized_rect(hwnd: HWND, fullscreen: bool) -> bool {
     true
 }
 
-/// Odtworzenie polozenia zapisanego przez `placement_string`. `show = false`
-/// ustawia polozenie, ale okna nie pokazuje (start do traya).
-pub fn apply_placement(hwnd: HWND, s: &str, show: bool) -> bool {
-    let v: Vec<i32> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-    if v.len() != 5 || v[2] < 200 || v[3] < 150 {
-        return false;
+/// Maska DWM (`DWMWA_CLOAK`): okno jest dla systemu "widoczne" (pasek zadan,
+/// `IsWindowVisible`, komunikaty), ale DWM nie sklada go na ekranie. Na czas
+/// odtwarzania polozenia przy starcie: `SetWindowPlacement` najpierw pokazuje
+/// okno w rozmiarze zwyklym, a dopiero potem maksymalizuje - bez maski widac
+/// male okno i skok do pelnego rozmiaru (issue #20).
+pub fn set_cloaked(hwnd: HWND, on: bool) {
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
+    let v: windows::core::BOOL = on.into();
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK,
+            &v as *const _ as *const _,
+            std::mem::size_of_val(&v) as u32,
+        );
     }
+}
+
+/// Animacje DWM okna (otwarcie, maksymalizacja, przywrocenie). Wylaczone na
+/// czas pierwszego pokazania: okno ma sie pojawic od razu w docelowym
+/// rozmiarze, nie "rosnac" z zapamietanego prostokata zwyklego.
+pub fn set_dwm_transitions(hwnd: HWND, enabled: bool) {
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+    let v: windows::core::BOOL = (!enabled).into();
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TRANSITIONS_FORCEDISABLED,
+            &v as *const _ as *const _,
+            std::mem::size_of_val(&v) as u32,
+        );
+    }
+}
+
+/// Odtworzenie polozenia zapisanego przez `placement_string` - pokazuje okno
+/// (zwykle albo zmaksymalizowane). Okno utworzone przez `create_window` z tym
+/// samym `Placement` stoi juz w docelowym prostokacie i nic tu sie nie rusza
+/// poza stanem maksymalizacji.
+pub fn apply_placement(hwnd: HWND, p: &Placement) -> bool {
+    let normal = p.normal_rect();
     let wp = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
-        showCmd: if !show {
-            SW_HIDE.0 as u32
-        } else if v[4] != 0 {
+        showCmd: if p.maximized {
             SW_SHOWMAXIMIZED.0 as u32
         } else {
             SW_SHOWNORMAL.0 as u32
         },
-        rcNormalPosition: RECT {
-            left: v[0],
-            top: v[1],
-            right: v[0] + v[2],
-            bottom: v[1] + v[3],
-        },
+        rcNormalPosition: normal,
         // (-1,-1) = "policz sam z WM_GETMINMAXINFO". Zero jest tu wprost
         // zapamietanym punktem: system przesuwa wtedy pierwsza maksymalizacje
         // o ramke poza ekran, a przy pelnym ekranie zostaja odkryte 8 px
@@ -657,20 +771,33 @@ pub fn apply_placement(hwnd: HWND, s: &str, show: bool) -> bool {
         ..Default::default()
     };
     unsafe {
-        // Najpierw samo przesuniecie (okno jeszcze niepokazane): maksymalizacja
-        // pyta `WM_GETMINMAXINFO` o monitor, na ktorym okno **jest**, a swiezo
-        // utworzone stoi na monitorze glownym - nie tam, gdzie zapisano
-        // polozenie. Bez tego okno na drugim monitorze dostawalo rozmiar
-        // glownego (i ucinalo przycisk X, gdy glowny jest wiekszy).
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            v[0],
-            v[1],
-            v[2],
-            v[3],
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
+        if p.maximized {
+            // Maksymalizacja pyta `WM_GETMINMAXINFO` o monitor, na ktorym okno
+            // **jest** - gdy stoi na innym niz zapisany (okno utworzone bez
+            // polozenia), najpierw samo przesuniecie, jeszcze niepokazane. Bez
+            // tego okno na drugim monitorze dostawalo rozmiar glownego (i
+            // ucinalo przycisk X, gdy glowny jest wiekszy).
+            let here = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let there = MonitorFromRect(&normal, MONITOR_DEFAULTTONEAREST);
+            if here != there {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    p.x,
+                    p.y,
+                    p.w,
+                    p.h,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            // Najpierw maksymalizacja z miejsca, w ktorym okno stoi: okno
+            // utworzone w obszarze roboczym nie zmienia wtedy prostokata.
+            // `SetWindowPlacement` na oknie **niezmaksymalizowanym** najpierw
+            // przesuwa je do prostokata zwyklego i dopiero maksymalizuje -
+            // dwie zmiany rozmiaru, kazda z przebudowa swapchaina i klatka.
+            // Na zmaksymalizowanym tylko zapamietuje prostokat zwykly.
+            let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+        }
         SetWindowPlacement(hwnd, &wp).is_ok()
     }
 }

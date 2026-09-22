@@ -500,6 +500,32 @@ Do omówienia z użytkownikiem (potrzebny rysik / decyzja):
       125 % vs 175 %). Jedyna różnica to chrome skalowany DPI (pasek 60 vs 84 px,
       zakładki 45 vs 63 px). Do sprawdzenia u testera: zrzut przy 100 % z obu maszyn.
 
+Zgłoszenia z 2026-09-21/22 (v0.3.6):
+- [x] #20 okno przy starcie „rośnie" z małego do zmaksymalizowanego: `SetWindowPlacement`
+      pokazuje okno w prostokącie zwykłym i dopiero maksymalizuje, a DWM gra do tego
+      animację. Teraz okno **powstaje** już w docelowym prostokącie (`Placement::target_rect`:
+      obszar roboczy monitora z zapisanego położenia), `WM_NCCALCSIZE` obsłużone jeszcze przed
+      instalacją aplikacji (klient = całe okno od początku, renderer w docelowym rozmiarze),
+      maksymalizacja z miejsca (`ShowWindow(SW_SHOWMAXIMIZED)` przed `SetWindowPlacement`,
+      które już tylko zapamiętuje prostokąt zwykły), a pierwsze pokazanie idzie pod maską
+      DWM (`DWMWA_CLOAK`) i bez animacji (`DWMWA_TRANSITIONS_FORCEDISABLED`, wracają po 500 ms).
+      Zmierzone (poll `GetWindowRect` co 1 ms): prostokąt okna widocznego nie zmienia się ani
+      razu; treść na ekranie po ~205 ms od `CreateProcess` zamiast ~260 (start szedł przez
+      trzy rozmiary — 1400×900, zwykły, zmaksymalizowany — z przebudową swapchaina i klatką
+      na każdym). Przy okazji: pierwsza aktywacja okna kosztowała ~30 ms na założenie
+      kontekstu IME/TSF w `DefWindowProc(WM_ACTIVATE)` — `ImmDisableIME` na starcie
+      (`ime=1` w `config.txt` przywraca); start do traya (`--tray`) gubił maksymalizację
+      (placement na schowanym oknie) — teraz odtwarzany przy pierwszym pokazaniu.
+- [x] #18 start z ostatnio otwartą notatką: `last_note=<id>` w `config.txt` (zapis przy
+      każdym przełączeniu, notatek z LAN nie pamiętamy); brak notatki = ostatnia własna jak dotąd.
+- [x] #19 scenariusz paska feedbacku losowany za każdym razem (`feedback::Script`): pula
+      12 otwarć, 48 kroków do przodu, 20 cofnięć, 8 zakończeń; 5–7 kroków środkowych,
+      1–2 cofnięcia (nigdy dwa pod rząd, nigdy pierwsze), tempo kroku losowe (do przodu
+      500–900 ms, cofnięcie 450–700), ostatni krok do przodu ląduje na 93 %, koniec 99 %.
+      Razem ~5–6 s zamiast stałych 8,2 s. Test: 100 seedów.
+- [ ] #17 „Switchable columns for view" — do doprecyzowania z autorem (co ma się przełączać:
+      liczba kolumn obok siebie, szerokość kolumny, czy widok bez kolumny?).
+
 ## Etap 7 — Dystrybucja
 
 - [x] Wydania: `release.ps1` (wersja → testy → build → tag → GitHub Release, 3 ostatnie)
