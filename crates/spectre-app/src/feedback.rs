@@ -1044,7 +1044,7 @@ mod tests {
         let mut lengths = std::collections::BTreeSet::new();
         let mut texts = std::collections::BTreeSet::new();
         for seed in 1..=100u32 {
-            let s = Script::seeded(seed * 2_654_435_761);
+            let s = Script::seeded(seed.wrapping_mul(2_654_435_761));
             let (p0, _, done0) = s.progress_at(0);
             assert!(p0.abs() < 0.001 && !done0);
             let total = s.total_ms();
