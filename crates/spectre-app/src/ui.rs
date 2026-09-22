@@ -140,6 +140,10 @@ pub enum Action {
     WidthUp,
     Undo,
     Redo,
+    /// Zaznaczona tresc do schowka aplikacji i z powrotem - takze miedzy
+    /// notatkami (`app::copy_selection` / `app::paste_clipboard`).
+    Copy,
+    Paste,
     ZoomOut,
     ZoomIn,
     /// Procent zoomu jako przycisk: dopasuj szerokosc kolumny do okna.
@@ -172,6 +176,9 @@ pub struct UiState<'a> {
     pub width: f32,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// Jest co kopiowac (zaznaczenie) i co wklejac (schowek aplikacji).
+    pub can_copy: bool,
+    pub can_paste: bool,
     pub title: &'a str,
     pub zoom: f32,
     pub view_locked: bool,
@@ -313,6 +320,8 @@ impl Toolbar {
             (Action::WidthUp, 0.0, item),
             (Action::Undo, px(8.0), item),
             (Action::Redo, 0.0, item),
+            (Action::Copy, px(8.0), item),
+            (Action::Paste, 0.0, item),
             (Action::ZoomOut, px(8.0), item),
             (Action::ZoomIn, 0.0, item),
             (Action::ZoomFit, 0.0, px(ZOOM_W)),
@@ -974,6 +983,8 @@ impl Toolbar {
             let enabled = match it.action {
                 Action::Undo => s.can_undo,
                 Action::Redo => s.can_redo,
+                Action::Copy => s.can_copy,
+                Action::Paste => s.can_paste,
                 _ => true,
             };
             let fg = if enabled { FG } else { FG_DIM };
@@ -1058,6 +1069,58 @@ impl Toolbar {
                             });
                         }
                     }
+                }
+                Action::Copy => {
+                    // Dwie kartki jedna na drugiej: tylnej widac tylko gorna
+                    // i prawa krawedz, wiec nic nie trzeba zaslaniac tlem
+                    // (tlo elementu zmienia sie przy podswietleniu).
+                    let (cx, cy) = (r.cx(), r.cy());
+                    out.push(UiPrim::Rect {
+                        x: cx - 3.0 * k,
+                        y: cy - 10.0 * k,
+                        w: 12.0 * k,
+                        h: 1.5 * k,
+                        color: fg,
+                        r: 0.75 * k,
+                    });
+                    out.push(UiPrim::Rect {
+                        x: cx + 7.5 * k,
+                        y: cy - 10.0 * k,
+                        w: 1.5 * k,
+                        h: 12.0 * k,
+                        color: fg,
+                        r: 0.75 * k,
+                    });
+                    out.push(UiPrim::Outline {
+                        x: cx - 9.0 * k,
+                        y: cy - 5.0 * k,
+                        w: 15.0 * k,
+                        h: 15.0 * k,
+                        color: fg,
+                        width: 1.5 * k,
+                        r: 2.0 * k,
+                    });
+                }
+                Action::Paste => {
+                    // Podkladka: obrys kartki z klipsem u gory.
+                    let (cx, cy) = (r.cx(), r.cy());
+                    out.push(UiPrim::Outline {
+                        x: cx - 8.0 * k,
+                        y: cy - 7.0 * k,
+                        w: 16.0 * k,
+                        h: 17.0 * k,
+                        color: fg,
+                        width: 1.5 * k,
+                        r: 2.0 * k,
+                    });
+                    out.push(UiPrim::Rect {
+                        x: cx - 4.5 * k,
+                        y: cy - 10.5 * k,
+                        w: 9.0 * k,
+                        h: 6.0 * k,
+                        color: fg,
+                        r: 1.5 * k,
+                    });
                 }
                 Action::Color(i) => {
                     out.push(UiPrim::Circle {
@@ -1312,6 +1375,8 @@ mod tests {
             width: 1.0,
             can_undo: false,
             can_redo: false,
+            can_copy: false,
+            can_paste: false,
             title: "t",
             zoom: 1.0,
             view_locked: false,

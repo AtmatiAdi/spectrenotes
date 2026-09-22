@@ -275,9 +275,10 @@ pub struct App {
     selection: Option<select::Selection>,
     /// Obrys w trakcie rysowania, w jednostkach canvasu.
     lasso: Vec<(f32, f32)>,
-    /// Biezacy gest zaczal sie **poza** zaznaczeniem: to odstawienie tresci,
-    /// wiec po jego koncu zaznaczenie znika.
-    place_drop: bool,
+    /// Schowek: skopiowane kreski wzgledem srodka swojej obwiedni. Zyje w
+    /// aplikacji, nie w notatce - dlatego kopiuje sie w jednej, a wkleja
+    /// w drugiej.
+    clipboard: Vec<StrokeData>,
 
     mode: Mode,
     buttons: PenButtons,
@@ -712,7 +713,7 @@ impl App {
             select_tool: false,
             selection: None,
             lasso: Vec::new(),
-            place_drop: false,
+            clipboard: Vec::new(),
             mode: Mode::Idle,
             buttons: PenButtons::default(),
             hover: false,
@@ -1288,27 +1289,21 @@ impl App {
     // ----- zaznaczenie (select.rs) -------------------------------------------
 
     /// Kontakt rysika przy narzedziu zaznaczania. Uchwyt albo wnetrze ramki
-    /// zaczynaja gest; punkt **poza** ramka i uchwytami odstawia tam
-    /// zaznaczona tresc (i konczy zaznaczenie); gdy nic nie jest zaznaczone,
-    /// zaczyna sie obrys.
+    /// zaczynaja gest; dotkniecie **poza** ramka i uchwytami **odstawia
+    /// zaznaczenie tam, gdzie jest** (tresc sie nie rusza) i od razu zaczyna
+    /// nowy obrys - przesuwa sie tylko to, co sie zlapie.
     fn begin_select(&mut self) {
         let (sx, sy) = self.last_screen;
         let (cx, cy) = self.cam.to_canvas(sx, sy);
         let scale = self.toolbar.scale();
         if let Some(sel) = &mut self.selection {
-            match sel.hit(&self.cam, scale, sx, sy) {
-                Some(kind) => {
-                    sel.begin(kind, cx, cy);
-                    self.place_drop = false;
-                }
-                None => {
-                    sel.begin_place(cx, cy);
-                    self.place_drop = true;
-                }
+            if let Some(kind) = sel.hit(&self.cam, scale, sx, sy) {
+                sel.begin(kind, cx, cy);
+                self.mode = Mode::Transform;
+                self.lift_selection();
+                return;
             }
-            self.mode = Mode::Transform;
-            self.lift_selection();
-            return;
+            self.clear_selection();
         }
         self.lasso.clear();
         self.lasso.push((cx, cy));
@@ -1367,7 +1362,6 @@ impl App {
         let Some(mut sel) = self.selection.take() else {
             return;
         };
-        let keep = !std::mem::take(&mut self.place_drop);
         let xf = sel.end();
         self.renderer.set_hidden(&[]);
         self.dirty = self.dirty.add_region(sel.content_bbox());
@@ -1383,9 +1377,73 @@ impl App {
             self.persist(&ops);
             sel.rebind(ids, data);
         }
-        if keep && !sel.ids.is_empty() {
+        // Zaznaczenie zostaje po gescie: mozna poprawic ruch, skale albo obrot
+        // bez zaznaczania od nowa. Konczy je dopiero dotkniecie poza ramka,
+        // `Esc` albo zmiana narzedzia.
+        if !sel.ids.is_empty() {
             self.selection = Some(sel);
         }
+    }
+
+    /// Kopiuje zaznaczone kreski do schowka aplikacji - wzglednie do srodka
+    /// ich obwiedni, zeby wklejenie nie zalezalo od tego, gdzie lezal oryginal.
+    fn copy_selection(&mut self) {
+        let Some(sel) = &self.selection else {
+            self.status = "copy: nothing selected".to_string();
+            return;
+        };
+        let b = sel.content_bbox();
+        let (cx, cy) = ((b.min_x + b.max_x) * 0.5, (b.min_y + b.max_y) * 0.5);
+        self.clipboard = sel
+            .strokes
+            .iter()
+            .map(|(_, s)| {
+                let mut out = s.clone();
+                for p in &mut out.samples {
+                    p.x -= cx;
+                    p.y -= cy;
+                }
+                out
+            })
+            .collect();
+        self.status = format!("copied {} strokes", self.clipboard.len());
+    }
+
+    /// Wkleja schowek na srodek widoku biezacej notatki (takze innej niz ta,
+    /// z ktorej kopiowano) i **zaznacza** wklejone: od razu mozna je przesunac,
+    /// przeskalowac albo obrocic. Cale wklejenie to jedna akcja historii.
+    fn paste_clipboard(&mut self) {
+        if self.clipboard.is_empty() {
+            self.status = "paste: clipboard empty".to_string();
+            return;
+        }
+        self.clear_selection();
+        let (w, h) = self.renderer.size();
+        let (cx, cy) = self.cam.to_canvas(w as f32 * 0.5, h as f32 * 0.5);
+        let data: Vec<StrokeData> = self
+            .clipboard
+            .iter()
+            .map(|s| {
+                let mut out = s.clone();
+                for p in &mut out.samples {
+                    p.x += cx;
+                    p.y += cy;
+                }
+                out
+            })
+            .collect();
+        let (ops, ids) = self.doc.add_strokes(&data);
+        self.persist(&ops);
+        for d in &data {
+            self.dirty = self.dirty.add_region(Bbox::of(d));
+        }
+        let pairs: Vec<(StrokeId, StrokeData)> = ids.iter().copied().zip(data).collect();
+        self.status = format!("pasted {} strokes", pairs.len());
+        self.selection = select::Selection::of(pairs);
+        // Wklejone ma byc od razu do zlapania - bez tego trzeba by najpierw
+        // wrocic do narzedzia zaznaczania.
+        self.select_tool = self.selection.is_some();
+        self.eraser_tool = false;
     }
 
     /// Wybor narzedzia z paska albo klawiatury. Wyjscie z zaznaczania konczy
@@ -1527,6 +1585,8 @@ impl App {
             width: self.ink.base_width,
             can_undo: self.doc.can_undo(),
             can_redo: self.doc.can_redo(),
+            can_copy: self.selection.is_some(),
+            can_paste: !self.clipboard.is_empty(),
             title: "",
             zoom: self.cam.zoom,
             view_locked: self.view_locked,
@@ -1627,6 +1687,8 @@ impl App {
             Action::WidthUp => self.set_width(self.ink.base_width + 0.1),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
+            Action::Copy => self.copy_selection(),
+            Action::Paste => self.paste_clipboard(),
             Action::ZoomOut => self.zoom_center(0.8),
             Action::ZoomIn => self.zoom_center(1.25),
             Action::ZoomFit => self.fit_width(),
@@ -4580,8 +4642,8 @@ impl App {
         format!(
             "SpectreNotes   note {}/{}   strokes: {}   {}   zoom {:.0}%\n\
              tool: {}   width: {:.1} px   scroll: {:.0},{:.0}   waves: {}   frame: {:.2} ms (max {:.1})   GPU: {}\n\
-             [1-6] color  [E] eraser  [S] select  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top  [Ctrl+wheel] zoom\n\
-             [barrel button]/[wheel] scroll   [PgUp/PgDn] notes  [Ctrl+N] new   [Win+Shift+N] show/hide\n\
+             [1-6] color  [E] eraser  [S] select  [Ctrl+C/V] copy/paste  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top\n\
+             [barrel button]/[wheel] scroll  [Ctrl+wheel] zoom  [PgUp/PgDn] notes  [Ctrl+N] new  [Win+Shift+N] show/hide\n\
              [F11] fullscreen  [H] hud  [V] vsync  [T] scrolling: {}  [Esc] hide  [Ctrl+Q] quit\n\
              git: {}
              live: {}
@@ -5010,6 +5072,10 @@ pub unsafe extern "system" fn wndproc(
                 }
                 // H
                 0x48 => app.show_hud = !app.show_hud,
+                // Ctrl+C / Ctrl+V - zaznaczenie do schowka aplikacji i z powrotem
+                // (samo V zostaje przelacznikiem vsync).
+                0x43 if ctrl => app.copy_selection(),
+                0x56 if ctrl => app.paste_clipboard(),
                 // V
                 0x56 => app.vsync = !app.vsync,
                 // T

@@ -203,6 +203,26 @@ impl Document {
         self.local_op(OpKind::StrokeAdd { id, data })
     }
 
+    /// Kilka kresek jako **jedna** akcja historii (wklejenie schowka): jedno
+    /// cofniecie zdejmuje calosc, nie kreske po kresce.
+    pub fn add_strokes(&mut self, data: &[StrokeData]) -> (Vec<Op>, Vec<StrokeId>) {
+        let mut ops = Vec::new();
+        let mut ids = Vec::new();
+        for d in data {
+            let id = self.fresh_id();
+            ids.push(id);
+            ops.push(self.local_op(OpKind::StrokeAdd {
+                id,
+                data: d.clone(),
+            }));
+        }
+        if !ids.is_empty() {
+            self.redo.clear();
+            self.undo.push(Action::Added(ids.clone()));
+        }
+        (ops, ids)
+    }
+
     /// Wymazanie zbioru kresek jako jednej akcji. Nieznane/juz wymazane sa pomijane.
     pub fn erase_strokes(&mut self, ids: &[StrokeId]) -> Vec<Op> {
         self.erase_impl(ids, false)

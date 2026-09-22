@@ -218,6 +218,18 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// Zaznaczenie z gotowej listy kresek (wklejenie schowka): ramka obejmuje
+    /// ich obwiednie, wiec wklejona tresc od razu da sie przesunac i obrocic.
+    pub fn of(strokes: Vec<(StrokeId, StrokeData)>) -> Option<Selection> {
+        let bbox = strokes.iter().map(|(_, s)| Bbox::of(s)).reduce(union)?;
+        Some(Selection {
+            ids: strokes.iter().map(|(id, _)| *id).collect(),
+            strokes,
+            frame: Frame::of_bbox(bbox),
+            drag: None,
+        })
+    }
+
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }
@@ -230,18 +242,6 @@ impl Selection {
             grab: (x, y),
             grab_ang: (y - self.frame.cy).atan2(x - self.frame.cx),
         });
-    }
-
-    /// Odstawienie w inne miejsce: srodek zaznaczenia laduje pod rysikiem
-    /// od razu, a dalszy ruch przesuwa je jak zwykle.
-    pub fn begin_place(&mut self, x: f32, y: f32) {
-        self.drag = Some(Drag {
-            kind: Hit::Move,
-            base: self.frame,
-            grab: (self.frame.cx, self.frame.cy),
-            grab_ang: 0.0,
-        });
-        self.update(x, y);
     }
 
     pub fn update(&mut self, x: f32, y: f32) {
@@ -630,15 +630,19 @@ mod tests {
         assert!((xf.scale_factor() - 1.0).abs() < 1e-3);
     }
 
-    /// Odstawienie: srodek zaznaczenia laduje dokladnie pod rysikiem.
+    /// Zaznaczenie z gotowych kresek (wklejenie): ramka obejmuje ich obwiednie.
     #[test]
-    fn odstawienie_klade_srodek_pod_rysikiem() {
-        let d = doc_with(&[stroke(&[(100.0, 100.0), (150.0, 100.0)])]);
-        let mut sel = from_lasso(&d, &square(50.0, 50.0, 300.0, 300.0)).unwrap();
-        sel.begin_place(900.0, 1200.0);
-        let xf = sel.end();
-        assert!((sel.frame.cx - 900.0).abs() < 1e-3);
-        assert!((sel.frame.cy - 1200.0).abs() < 1e-3);
-        assert!(!xf.is_identity());
+    fn zaznaczenie_z_wklejonych_kresek() {
+        let a = stroke(&[(100.0, 100.0), (200.0, 140.0)]);
+        let b = stroke(&[(150.0, 300.0), (260.0, 320.0)]);
+        let id = |seq| StrokeId {
+            author: spectre_core::AuthorId(7),
+            seq,
+        };
+        let sel = Selection::of(vec![(id(1), a), (id(2), b)]).expect("cos do zaznaczenia");
+        assert_eq!(sel.ids.len(), 2);
+        assert!(sel.frame.contains(100.0, 100.0) && sel.frame.contains(260.0, 320.0));
+        assert!(!sel.frame.contains(100.0, 500.0));
+        assert!(Selection::of(Vec::new()).is_none());
     }
 }

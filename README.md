@@ -149,7 +149,7 @@ Dwuklik na uchwycie maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
 zadokowany, i chowa się po 2,5 s bezczynności (Z7). **Jest dokowalny**: złap za
 uchwyt (kropki ⠿ na **samym końcu** paska) i upuść przy dowolnej krawędzi — góra/dół
 przełącza go w orientację poziomą. Kolejno: menu, pióro, gumka, zaznaczanie, kolory, grubość
-(co 0,1 px), cofnij/ponów, lupa −/+, procent zoomu (tap = dopasuj
+(co 0,1 px), cofnij/ponów, kopiuj/wklej, lupa −/+, procent zoomu (tap = dopasuj
 szerokość), **kłódka widoku**, dalej **kłódka komputera** (jak `Win+L`), a na samym
 końcu uchwyt przesuwania paska. Uchwyt był kiedyś pierwszy, tuż przy menu, i łapał
 się zamiast przycisków — na końcu, za kłódką, jest mniej pod ręką. W pasku u góry
@@ -164,15 +164,24 @@ w `%APPDATA%\SpectreNotes\config.txt` (jawny `klucz=wartość`).
 jest świadome: zaznacza się to, co się okrążyło, a nie to, co się musnęło. Wokół
 zaznaczenia staje ramka z uchwytami: **wnętrze przesuwa**, **rogi skalują**
 (proporcjonalnie, przeciwległy róg stoi w miejscu — grubość kreski rośnie razem
-z treścią), **uchwyt nad ramką obraca** wokół środka. **Dotknięcie poza ramką i jej
-uchwytami odstawia tam zaznaczoną treść** (środek zaznaczenia ląduje pod rysikiem)
-i kończy zaznaczanie; `Esc` albo zmiana narzędzia kończy je bez ruszania treści.
+z treścią), **uchwyt nad ramką obraca** wokół środka. Przesuwa się tylko to, co się
+złapie: **dotknięcie poza ramką i jej uchwytami odstawia zaznaczenie tam, gdzie jest**
+(treść się nie rusza) i od razu zaczyna nowy obrys; `Esc`, zmiana narzędzia i dotknięcie
+paska robią to samo.
 W trakcie gestu dokument się nie zmienia: kreski znikają na ten czas z warstwy suchej
 i są rysowane co klatkę z **gotowych obrysów** w transformacji zaznaczenia — 162
 przeniesione kreski kosztowały 1,7 ms na klatkę (Arc, 25 %). Dopiero koniec gestu
 zamienia je w dokumencie na przekształcone kopie — **jedna operacja w historii**
 (`Ctrl+Z` cofa cały ruch), bo nagrobek CRDT jest nieodwracalny i „edycja" kreski to
 zawsze wymazanie plus dodanie (ADR 0004).
+
+**Kopiuj / wklej** (dwa przyciski na pasku za cofnij/ponów albo `Ctrl+C` / `Ctrl+V`):
+kopiuje się zaznaczenie — kreski zapamiętane **względem środka swojej obwiedni**, więc
+wklejenie nie zależy od tego, gdzie leżał oryginał. Schowek żyje w aplikacji, nie
+w notatce, więc **kopiuje się w jednej notatce, a wkleja w drugiej** (schowek przeżywa
+przełączenie notatki i space'u). Wklejona treść ląduje na środku widoku i jest od razu
+**zaznaczona** — można ją chwycić i odstawić tam, gdzie ma być. Całe wklejenie to jedna
+akcja historii (`Document::add_strokes`), więc jedno `Ctrl+Z` je zdejmuje.
 
 **Widok zablokowany / odblokowany** (kłódka widoku na pasku, `view_lock` w config):
 zablokowany — kolumna notatki zawsze wyśrodkowana (jej środek to bezwzględny środek

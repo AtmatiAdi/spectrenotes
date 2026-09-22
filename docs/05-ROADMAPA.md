@@ -117,14 +117,22 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
 - [x] **Zaznaczanie obrysem i przekształcanie treści** (2026-09-22, `select.rs`):
       lasso bierze kreski otoczone **w całości**, ramka z uchwytami przesuwa (wnętrze),
       skaluje (rogi, proporcjonalnie — przeciwległy róg stoi, grubość kreski mnoży się
-      przez skalę) i obraca (uchwyt nad ramką); dotknięcie poza ramką **odstawia** tam
-      treść i kończy zaznaczenie. Osobnej operacji `StrokeTransform` nie było potrzeba:
+      przez skalę) i obraca (uchwyt nad ramką); przesuwa się tylko to, co się złapie —
+      dotknięcie poza ramką **odstawia zaznaczenie tam, gdzie jest** i zaczyna nowy
+      obrys (pierwsza wersja przenosiła treść pod rysik; uwaga użytkownika z 22 IX:
+      dotknięcie poza obszarem ma go dokować, nie przenosić). Osobnej operacji
+      `StrokeTransform` nie było potrzeba:
       gest kończy się `Document::replace_strokes` (nagrobki + nowe kreski) zapisanym
       jako **jedna** akcja historii (`Action::Replaced`), więc CRDT zostaje zbiorem
       rosnącym (ADR 0004) i nic nie zmienia się w formacie operacji. W trakcie gestu
       dokument stoi: kreski są wyłączone z warstwy suchej (`Renderer::set_hidden`)
       i rysowane co klatkę z **cache'owanych obrysów** w transformacji zaznaczenia
       (`spectre_render::Lift`) — 162 kreski przenoszone naraz: 1,7 ms/klatkę (Arc, 25 %)
+- [x] **Kopiuj / wklej** (2026-09-22): przyciski na pasku za cofnij/ponów, `Ctrl+C` /
+      `Ctrl+V`. Schowek jest w aplikacji (kreski względem środka obwiedni), nie
+      w notatce — kopiuje się w jednej notatce, wkleja w drugiej (także w innym
+      space'ie). Wklejone ląduje na środku widoku i **jest od razu zaznaczone**;
+      całe wklejenie to jedna akcja historii (`Document::add_strokes`)
 - [ ] Więcej narzędzi (kształty) — po Etapie 5
 - [x] Odrzucanie `PT_TOUCH` na wejściu (Z10), przewijanie przyciskiem bocznym rysika
 - [x] Menu (☰ na pasku narzędzi, `M`) z nagłówkiem konta (avatar z GitHuba, nazwa,
