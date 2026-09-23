@@ -44,6 +44,12 @@ pub fn is_enabled() -> bool {
     let Some(want) = command() else {
         return false;
     };
+    value().is_some_and(|got| got.eq_ignore_ascii_case(&want))
+}
+
+/// Co stoi w rejestrze pod nasza nazwa (dowolna sciezka) - `None`, gdy nic.
+/// Do naprawy wpisu: rozroznia "nie ma go wcale" od "wskazuje gdzie indziej".
+pub fn value() -> Option<String> {
     let key = wide(RUN_KEY);
     let value = wide(VALUE);
     let mut buf = [0u16; 2048];
@@ -60,11 +66,11 @@ pub fn is_enabled() -> bool {
         )
     };
     if rc != ERROR_SUCCESS {
-        return false;
+        return None;
     }
     let chars = (size as usize / 2).saturating_sub(1).min(buf.len());
     let got = String::from_utf16_lossy(&buf[..chars]);
-    got.trim_end_matches('\0').eq_ignore_ascii_case(&want)
+    Some(got.trim_end_matches('\0').to_string())
 }
 
 fn open_run_key() -> Option<HKEY> {

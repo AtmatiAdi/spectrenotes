@@ -499,6 +499,9 @@ pub fn install(
                 app.show_picker_on_open();
             }
         }
+        // Wpis autostartu mogl zniknac albo zostac po starej sciezce - naprawa
+        // przy kazdym starcie, dopoki uzytkownik chce startowac z systemem.
+        app.autostart_sync();
         for slot in 0..app.spaces.len() {
             let repo = app.repo_ref(slot);
             app.sync.send(SyncJob::Status(repo));
@@ -801,6 +804,47 @@ impl App {
             first_frame_logged: false,
             pending_placement: None,
         })
+    }
+
+    /// Autostart ma przezyc to, co sam wpis w rejestrze potrafi zgubic:
+    /// przeniesienie albo ponowna instalacje aplikacji (wpis zostaje po starej
+    /// sciezce i uruchamia nie to, co trzeba), czyszczenie kluczy `Run` przez
+    /// czysciki i antywirusy (ochrona zdejmuje "trwalosc" razem z plikiem, gdy
+    /// uzna go za zagrozenie - fałszywy alarm z issue #21), przeniesiony profil.
+    /// Aplikacja nie startowala wtedy z systemem, a w Ustawieniach stalo po
+    /// prostu *Off* - bez sladu, ze cos zniklo.
+    ///
+    /// Dlatego rejestr zostaje **mechanizmem**, a wybor uzytkownika pamieta
+    /// `config.txt`: gdy tam stoi "wlaczony", a wpisu nie ma albo wskazuje gdzie
+    /// indziej, piszemy go od nowa i zostawiamy linie w logu. Nigdy odwrotnie -
+    /// sami niczego nie wylaczamy. Naprawiamy tylko **zainstalowana** kopie:
+    /// build z `target\release` nie ma prawa wpisac sie uzytkownikowi do
+    /// autostartu.
+    fn autostart_sync(&mut self) {
+        match autostart_fix(
+            self.config.get("autostart"),
+            self.autostart,
+            spectre_shell_win::install::is_installed_copy(),
+        ) {
+            AutostartFix::Nothing => {}
+            AutostartFix::Remember(on) => {
+                self.config.set("autostart", if on { "1" } else { "0" });
+                self.config.save();
+            }
+            AutostartFix::Rewrite => {
+                let had = spectre_shell_win::autostart::value();
+                match spectre_shell_win::autostart::set_enabled(true) {
+                    Ok(()) => {
+                        self.autostart = true;
+                        self.partner_log(&match had {
+                            Some(old) => format!("autostart entry rewritten (pointed at {old})"),
+                            None => "autostart entry restored (it was gone)".into(),
+                        });
+                    }
+                    Err(e) => self.status = format!("autostart: {e}"),
+                }
+            }
+        }
     }
 
     fn color(&self) -> Rgba {
@@ -2045,7 +2089,13 @@ impl App {
             Setting::Autostart => {
                 let on = !self.autostart;
                 match spectre_shell_win::autostart::set_enabled(on) {
-                    Ok(()) => self.autostart = on,
+                    Ok(()) => {
+                        self.autostart = on;
+                        // Rejestr jest mechanizmem, ale **wybor** pamietamy tez
+                        // u siebie - patrz `autostart_sync`.
+                        self.config.set("autostart", if on { "1" } else { "0" });
+                        self.config.save();
+                    }
                     Err(e) => self.status = format!("autostart: {e}"),
                 }
             }
@@ -4796,6 +4846,28 @@ fn open_note(
     Ok((store, doc))
 }
 
+/// Co zrobic z autostartem przy starcie aplikacji (`App::autostart_sync`).
+#[derive(Debug, PartialEq, Eq)]
+enum AutostartFix {
+    Nothing,
+    /// Zapamietac w `config.txt` stan, ktory stoi w rejestrze.
+    Remember(bool),
+    /// Wpisac autostart od nowa: uzytkownik go chce, a rejestr mowi co innego.
+    Rewrite,
+}
+
+/// Decyzja z trzech rzeczy: co pamieta konfiguracja, co stoi w rejestrze
+/// (`is_enabled` - wpis po **tej** sciezce) i czy to zainstalowana kopia.
+fn autostart_fix(config: Option<&str>, registry_on: bool, installed: bool) -> AutostartFix {
+    match config {
+        // Nic nie pamietamy (pierwszy start po tej zmianie): rejestr jest
+        // wyborem uzytkownika - zapisujemy go i nic nie ruszamy.
+        None => AutostartFix::Remember(registry_on),
+        Some("1") if !registry_on && installed => AutostartFix::Rewrite,
+        _ => AutostartFix::Nothing,
+    }
+}
+
 /// Bezczynnosc, ktora liczy sie dla chronionego ekranu (`protect_idle_ms`
 /// wstawia tu stan systemu). Przy "tylko ekran laptopa" chronimy jeden panel,
 /// wiec praca na innym monitorze - kursor **i** pierwszy plan gdzie indziej,
@@ -5460,6 +5532,35 @@ mod tests {
         // Wymuszony podglad (`W`) i wylaczona ochrona nie czekaja na nic.
         assert_eq!(waves_delay(0, want, true), None);
         assert_eq!(waves_delay(0, 0, false), None);
+    }
+
+    /// Autostart: rejestr bywa czyszczony nie przez nas (antywirus zdejmujacy
+    /// "trwalosc", czysciki, przeniesiony profil), a aplikacja nie startowala
+    /// z systemem i w Ustawieniach stalo po prostu *Off*.
+    #[test]
+    fn autostart_wraca_gdy_uzytkownik_go_chcial() {
+        // Wpis zniknal, uzytkownik go chcial: wpisujemy od nowa.
+        assert_eq!(autostart_fix(Some("1"), false, true), AutostartFix::Rewrite);
+        // Ale tylko zainstalowana kopia - build z `target\release` nie ma prawa
+        // wpisac sie uzytkownikowi do autostartu.
+        assert_eq!(
+            autostart_fix(Some("1"), false, false),
+            AutostartFix::Nothing
+        );
+        // Wpis stoi tam, gdzie ma: nie ruszamy rejestru.
+        assert_eq!(autostart_fix(Some("1"), true, true), AutostartFix::Nothing);
+        // Uzytkownik autostartu nie chce - nigdy go nie wlaczamy sami.
+        assert_eq!(autostart_fix(Some("0"), false, true), AutostartFix::Nothing);
+        assert_eq!(autostart_fix(Some("0"), true, true), AutostartFix::Nothing);
+        // Pierwszy start po tej zmianie: stan rejestru to wybor uzytkownika.
+        assert_eq!(
+            autostart_fix(None, true, true),
+            AutostartFix::Remember(true)
+        );
+        assert_eq!(
+            autostart_fix(None, false, true),
+            AutostartFix::Remember(false)
+        );
     }
 
     /// Stacja dokujaca: notatka lezy na panelu laptopa, uzytkownik pisze na

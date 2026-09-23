@@ -117,6 +117,42 @@ ostrzeżenia — a SHA-256 z tego samego wydania pilnuje, że to ten plik.
 Decyzja odłożona — w gronie kilku znajomych da się żyć z ręcznym
 „Więcej informacji → Uruchom mimo to" raz, przy instalatorze.
 
+## Fałszywy alarm antywirusa (issue #21)
+
+22 IX 2026 Defender zablokował 0.3.7 jako `Trojan:Win32/Barefoos.A!ml`.
+Sufiks `!ml` znaczy „werdykt modelu, nie sygnatury": świeża, **niepodpisana**
+binarka bez reputacji, która przy pierwszym uruchomieniu robi dokładnie to, co
+robi złośliwe oprogramowanie — dopisuje się do `HKCU\...\Run`, chowa się do
+traya, pobiera plik `.exe` z sieci i podmienia nim samą siebie. Każda z tych
+rzeczy jest tu funkcją, ale razem wyglądają jak wzorzec. To wyjaśnienie, nie
+usprawiedliwienie: skutek dla użytkownika jest taki, że aplikacja znika z dysku.
+
+Co z tym robimy:
+
+- **`release.ps1` skanuje artefakty Defenderem przed publikacją**
+  (`MpCmdRun.exe -Scan -ScanType 3 -File`) i przerywa wydanie, gdy plik jest
+  zgłoszony. Lepiej, żeby dowiedział się o tym wydający niż użytkownik.
+- Zgłoszenie próbki jako fałszywego alarmu:
+  <https://www.microsoft.com/en-us/wdsi/filesubmission> (kategoria *Software
+  developer*, „Incorrectly detected as malware"). Werdykt bywa w kilka godzin
+  i wraca aktualizacją sygnatur do wszystkich.
+- Plik z kwarantanny odzyskuje się w *Ochrona przed wirusami → Historia
+  ochrony → Przywróć*; sumy z `SHA256SUMS.txt` pozwalają sprawdzić, że to ten
+  plik z wydania.
+- Prawdziwe rozwiązanie to podpis kodu (patrz tabela wyżej) — ta sama decyzja
+  i ten sam koszt co przy SmartScreenie.
+
+Czego **nie** robimy: nie dodajemy wykluczeń Defendera z instalatora ani nie
+prosimy o nie użytkownika. Katalog, do którego updater wrzuca nowe pliki, ma
+być skanowany.
+
+Autostart przeżywa taką remediację: antywirus, czyszcząc „trwałość", kasuje
+wpis w `HKCU\...\Run` razem z plikiem, więc aplikacja po prostu przestawała
+startować z systemem (a w Ustawieniach stało *Off*, bez śladu). Wybór
+użytkownika pamięta teraz `config.txt` (`autostart=1`), a `App::autostart_sync`
+przy każdym starcie **zainstalowanej** kopii odtwarza wpis, jeśli zniknął albo
+wskazuje na starą ścieżkę; naprawa zostawia linię w `partner.log`.
+
 ## Kompilacja u odbiorcy
 
 Alternatywa dla podpisu: odbiorca buduje ze źródeł (`.\dev.cmd -Install`,

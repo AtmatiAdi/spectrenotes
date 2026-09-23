@@ -158,6 +158,32 @@ $sums = $assets | ForEach-Object {
 [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), (($sums -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
 Get-ChildItem $dist | ForEach-Object { "{0,-24} {1,10:N0} B" -f $_.Name, $_.Length }
 
+# --- Skan Microsoft Defender ------------------------------------------------------
+# Swiezy, niepodpisany plik bez reputacji bywa zjadany przez heurystyke ML
+# (issue #21: Trojan:Win32/Barefoos.A!ml). O tym mamy wiedziec przed wydaniem,
+# a nie z feedbacku uzytkownika, ktoremu antywirus skasowal aplikacje.
+Step 'Skan Microsoft Defender'
+$mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+if (-not (Test-Path $mp)) {
+    Write-Host 'MpCmdRun.exe nie znaleziony - skan pominiety' -ForegroundColor Yellow
+}
+else {
+    foreach ($a in $assets) {
+        $out = (& $mp -Scan -ScanType 3 -File (Join-Path $dist $a) 2>&1 | Out-String)
+        if ($out -match 'found no threats') {
+            "$a - czysty"
+        }
+        elseif ($out -match 'Threat|found\s+\d|was detected') {
+            Write-Host $out
+            Fail "Defender zglasza $a. To prawie na pewno falszywy alarm, ale nie wydawaj pliku, ktory zniknie ludziom z dysku: zglos probke na https://www.microsoft.com/en-us/wdsi/filesubmission i powtorz wydanie po werdykcie"
+        }
+        else {
+            Write-Host "$a - skanu nie udalo sie wykonac (uprawnienia?), pomijam:" -ForegroundColor Yellow
+            Write-Host $out
+        }
+    }
+}
+
 # --- Opis wydania -------------------------------------------------------------------
 if (-not $Notes) {
     $prev = git tag -l 'v*' --sort=-v:refname | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Select-Object -First 1

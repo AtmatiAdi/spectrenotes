@@ -140,7 +140,28 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       notatki, LWW; cache `<space>/.cache/meta`), przenoszenie między folderami,
       nowa notatka/folder; Ustawienia i Konto działają (Etap 5)
 - [x] Autostart z systemem: wpis w kluczu `Run` użytkownika z `--tray` (start schowany do traya,
-      okno na `Win+Shift+N`); rejestr jest źródłem prawdy, przełącznik w Ustawienia → System
+      okno na `Win+Shift+N`); przełącznik w Ustawienia → System
+- [x] **Autostart przeżywa skasowanie wpisu** (2026-09-23, zgłoszenie: „dziś przy
+      starcie kompa aplikacja się nie uruchomiła"). Zmierzone na maszynie
+      użytkownika: start systemu 8:35, aplikacja ruszyła dopiero ręcznie o 8:40
+      (wiersz poleceń bez `--tray`), a w `HKCU\...\Run` nie ma wartości
+      `SpectreNotes` — klucz ostatnio zapisywany 21 IX 23:29, czyli **przed**
+      blokadą Defendera z 22 IX 13:56, więc to nie była jego remediacja; wpis
+      zniknął wcześniej i nic o tym nie wiedziało, bo rejestr był jedynym
+      źródłem prawdy (w Ustawieniach stało po prostu *Off*). Teraz wybór pamięta
+      `config.txt`, a `autostart_sync` odtwarza wpis przy każdym starcie
+      **zainstalowanej** kopii, gdy go nie ma albo wskazuje na starą ścieżkę
+      (`autostart::value`); sami nigdy nie wyłączamy, build z `target\release`
+      nie wpisuje się użytkownikowi do autostartu, naprawa idzie do `partner.log`
+- [x] **Fałszywy alarm Defendera** (2026-09-23, issue #21: `Trojan:Win32/Barefoos.A!ml`
+      na 0.3.7). Werdykt ML, nie sygnatura: niepodpisana binarka bez reputacji,
+      która dopisuje się do `Run`, chowa się do traya i podmienia samą siebie
+      pobranym plikiem. Dziś ten sam plik skanuje się czysto
+      (`MpCmdRun -Scan -ScanType 3`, zmierzone). `release.ps1` skanuje teraz
+      artefakty przed publikacją i przerywa wydanie, gdy są zgłoszone; droga
+      zgłoszenia próbki i odzyskania pliku z kwarantanny opisana
+      w `docs/06-DYSTRYBUCJA.md`. Docelowo podpis kodu — ta sama decyzja co przy
+      SmartScreenie
 - [x] Ochrona AMOLED po bezczynności (Z7): fale przyciemnienia — patrz Etap 2
 - [x] Ustawienia ochrony AMOLED: **przełącznik włącz/wyłącz** całej ochrony oraz
       **tylko na ekranie laptopa** — panel wbudowany rozpoznawany po typie złącza

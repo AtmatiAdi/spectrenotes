@@ -250,7 +250,11 @@ włączone: w zwykłym oknie fale nie startują i Spectre nie dostaje próśb, b
 cały ekran w trakcie pracy obok był uciążliwy; gdy ochrona czuwa, przed tytułem notatki
 stoi tarcza 🛡 — potwierdzenie, że okno jest tam, gdzie ma chronić; czas bezczynności
 10 s – 10 min; jasność notatki między pasami 0–100 %), *Sieć lokalna* (rysowanie na żywo), *System* (**autostart** — wpis
-w kluczu `Run` użytkownika, aplikacja startuje z `--tray`, czyli schowana w trayu).
+w kluczu `Run` użytkownika, aplikacja startuje z `--tray`, czyli schowana w trayu;
+**wybór pamięta też `config.txt`**, a `autostart_sync` odtwarza wpis przy starcie
+zainstalowanej kopii, gdy ktoś go skasował — antywirus zdejmujący „trwałość",
+czyścik, przeniesiony profil — albo gdy został po starej ścieżce; sami go nigdy
+nie wyłączamy, a naprawa zostawia linię w `partner.log`).
 Trwałe wartości lądują w `config.txt`. *Konto*: autor, logowanie do GitHuba — przycisk **Sign in with GitHub** otwiera
 przeglądarkę, po „Authorize" wraca ona sama do aplikacji (OAuth na loopbacku,
 `http://127.0.0.1:<port>/callback`), token zapisuje się i repo zakłada samo; zapasowo
