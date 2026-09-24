@@ -102,6 +102,15 @@ const ANIM_TICK_MS: u32 = 16;
 const TIMER_TOPMOST: usize = 10;
 const TOPMOST_TICK_MS: u32 = 200;
 const TOPMOST_TICKS: u32 = 8;
+/// Ile razy w jednym wejsciu ochrony probujemy ustawic okno na caly monitor.
+///
+/// Sterownik potrafi miec w tej sprawie wlasne zdanie: NVIDIA Surround spina
+/// dwa monitory w jeden ekran, ale okna maksymalizuje **do jednego z nich**
+/// i oddaje nasz prostokat z powrotem po kazdej poprawce. Zmierzone: 12 skokow
+/// 3840 <-> 7680 na sekunde, czyli ekran miga raz jednym, raz drugim monitorem.
+/// Trzy proby wystarczaja na zwykle przepiecie ekranow, a przy uporze drugiej
+/// strony odpuszczamy - fale na mniejszym prostokacie sa lepsze niz migotanie.
+const FS_FIX_TRIES: u8 = 3;
 const TOPMOST_SLOW_MS: u32 = 5000;
 /// Klatki paska postepu w oknie feedbacku (scenariusz trwa ~8 s).
 const TIMER_FEEDBACK: usize = 11;
@@ -361,6 +370,8 @@ pub struct App {
     waves_fullscreen: bool,
     /// Czy w tym wejsciu ochrony zapisano juz klopot z pelnym ekranem.
     waves_fs_warned: bool,
+    /// Ile prob poprawienia pelnego ekranu zostalo w tym wejsciu ochrony.
+    fs_fix_left: u8,
     /// Okno wyboru notatki schowane przez fale - wraca razem z nimi.
     picker_under_waves: bool,
     /// Ile szybkich odswiezen TOPMOST zostalo po wejsciu w pelny ekran.
@@ -762,6 +773,7 @@ impl App {
             waves_dim_pct,
             waves_fullscreen: false,
             waves_fs_warned: false,
+            fs_fix_left: FS_FIX_TRIES,
             picker_under_waves: false,
             topmost_ticks: 0,
             code_copied: false,
@@ -1691,7 +1703,11 @@ impl App {
 
     fn topmost_tick(&mut self) {
         self.fullscreen.raise(self.hwnd);
-        let _ = self.keep_fullscreen_rect();
+        // Pelny ekran wlaczony recznie (`F11`) zostaje taki, jaki jest - to
+        // okno uzytkownika. Pilnujemy tylko prostokata pod falami.
+        if self.waves.is_some() {
+            self.ensure_waves_fullscreen();
+        }
         unsafe {
             if !self.fullscreen.is_active() {
                 let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
@@ -4199,6 +4215,7 @@ impl App {
     fn stop_waves(&mut self) -> bool {
         let had = self.waves.take().is_some();
         self.waves_fs_warned = false;
+        self.fs_fix_left = FS_FIX_TRIES;
         if had {
             self.apply_cursor();
         }
@@ -4263,15 +4280,27 @@ impl App {
     /// sie uda, i dopiero wtedy zapamietujemy, ze to **nasz** pelny ekran
     /// (do zdjecia po ochronie). Gdy tryb juz trwa, pilnujemy samego prostokata.
     fn ensure_waves_fullscreen(&mut self) {
+        if self.fs_fix_left == 0 {
+            return;
+        }
         if self.fullscreen.is_active() {
             if self.keep_fullscreen_rect() {
-                self.log_fullscreen_once("fullscreen rect corrected to the whole monitor");
+                self.fs_fix_left -= 1;
+                if self.fs_fix_left == 0 {
+                    self.partner_log(
+                        "fullscreen rect keeps being overridden - giving up for this idle \
+                         (NVIDIA Surround maximizes to one screen of the span)",
+                    );
+                } else {
+                    self.log_fullscreen_once("fullscreen rect corrected to the whole monitor");
+                }
             }
             return;
         }
         self.toggle_fullscreen();
         self.waves_fullscreen = self.fullscreen.is_active();
         if !self.waves_fullscreen {
+            self.fs_fix_left -= 1;
             self.log_fullscreen_once("waves without fullscreen: no monitor rect for the window");
         }
     }

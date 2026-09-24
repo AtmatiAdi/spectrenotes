@@ -181,6 +181,24 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       i pierwszy plan na `DISPLAY7`) okno przechodzi w pełny ekran po 4 s i zostaje
       w nim przez całą próbę, a Notatnik obok nie traci fokusu; kursor przeniesiony
       na panel budzi notatkę w 0,7 s, hover rysikiem — natychmiast
+- [x] **NVIDIA Surround: ochrona na zewnętrznym ekranie i migotanie** (2026-09-24,
+      zgłoszenie: „jak aplikacja jest na ekranie zewnętrznym mimo opcji laptop screen
+      only to ochrona amoled się włącza i zaczyna mi migotać raz jeden a potem drugi
+      monitor"). Dwie osobne usterki, obie zmierzone:
+      **(1)** Surround spina dwa monitory w jeden ekran 7680×2160, a panel laptopa
+      jest wtedy wygaszony — `QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS)` nie zwraca
+      żadnego wyjścia `INTERNAL`, więc wpadaliśmy w regułę dla stacjonarek („panelem
+      jest monitor podstawowy") i ochrona uznawała ekran Surround za panel laptopa.
+      Teraz `QDC_ALL_PATHS` (cecha maszyny, liczona raz) odróżnia „laptop z wygaszonym
+      panelem" od „nie ma panelu wcale": w pierwszym przypadku **żaden** monitor nie
+      jest chronionym ekranem. A/B na tym samym profilu i ekranie: stary build →
+      `holding Spectre's shield off` + `fullscreen rect corrected`, nowy →
+      `not holding: window on \\.\DISPLAY6, not the laptop panel`.
+      **(2)** Sterownik Surround maksymalizuje okna do **jednego** ekranu ze spiętej
+      pary i oddawał nasz prostokąt pełnego ekranu po każdej poprawce, a pilnowanie
+      prostokąta (z 23 IX) chodzi co 60 ms — zmierzone 49 zmian prostokąta 3840↔7680
+      w 4 s, czyli 12 skoków na sekundę. Budżet `FS_FIX_TRIES = 3` na jedno wejście
+      ochrony i odpuszczenie z powodem w `partner.log`: po poprawce **2 zmiany w 4 s**
 - [x] **Ochrona nie zawsze wchodziła w pełny ekran** (2026-09-23). Zgłoszenia
       „nie robi się fullscreen" nie udało się odtworzyć (zmierzone: okno
       zmaksymalizowane na panelu, ochrona z timera i z `W`, także gdy pierwszy plan

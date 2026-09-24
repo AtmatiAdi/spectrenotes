@@ -144,6 +144,12 @@ zmienia się właśnie pod ręką), a wtedy fale płynęły po oknie zmaksymaliz
 z paskiem zadań nad notatką; teraz ochrona próbuje ponownie w każdym tiku i dopiero
 udane wejście zapamiętuje jako **swoje** (do zdjęcia po ochronie). Nieudane wejście
 zostawia linię w `partner.log`.
+Na te próby jest **budżet trzech na jedno wejście ochrony** (`FS_FIX_TRIES`), bo
+sterownik potrafi mieć w sprawie prostokąta własne zdanie: NVIDIA Surround spina dwa
+monitory w jeden ekran, ale okna maksymalizuje do **jednego** z nich i oddaje nasz
+prostokąt po każdej poprawce (zmierzone: 12 skoków 3840↔7680 na sekundę — ekran miga
+raz jednym, raz drugim monitorem). Po wyczerpaniu budżetu odpuszczamy, z powodem
+w `partner.log`: fale na mniejszym prostokącie są lepsze niż migotanie.
 Gdy pasek narzędzi jest zadokowany u góry, **wchłania** oba pola — tytuł,
 uchwyt i przyciski stają się jego elementami i znikają razem z nim; tytuł ma wtedy tę
 samą szerokość i to samo miejsce co zakładka (środek okna), nie rozciąga się na wolne
@@ -244,7 +250,9 @@ przeglądarce z wpisaną treścią (bez załączników). Dalej grupy funkcjonaln
 HUD), *Pasek narzędzi* (krawędź dokowania, zawsze widoczny), *Nawigacja* (mnożnik
 przewijania x1…x6 — kółko i przycisk boczny), *Ochrona AMOLED* (włącz/wyłącz; **tylko
 na ekranie laptopa** — na zewnętrznym monitorze fale nie startują, panel wbudowany
-rozpoznawany po typie złącza, a praca na innym ekranie nie trzyma panelu rozświetlonego
+rozpoznawany po typie złącza (a gdy jest **wygaszony** — zamknięta klapa, stacja,
+NVIDIA Surround — chronionego ekranu po prostu nie ma i ochrona nie startuje nigdzie),
+a praca na innym ekranie nie trzyma panelu rozświetlonego
 (stacja dokująca — patrz *Ochrona AMOLED liczy bezczynność człowieka*); **tylko zmaksymalizowane lub pełny ekran** — domyślnie
 włączone: w zwykłym oknie fale nie startują i Spectre nie dostaje próśb, bo skok okna na
 cały ekran w trakcie pracy obok był uciążliwy; gdy ochrona czuwa, przed tytułem notatki
@@ -415,6 +423,15 @@ Odliczanie do fal bierze bezczynność **całego systemu** (`GetLastInputInfo`),
 nie tylko tego okna. Okno nieaktywne nie dostaje żadnych komunikatów wejścia,
 więc bez tego ochrona wchodziła (razem z pełnym ekranem) w trakcie pisania
 w innej aplikacji. `W` (wymuszony podgląd) omija sprawdzenie.
+
+Który ekran jest panelem laptopa, liczy `display::is_internal_monitor` z trzech
+przypadków, bo „nie ma aktywnego panelu wbudowanego" znaczy co innego na laptopie,
+a co innego na stacjonarce: (1) panel świeci — porównanie po nazwie GDI;
+(2) panel jest **wygaszony**, ale maszyna go ma (`QDC_ALL_PATHS` widzi też wyjścia
+nieaktywne) — chronionego ekranu teraz nie ma, więc **żaden** monitor nim nie jest;
+(3) maszyny bez panelu (komputer stacjonarny) — „głównym" jest monitor podstawowy.
+Bez (2) przypadek (3) łapał laptopa z zamkniętą klapą i ochrona wchodziła na
+monitorze zewnętrznym mimo *Laptop screen only* (zgłoszenie z 24 IX, NVIDIA Surround).
 
 Z jednym wyjątkiem: przy **tylko na ekranie laptopa** chronimy jeden panel,
 a praca na innym monitorze go nie dotyczy. Gdy kursor **i** okno pierwszego
