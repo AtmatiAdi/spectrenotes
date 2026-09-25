@@ -29,7 +29,9 @@ fn orient(ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32) -> f32 {
     (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
 }
 
-fn segments_intersect(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> bool {
+/// Czy odcinki `a-b` i `c-d` przecinaja sie wlasciwie (bez przypadkow
+/// stycznych i wspolliniowych - tam i tak decyduje test punktu w wielokacie).
+pub fn segments_intersect(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> bool {
     let o1 = orient(a.0, a.1, b.0, b.1, c.0, c.1);
     let o2 = orient(a.0, a.1, b.0, b.1, d.0, d.1);
     let o3 = orient(c.0, c.1, d.0, d.1, a.0, a.1);

@@ -466,8 +466,40 @@ pub fn point_in_poly(p: (f32, f32), poly: &[(f32, f32)]) -> bool {
     inside
 }
 
-/// Zaznaczenie z obrysu: kreski **w calosci** wewnatrz. Kryterium jest
-/// swiadome - zaznacza sie to, co sie okrazylo, a nie to, co sie musnelo.
+/// Czy obrys **przechodzi przez** kreske. Dwa warunki, bo jeden nie wystarcza:
+/// - ktoras probka kreski lezy wewnatrz obrysu (zwykly przypadek: kreska
+///   okrazona w calosci albo w czesci);
+/// - ktorys odcinek kreski przecina krawedz obrysu. Szybka, prosta kreska ma
+///   probki co kilkadziesiat px, a obrys bywa waski - przekreslenie trafialoby
+///   wtedy miedzy probki i kreska zostalaby niezaznaczona.
+///
+/// Liczy sie os kreski, nie jej grubosc: obrys musnięty o brzeg bardzo grubej
+/// kreski jej nie bierze. Tak jest przewidywalniej, a 1-2 px to i tak mniej
+/// niz drzenie reki.
+fn lasso_touches(data: &spectre_proto::StrokeData, poly: &[(f32, f32)], area: &Bbox) -> bool {
+    if data.samples.iter().any(|s| point_in_poly((s.x, s.y), poly)) {
+        return true;
+    }
+    data.samples.windows(2).any(|w| {
+        let (a, b) = ((w[0].x, w[0].y), (w[1].x, w[1].y));
+        // Odcinek poza prostokatem obrysu nie ma czego przecinac.
+        if a.0.min(b.0) > area.max_x
+            || a.0.max(b.0) < area.min_x
+            || a.1.min(b.1) > area.max_y
+            || a.1.max(b.1) < area.min_y
+        {
+            return false;
+        }
+        (0..poly.len()).any(|i| {
+            spectre_core::hittest::segments_intersect(a, b, poly[i], poly[(i + 1) % poly.len()])
+        })
+    })
+}
+
+/// Zaznaczenie z obrysu: wszystko, **przez co obrys przeszedl** - zarowno to,
+/// co okrazyl w calosci, jak i to, co tylko przekreslil (`lasso_touches`).
+/// Kryterium zmienione 25 IX na prosbe uzytkownika; wczesniej trzeba bylo
+/// okrazyc kreske w calosci, co przy gestych notatkach bylo zmudne.
 pub fn from_lasso(doc: &Document, poly: &[(f32, f32)]) -> Option<Selection> {
     if poly.len() < 3 {
         return None;
@@ -487,16 +519,10 @@ pub fn from_lasso(doc: &Document, poly: &[(f32, f32)]) -> Option<Selection> {
     let mut ids = Vec::new();
     let mut strokes = Vec::new();
     let mut bbox: Option<Bbox> = None;
+    // `visible_in` odsiewa juz po prostokacie obrysu: kreska, ktora go nie
+    // dotyka, nie moze byc przez niego przeciagnieta.
     for (id, data, b) in doc.visible_in(area) {
-        // Tania odsiewka: co wystaje poza prostokat obrysu, nie moze byc w srodku.
-        if b.min_x < area.min_x
-            || b.max_x > area.max_x
-            || b.min_y < area.min_y
-            || b.max_y > area.max_y
-        {
-            continue;
-        }
-        if !data.samples.iter().all(|s| point_in_poly((s.x, s.y), poly)) {
+        if !lasso_touches(data, poly, &area) {
             continue;
         }
         ids.push(id);
@@ -558,18 +584,63 @@ mod tests {
         vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
     }
 
-    /// Lasso bierze to, co okrazone w calosci - kreska wystajaca poza obrys
-    /// zostaje na miejscu.
+    /// Lasso bierze wszystko, przez co przeszlo: okrazone w calosci, wystajace
+    /// poza obrys i samo przekreslone. Co obrysu nie dotyka - zostaje.
     #[test]
-    fn lasso_bierze_tylko_kreski_w_calosci_wewnatrz() {
+    fn lasso_bierze_kreski_przez_ktore_przechodzi() {
         let d = doc_with(&[
+            // w calosci wewnatrz
             stroke(&[(100.0, 100.0), (150.0, 120.0)]),
+            // wchodzi do srodka i wychodzi daleko w prawo
             stroke(&[(180.0, 180.0), (400.0, 180.0)]),
+            // calkiem poza obrysem
+            stroke(&[(500.0, 500.0), (600.0, 600.0)]),
         ]);
         let sel = from_lasso(&d, &square(50.0, 50.0, 300.0, 300.0)).expect("cos zaznaczone");
-        assert_eq!(sel.ids.len(), 1);
+        assert_eq!(sel.ids.len(), 2, "okrazona i ta wystajaca poza obrys");
+        // Ramka obejmuje tez to, co wystaje poza sam obrys.
         assert!(sel.frame.contains(100.0, 100.0));
+        assert!(sel.frame.contains(390.0, 180.0));
+        // Kreska o rzadkich probkach, przekreslona waskim obrysem: zadna probka
+        // nie jest w srodku, ale odcinek przecina krawedzie - liczy sie.
+        let d2 = doc_with(&[stroke(&[(0.0, 100.0), (500.0, 100.0)])]);
+        let sel = from_lasso(&d2, &square(240.0, 40.0, 260.0, 160.0)).expect("przekreslona");
+        assert_eq!(sel.ids.len(), 1);
+        // Obrys obok wszystkiego nie bierze nic.
         assert!(from_lasso(&d, &square(0.0, 0.0, 10.0, 10.0)).is_none());
+    }
+
+    /// Ile kosztuje wybor kresek przy gestej notatce. Liczone raz, na koniec
+    /// gestu, ale ma byc nizej niz klatka - inaczej puszczenie rysika by zacielo.
+    /// `cargo test -p spectre-app czas_wyboru -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn czas_wyboru_z_obrysu() {
+        let mut strokes = Vec::new();
+        for i in 0..400 {
+            let x = (i % 20) as f32 * 150.0;
+            let y = (i / 20) as f32 * 150.0;
+            let pts: Vec<(f32, f32)> = (0..120)
+                .map(|k| (x + k as f32 * 0.8, y + (k as f32 * 0.3).sin() * 40.0))
+                .collect();
+            strokes.push(stroke(&pts));
+        }
+        let d = doc_with(&strokes);
+        // Obrys jak z reki: okrag z 200 punktow wokol polowy notatki.
+        let poly: Vec<(f32, f32)> = (0..200)
+            .map(|i| {
+                let a = i as f32 / 200.0 * std::f32::consts::TAU;
+                (1500.0 + 1200.0 * a.cos(), 1500.0 + 1200.0 * a.sin())
+            })
+            .collect();
+        let n = 50;
+        let t0 = std::time::Instant::now();
+        let mut taken = 0;
+        for _ in 0..n {
+            taken = from_lasso(&d, &poly).map_or(0, |s| s.ids.len());
+        }
+        let per = t0.elapsed().as_secs_f64() * 1e3 / n as f64;
+        println!("obrys 200 pkt, 400 kresek x 120 probek: {per:.2} ms, wzietych {taken}");
     }
 
     /// Przesuniecie: tresc idzie za rysikiem, ramka razem z nia, grubosc bez zmian.

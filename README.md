@@ -173,8 +173,15 @@ wypada poza okno. Dok i położenie okna zapisują się
 w `%APPDATA%\SpectreNotes\config.txt` (jawny `klucz=wartość`).
 
 **Zaznaczanie obrysem** (ikona przerywanej ramki na pasku albo `S`): rysik rysuje
-**lasso**, a zaznaczeniem staje się to, co obrys otoczył **w całości** — kryterium
-jest świadome: zaznacza się to, co się okrążyło, a nie to, co się musnęło. Wokół
+**lasso**, a zaznaczeniem staje się wszystko, **przez co obrys przeszedł**: i to, co
+okrążył w całości, i to, co tylko przekreślił (zmiana z 25 IX — okrążanie każdej kreski
+w gęstej notatce było żmudne). Kreska wchodzi do zaznaczenia, gdy ma choć jedną próbkę
+wewnątrz obrysu **albo** gdy któryś jej odcinek przecina krawędź obrysu — ten drugi
+warunek łapie szybkie, proste kreski o próbkach co kilkadziesiąt px, przekreślone wąskim
+obrysem. Liczy się oś kreski, nie jej grubość. Kryterium sprawdza tylko to, co dotyka
+prostokąta obrysu (`Document::visible_in`); zmierzone na skrajnie gęstej notatce
+(400 kresek × 120 próbek, obrys z 200 punktów, 220 wziętych): **6,1 ms** raz, na koniec
+gestu. Wokół
 zaznaczenia staje ramka z uchwytami: **wnętrze przesuwa**, **rogi skalują**
 (proporcjonalnie, przeciwległy róg stoi w miejscu — grubość kreski rośnie razem
 z treścią), **uchwyt nad ramką obraca** wokół środka. Przesuwa się tylko to, co się

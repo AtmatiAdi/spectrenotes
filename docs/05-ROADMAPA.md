@@ -114,8 +114,19 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       **samym końcu paska**, za kłódką komputera (2026-09-15) — na początku, przy
       menu, łapał się przypadkiem; w doku u góry koniec paska trzyma zapas od
       uchwytu przesuwania okna, żeby dwa ⠿ nie stały obok siebie
+- [x] **Lasso bierze to, przez co przeszło** (2026-09-25, prośba użytkownika:
+      „zaznaczenie na canvasie powinno zaznaczać wszystkie elementy przez które
+      przechodzi, nie tylko elementy które w pełni okala"). Kreska wchodzi do
+      zaznaczenia, gdy ma próbkę wewnątrz obrysu **albo** gdy któryś jej odcinek
+      przecina krawędź obrysu (`lasso_touches`, `hittest::segments_intersect`) —
+      drugi warunek łapie szybkie, proste kreski o rzadkich próbkach, przekreślone
+      wąskim obrysem. A/B tym samym gestem (wąski obrys w poprzek trzech kresek):
+      stary build nie zaznaczał nic, nowy bierze wszystkie trzy i przenosi razem.
+      Koszt zmierzony na skrajnie gęstej notatce (400 kresek × 120 próbek, obrys
+      200 punktów): 6,1 ms raz, na koniec gestu
 - [x] **Zaznaczanie obrysem i przekształcanie treści** (2026-09-22, `select.rs`):
-      lasso bierze kreski otoczone **w całości**, ramka z uchwytami przesuwa (wnętrze),
+      lasso brało wtedy kreski otoczone **w całości** (patrz zmiana z 25 IX wyżej),
+      ramka z uchwytami przesuwa (wnętrze),
       skaluje (rogi, proporcjonalnie — przeciwległy róg stoi, grubość kreski mnoży się
       przez skalę) i obraca (uchwyt nad ramką); przesuwa się tylko to, co się złapie —
       dotknięcie poza ramką **odstawia zaznaczenie tam, gdzie jest** i zaczyna nowy
