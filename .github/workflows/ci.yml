@@ -1,0 +1,25 @@
+# Testy przy kazdym pushu i pull requescie. Wydanie robi `release.yml` z tagu.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    env:
+      # Bez gniazd LAN na runnerze (i bez pytan zapory na maszynach deweloperow).
+      SPECTRENOTES_NO_LAN: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Testy
+        run: cargo test --workspace --quiet
+      - name: Build (release)
+        run: cargo build --release -p spectre-app -p spectrenotes-setup

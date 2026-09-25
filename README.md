@@ -8,6 +8,36 @@ o tym, które komputery są wystarczająco właściwe, żeby uruchomić aplikacj
 odczucia (tag `v0.1-latency-baseline`), trwałe notatki, pasek narzędzi, rezydentność
 w tray'u: 2 MB w tle, 20 ms do klatki po hotkeyu (`docs/05-ROADMAPA.md`).
 
+---
+
+### In English
+
+**SpectreNotes** is a pen-first note-taking app for Windows, built for AMOLED
+screens and MPP 2.0 styluses — a self-hosted replacement for Samsung Notes.
+Latency comes first: the ink is drawn on a Direct2D swap chain at the pen's
+sampling rate (266 Hz measured), notes are plain files on disk, and syncing goes
+through a Git repository you own. No third-party cloud, no telemetry.
+
+Written in Rust with no GUI framework: Win32 + Direct2D/DirectWrite directly.
+Notes are an append-only CRDT op-log, so two machines editing the same note
+merge without a server. Local-network live drawing and GitHub sync are optional
+and off-switchable.
+
+- **Download:** [latest release](https://github.com/AtmatiAdi/spectrenotes-releases/releases/latest)
+  (`SpectreNotes-Setup.exe`, per-user install, no administrator rights)
+- **Build from source:** Rust (toolchain pinned in `rust-toolchain.toml`) and
+  Visual Studio Build Tools, then `cargo build --release -p spectre-app`.
+  `.\dev.cmd -Install` installs whatever is missing.
+- **The app's interface is in English**; this documentation and the code
+  comments are in Polish.
+
+Licensed under the **GNU General Public License v3.0 or later** — see
+[`LICENSE`](LICENSE). This program is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+---
+
 ## Uruchomienie
 
 ```

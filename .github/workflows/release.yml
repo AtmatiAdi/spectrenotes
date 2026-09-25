@@ -1,0 +1,171 @@
+# Wydanie SpectreNotes: tag vX.Y.Z -> build ze zrodel -> podpis (SignPath)
+# -> sumy -> GitHub Release w publicznym repo wydan.
+#
+# Dlaczego CI, a nie `release.ps1` na laptopie: SignPath Foundation podpisuje
+# tylko binarki zbudowane ze zrodel **w sposob weryfikowalny** - podpis ma
+# wskazywac na konkretny przebieg workflow w konkretnym repo (docs/07).
+#
+# `release.ps1` zostaje do prob i buildow lokalnych; oficjalne wydanie robi tag.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag do wydania, np. v0.3.8'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      # Sekret OAuth App (GitHub) wstrzykiwany przy kompilacji - patrz
+      # crates/spectre-app/build.rs. Bez niego logowanie idzie Device Flow.
+      SPECTRENOTES_OAUTH_SECRET: ${{ secrets.SPECTRENOTES_OAUTH_SECRET }}
+      # Testy nie otwieraja gniazd LAN: zadnych pytan zapory na runnerze.
+      SPECTRENOTES_NO_LAN: '1'
+      # Podpisywanie wlacza sie samo, gdy tylko token jest ustawiony - dzieki
+      # temu ten sam workflow dziala przed akceptacja SignPath i po niej.
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # Pelna historia: opis wydania to lista commitow od poprzedniego tagu.
+          fetch-depth: 0
+
+      - name: Wersja z tagu
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag || github.ref_name }}'
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw "tag `"$tag`" nie jest vX.Y.Z" }
+          $version = $tag.Substring(1)
+          # Tag i Cargo.toml musza mowic to samo - inaczej wydanie klamie.
+          $toml = Get-Content Cargo.toml -Raw
+          $m = [regex]::Match($toml, '(?ms)^\[workspace\.package\]\s*\r?\nversion\s*=\s*"([^"]+)"')
+          if ($m.Groups[1].Value -ne $version) {
+            throw "Cargo.toml ma $($m.Groups[1].Value), a tag mowi $version"
+          }
+          "tag=$tag"         | Out-File $env:GITHUB_OUTPUT -Append
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Append
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Testy
+        run: cargo test --workspace --quiet
+
+      - name: Build
+        run: cargo build --release -p spectre-app -p spectrenotes-setup
+
+      - name: Zasoby wydania
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\spectrenotes.exe dist\
+          Copy-Item target\release\SpectreNotes-Setup.exe dist\
+          Get-ChildItem dist | ForEach-Object { "{0,-24} {1,10:N0} B" -f $_.Name, $_.Length }
+
+      # Swiezy, niepodpisany plik bez reputacji bywa zjadany przez heurystyke ML
+      # (issue #21). Lepiej, zeby dowiedzial sie o tym wydajacy niz uzytkownik.
+      - name: Skan Microsoft Defender
+        shell: pwsh
+        run: |
+          $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+          if (-not (Test-Path $mp)) { Write-Host '::notice::MpCmdRun.exe nie znaleziony - skan pominiety'; exit 0 }
+          foreach ($a in @('spectrenotes.exe', 'SpectreNotes-Setup.exe')) {
+            $out = (& $mp -Scan -ScanType 3 -File (Resolve-Path "dist\$a") 2>&1 | Out-String)
+            if ($out -match 'found no threats') { "$a - czysty" }
+            elseif ($out -match 'Threat|found\s+\d|was detected') {
+              Write-Host $out
+              throw "Defender zglasza $a - zglos falszywy alarm (https://www.microsoft.com/en-us/wdsi/filesubmission) i nie wydawaj tego pliku"
+            }
+            else { Write-Host "::warning::skan $a nie wykonal sie: $out" }
+          }
+
+      - name: Artefakt do podpisu
+        id: unsigned
+        if: env.HAS_SIGNPATH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned
+          path: dist/*.exe
+
+      # Polityka "release" ma reczne zatwierdzanie: ten krok czeka, az wydajacy
+      # kliknie Approve w panelu SignPath.
+      - name: Podpis (SignPath Foundation)
+        if: env.HAS_SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      - name: Podpisane pliki na miejsce
+        if: env.HAS_SIGNPATH == 'true'
+        shell: pwsh
+        run: |
+          Copy-Item signed\*.exe dist\ -Force
+          foreach ($a in @('spectrenotes.exe', 'SpectreNotes-Setup.exe')) {
+            $s = Get-AuthenticodeSignature "dist\$a"
+            "{0}: {1} ({2})" -f $a, $s.Status, $s.SignerCertificate.Subject
+            if ($s.Status -ne 'Valid') { throw "podpis $a jest $($s.Status)" }
+          }
+
+      # Sumy licza sie PO podpisaniu - podpis zmienia bajty pliku.
+      - name: SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          $sums = @('spectrenotes.exe', 'SpectreNotes-Setup.exe') | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash "dist\$_" -Algorithm SHA256).Hash.ToLower(), $_
+          }
+          # LF, bez BOM - format sha256sum, czytany przez spectre_update::sum_for.
+          [IO.File]::WriteAllText("$pwd\dist\SHA256SUMS.txt", (($sums -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: Opis wydania
+        shell: pwsh
+        run: |
+          $prev = git tag -l 'v*' --sort=-v:refname |
+                  Where-Object { $_ -match '^v\d+\.\d+\.\d+$' -and $_ -ne '${{ steps.ver.outputs.tag }}' } |
+                  Select-Object -First 1
+          $range = if ($prev) { "$prev..${{ steps.ver.outputs.tag }}" } else { '${{ steps.ver.outputs.tag }}' }
+          $log = git log $range --no-merges --format='- %s'
+          $notes = if ($log) { $log -join "`n" } else { 'SpectreNotes ${{ steps.ver.outputs.version }}' }
+          $notes += "`n`nInstalacja: pobierz **SpectreNotes-Setup.exe** i uruchom - sciaga te wersje i instaluje ja dla biezacego uzytkownika. Zainstalowana aplikacja sama zaproponuje kolejne wydania (Settings -> Application)."
+          if ('${{ env.HAS_SIGNPATH }}' -eq 'true') {
+            $notes += "`n`nPliki sa podpisane cyfrowo przez SignPath Foundation (darmowe podpisywanie dla projektow open source)."
+          }
+          [IO.File]::WriteAllText("$pwd\dist\NOTES.md", $notes, [Text.UTF8Encoding]::new($false))
+
+      # Wydania leza w osobnym, publicznym repo - adres instalatora nie zmienia
+      # sie od wersji 0.1 i zainstalowane kopie sprawdzaja wlasnie jego.
+      - name: GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          $repo = [regex]::Match((Get-Content crates\spectre-update\src\lib.rs -Raw),
+                  '(?m)^pub const RELEASES_REPO: &str = "([^"]+)";').Groups[1].Value
+          if (-not $repo) { throw 'brak RELEASES_REPO w spectre-update' }
+          gh release create '${{ steps.ver.outputs.tag }}' `
+            dist\spectrenotes.exe dist\SpectreNotes-Setup.exe dist\SHA256SUMS.txt `
+            --repo $repo --title 'SpectreNotes ${{ steps.ver.outputs.version }}' `
+            --notes-file dist\NOTES.md --latest
+          if ($LASTEXITCODE -ne 0) { throw 'gh release create nie przeszedl' }
+          # Zostaja trzy ostatnie wydania (tagi zostaja w repo zrodel).
+          $all = gh release list --repo $repo --limit 100 --json tagName,createdAt,isDraft | ConvertFrom-Json
+          $old = $all | Where-Object { -not $_.isDraft } |
+                 Sort-Object { [datetime]$_.createdAt } -Descending | Select-Object -Skip 3
+          foreach ($r in $old) { "usuwam wydanie $($r.tagName)"; gh release delete $r.tagName --repo $repo --yes }

@@ -159,6 +159,49 @@ publicznie go nie ma. Historię da się przepisać na adres noreply **zanim** re
 stanie się publiczne (potem już nie ma sensu). Rewrite zmienia wszystkie sumy
 commitów — jeśli masz klon na drugiej maszynie, trzeba go sklonować od nowa.
 
+## Gotowy tekst wniosku (Faza 4)
+
+Do wklejenia w formularzu na <https://signpath.org/apply>. Pola bywają
+przestawiane — dopasuj do tego, o co pyta formularz.
+
+> **Project name:** SpectreNotes
+>
+> **Repository:** https://github.com/AtmatiAdi/spectrenotes
+>
+> **License:** GPL-3.0-or-later (see `LICENSE` in the repository root)
+>
+> **Description:** SpectreNotes is a pen-first note-taking application for
+> Windows, built for AMOLED screens and MPP 2.0 styluses — a self-hosted
+> replacement for Samsung Notes. It is written in Rust on top of Win32 and
+> Direct2D, with no GUI framework. Notes are stored as an append-only CRDT
+> op-log in plain files on disk; optional synchronisation goes through a Git
+> repository owned by the user. There is no third-party cloud and no telemetry.
+>
+> **Why signing is needed:** releases are distributed as an unsigned
+> `SpectreNotes-Setup.exe`, so every user meets the SmartScreen warning, and
+> Microsoft Defender has already flagged a release with a machine-learning
+> false positive (`Trojan:Win32/Barefoos.A!ml`), which removed the application
+> from a user's machine.
+>
+> **Releases:** https://github.com/AtmatiAdi/spectrenotes-releases/releases
+> (separate public repository, so that the download URL stays stable; the app
+> checks it for updates and verifies SHA-256 sums from the same release before
+> replacing its own binary)
+>
+> **Build:** GitHub Actions, `.github/workflows/release.yml`, triggered by a
+> `v*` tag. The workflow runs the test suite, builds with the pinned toolchain
+> from `rust-toolchain.toml`, scans the artifacts with Microsoft Defender,
+> submits them for signing and publishes the release. Nothing is built locally.
+>
+> **Artifacts to sign:** `spectrenotes.exe` (the application, also usable
+> standalone) and `SpectreNotes-Setup.exe` (the installer).
+>
+> **Uninstallation:** the installer registers an entry under "Installed apps";
+> `spectrenotes.exe --uninstall` does the same from the command line.
+>
+> **Team:** one maintainer (AtmatiAdi), two-factor authentication enabled on
+> GitHub and on SignPath.
+
 ## Czego to **nie** zmienia
 
 - adres i format wydań — aktualizacje w zainstalowanych kopiach działają dalej,
