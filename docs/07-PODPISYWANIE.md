@@ -176,7 +176,7 @@ nie tylko wpisania tekstu — oba są już przygotowane:
 |---|---|
 | **Project Name** | `SpectreNotes` |
 | **Repository URL** | `https://github.com/AtmatiAdi/spectrenotes` |
-| **Homepage URL** | `https://github.com/AtmatiAdi/spectrenotes` |
+| **Homepage URL** | `https://github.com/AtmatiAdi/spectrenotes/wiki` — wiki jest dla użytkownika czytelniejsza niż repo i pokazuje, że projekt jest udokumentowany |
 | **Download URL** | `https://github.com/AtmatiAdi/spectrenotes-releases/releases/latest` |
 | **Privacy Policy URL** | `https://github.com/AtmatiAdi/spectrenotes/blob/main/PRIVACY.md` |
 | **Wikipedia URL** | (puste) |
@@ -228,6 +228,10 @@ popularność:
 > the tagged source, scanned with Microsoft Defender before publication, and
 > published with SHA-256 sums that the in-app updater verifies before replacing
 > any binary.
+>
+> End-user documentation with screenshots — installation, the toolbar, every
+> setting, the OLED protection, synchronisation and troubleshooting — is here:
+> https://github.com/AtmatiAdi/spectrenotes/wiki
 
 Gdyby padło pytanie o liczby: wydania są trzymane po trzy ostatnie, a pobrania
 na dzień składania wniosku sprawdzisz komendą
