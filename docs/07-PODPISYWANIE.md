@@ -40,7 +40,11 @@ AtmatiAdi/spectrenotes-releases   (wydania) publiczne, bez zmian - tu lądują p
 - w `README.md` sekcja po angielsku: co to jest, jak zbudować ze źródeł
   (recenzent SignPath czyta opis projektu, a strona pobierania ma opisywać
   funkcjonalność),
-- to samo streszczenie po angielsku w README repo wydań,
+- to samo streszczenie po angielsku w README repo wydań, razem z **blokiem
+  atrybucji SignPath** (formularz wymaga, żeby strona pobierania wspominała,
+  skąd bierze się podpis),
+- `PRIVACY.md` — formularz pyta o politykę prywatności; aplikacja nie zbiera
+  danych, ale to trzeba było gdzieś napisać,
 - przegląd historii pod kątem sekretów — **zrobiony 25 IX**: brak tokenów,
   kluczy prywatnych i danych notatek; sekret OAuth nigdy nie był w repo
   (`build.rs` + `option_env!` z `%USERPROFILE%\.spectrenotes-oauth-secret`),
@@ -77,8 +81,8 @@ z CI** — inaczej nie ma mowy o „weryfikowalnym buildzie ze źródeł".
 
 <https://signpath.org/apply> → *Apply for a free SignPath.io subscription*.
 Wniosek jest wiązany z tożsamością maintainera, więc nie da się go wysłać
-„przez kogoś". Gotowy tekst do wklejenia przygotuje Claude (Faza 1).
-Czas rozpatrzenia: od kilku dni do kilku tygodni.
+„przez kogoś". Wszystkie pola formularza z gotowymi treściami: sekcja
+*Wniosek pole po polu* niżej. Czas rozpatrzenia: od kilku dni do kilku tygodni.
 
 ### Faza 5 — konfiguracja SignPath po akceptacji (klikasz Ty, wartości daje Claude)
 
@@ -159,10 +163,79 @@ publicznie go nie ma. Historię da się przepisać na adres noreply **zanim** re
 stanie się publiczne (potem już nie ma sensu). Rewrite zmienia wszystkie sumy
 commitów — jeśli masz klon na drugiej maszynie, trzeba go sklonować od nowa.
 
-## Gotowy tekst wniosku (Faza 4)
+## Wniosek pole po polu (Faza 4)
 
-Do wklejenia w formularzu na <https://signpath.org/apply>. Pola bywają
-przestawiane — dopasuj do tego, o co pyta formularz.
+Formularz na <https://signpath.org/apply>. Dwa pola wymagają **czegoś w repo**,
+nie tylko wpisania tekstu — oba są już przygotowane:
+
+- *Download URL* musi prowadzić na stronę, która **wspomina o SignPath
+  Foundation** jako o źródle podpisu. Stąd blok atrybucji w README repo wydań.
+- *Privacy Policy URL* — stąd [`PRIVACY.md`](../PRIVACY.md) w repo źródeł.
+
+| pole | co wpisać |
+|---|---|
+| **Project Name** | `SpectreNotes` |
+| **Repository URL** | `https://github.com/AtmatiAdi/spectrenotes` |
+| **Homepage URL** | `https://github.com/AtmatiAdi/spectrenotes` |
+| **Download URL** | `https://github.com/AtmatiAdi/spectrenotes-releases/releases/latest` |
+| **Privacy Policy URL** | `https://github.com/AtmatiAdi/spectrenotes/blob/main/PRIVACY.md` |
+| **Wikipedia URL** | (puste) |
+| **Maintainer Type** | Individual |
+| **Build System** | GitHub Actions |
+| **First / Last Name** | Twoje imię i nazwisko — zakładają z tego konto w SignPath |
+| **Email** | adres, na który mają przychodzić powiadomienia o podpisach |
+| **Company Name** | (puste) |
+| **Primary Discovery Channel** | „AI assistant", a w polu *Please specify*: `Claude (Anthropic), while comparing code signing options` |
+
+**Tagline** (jedno zdanie):
+
+> Pen-first, local-first note taking for Windows: low-latency ink on Direct2D,
+> notes as plain files, and synchronisation through a Git repository you own.
+
+**Description** (akapit, bez wymieniania funkcji konkretnych wersji):
+
+> SpectreNotes is a note-taking application for Windows built around the pen.
+> It targets AMOLED laptops with MPP 2.0 styluses and treats input latency as
+> the primary design constraint: ink is rendered directly on a Direct2D swap
+> chain, without a GUI framework, in Rust on top of Win32. Notes are stored as
+> plain files on the user's disk in an append-only CRDT op-log, so the same note
+> can be edited on several machines and merged without a server. Optional
+> synchronisation goes through a Git repository owned by the user, and optional
+> live drawing works peer-to-peer on the local network. The project runs no
+> servers, collects no telemetry, and exists to replace a vendor note-taking app
+> that ties notes to someone else's cloud and hardware whitelist.
+
+**Reputation** — tu trzeba być uczciwym, projekt jest młody (pierwsze wydanie
+we wrześniu 2026). Warto napisać wprost, po co nam podpis, zamiast udawać
+popularność:
+
+> SpectreNotes is a young project: the repository was opened in September 2026
+> and the first public releases are from the same month. It is not yet widely
+> used — the audience today is a small group of users on Windows tablets and
+> convertibles, with releases distributed through GitHub.
+>
+> The reason for applying is concrete rather than statistical. Because the
+> installer is unsigned, every user meets the SmartScreen warning, and Microsoft
+> Defender has already removed a release from a user's machine as a
+> machine-learning false positive (`Trojan:Win32/Barefoos.A!ml`), reported and
+> analysed here:
+> https://github.com/AtmatiAdi/spectrenotes-releases/issues/21
+>
+> The project is actively maintained and developed in the open: 22 issues filed
+> and triaged (most through an in-app feedback form), releases published
+> regularly, a test suite that runs in CI on every push, and design decisions
+> documented in `docs/`. Releases are built exclusively by GitHub Actions from
+> the tagged source, scanned with Microsoft Defender before publication, and
+> published with SHA-256 sums that the in-app updater verifies before replacing
+> any binary.
+
+Gdyby padło pytanie o liczby: wydania są trzymane po trzy ostatnie, a pobrania
+na dzień składania wniosku sprawdzisz komendą
+`gh api repos/AtmatiAdi/spectrenotes-releases/releases --jq '.[] | "\(.tag_name) \([.assets[].download_count] | add)"'`.
+
+## Stary szkic treści (na wypadek innego formularza)
+
+Do wklejenia, gdy formularz pyta jednym polem opisowym.
 
 > **Project name:** SpectreNotes
 >
