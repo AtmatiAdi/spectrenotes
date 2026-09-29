@@ -3,7 +3,8 @@
 use windows::core::{Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    CreateRectRgn, GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, SetWindowRgn, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -359,6 +360,145 @@ pub struct Fullscreen {
     saved_place: WINDOWPLACEMENT,
 }
 
+/// Wysuwanie okna zmaksymalizowanego nad pasek zadan (i z powrotem) zamiast
+/// skoku prostokata: jak pasek w trybie autoukrywania. Rusza sie tylko prawa
+/// i dolna krawedz - lewy gorny rog stoi, wiec przy `DXGI_SCALING_NONE`
+/// bufor w docelowym rozmiarze jest po prostu odslaniany, nic sie nie skaluje.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slide {
+    pub from: RECT,
+    pub to: RECT,
+    /// Wyjscie z pelnego ekranu: "zawsze na wierzchu" i meldunek u powloki
+    /// schodza dopiero po animacji (`Fullscreen::finish_exit`), inaczej pasek
+    /// zadan wyskoczylby nad notatke w pierwszej klatce.
+    pub exit: bool,
+}
+
+impl Slide {
+    fn new(from: RECT, to: RECT, exit: bool) -> Option<Self> {
+        // Pasek u gory albo z lewej przesuwalby poczatek okna, a z nim caly
+        // obraz - wtedy zostaje zwykly skok.
+        (from.left == to.left && from.top == to.top).then_some(Self { from, to, exit })
+    }
+
+    /// Prostokat w chwili `t` (0..=1), z wygaszaniem jak u paska zadan.
+    pub fn rect_at(&self, t: f32) -> RECT {
+        let e = ease_out(t.clamp(0.0, 1.0));
+        let lerp = |a: i32, b: i32| a + ((b - a) as f32 * e).round() as i32;
+        RECT {
+            left: self.to.left,
+            top: self.to.top,
+            right: lerp(self.from.right, self.to.right),
+            bottom: lerp(self.from.bottom, self.to.bottom),
+        }
+    }
+
+    /// Ustawia okno w chwili `t`. Ostatni krok z `SWP_FRAMECHANGED`, jak
+    /// dawny pojedynczy skok.
+    ///
+    /// Wyjscie nie zmienia prostokata az do konca, tylko przycina okno
+    /// regionem: powloka podnosi pasek zadan nad wszystko, gdy tylko okno
+    /// przestaje zakrywac caly monitor (zmierzone: pasek wyskakiwal w calosci
+    /// w pierwszej klatce). Z regionem okno nadal zakrywa monitor, a pasek
+    /// odslania sie spod podnoszacej sie krawedzi.
+    pub fn apply(&self, hwnd: HWND, t: f32) {
+        let r = self.rect_at(t);
+        if self.exit && t < 1.0 {
+            unsafe {
+                let rgn = CreateRectRgn(0, 0, r.right - r.left, r.bottom - r.top);
+                // System przejmuje region na wlasnosc.
+                let _ = SetWindowRgn(hwnd, Some(rgn), true);
+            }
+            return;
+        }
+        let mut flags = SWP_NOZORDER | SWP_NOACTIVATE;
+        if t >= 1.0 {
+            flags |= SWP_FRAMECHANGED;
+        }
+        unsafe {
+            if self.exit {
+                // Najpierw prostokat (region ma juz jego rozmiar), potem zdjecie
+                // regionu - odwrotnie mignelaby dolna czesc okna nad paskiem.
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    r.left,
+                    r.top,
+                    r.right - r.left,
+                    r.bottom - r.top,
+                    flags,
+                );
+                let _ = SetWindowRgn(hwnd, None, true);
+                return;
+            }
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                flags,
+            );
+        }
+    }
+}
+
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Takt animacji w rytmie kompozycji DWM (co odswiezenie panelu, 8,3 ms przy
+/// 120 Hz). `SetTimer` tego nie da: 16 ms przy systemowym tiku 15,6 ms
+/// wypadalo na przemian co 15 i co 31 ms - wysuwanie okna szarpalo.
+///
+/// Watek czeka na kompozycje (`DwmFlush`) i wysyla oknu `msg`. W kolejce jest
+/// najwyzej jeden taki komunikat (`ack` zdejmuje znacznik): komunikaty
+/// wyslane `PostMessage` ida przed wejsciem, wiec zalegajacy ogon klatek
+/// wstrzymywalby rysik. Watek konczy sie z porzuceniem wartosci.
+pub struct VblankPacer {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl VblankPacer {
+    pub fn start(hwnd: HWND, msg: u32) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let stop = Arc::new(AtomicBool::new(false));
+        let pending = Arc::new(AtomicBool::new(false));
+        let (stop2, pending2) = (stop.clone(), pending.clone());
+        // HWND nie jest `Send`; uchwyt okna to tylko liczba.
+        let raw = hwnd.0 as isize;
+        std::thread::spawn(move || {
+            let hwnd = HWND(raw as _);
+            while !stop2.load(Ordering::Acquire) {
+                if unsafe { windows::Win32::Graphics::Dwm::DwmFlush() }.is_err() {
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                }
+                if !pending2.swap(true, Ordering::AcqRel)
+                    && unsafe { PostMessageW(Some(hwnd), msg, WPARAM(0), LPARAM(0)) }.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Self { stop, pending }
+    }
+
+    /// Komunikat odebrany - watek moze wyslac nastepny.
+    pub fn ack(&self) {
+        self.pending
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl Drop for VblankPacer {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 impl Fullscreen {
     pub fn is_active(&self) -> bool {
         self.active
@@ -423,10 +563,30 @@ impl Fullscreen {
         self.active.then(|| placement_str(&self.saved_place))
     }
 
+    /// Koniec animacji wyjscia (`Slide::exit`): okno stoi juz w obszarze
+    /// roboczym, pasek zadan moze wrocic na wierzch.
+    pub fn finish_exit(&self, hwnd: HWND) {
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        mark_fullscreen(hwnd, false);
+    }
+
     /// Przelacza pelny ekran. `active` zmienia sie **przed** ruchem okna, bo
     /// `WM_GETMINMAXINFO` i `WM_NCCALCSIZE` przychodza w trakcie i musza juz
     /// widziec nowy stan.
-    pub fn toggle(&mut self, hwnd: HWND) {
+    ///
+    /// Z okna zmaksymalizowanego (i z powrotem) okno nie skacze, tylko zwraca
+    /// `Slide` - prostokat prowadzi potem aplikacja, klatka po klatce.
+    pub fn toggle(&mut self, hwnd: HWND) -> Option<Slide> {
         unsafe {
             if !self.active {
                 self.saved_place = WINDOWPLACEMENT {
@@ -434,9 +594,8 @@ impl Fullscreen {
                     ..Default::default()
                 };
                 let _ = GetWindowPlacement(hwnd, &mut self.saved_place);
-                let Some((mon, _)) = monitor_rects(hwnd) else {
-                    return;
-                };
+                let (mon, _) = monitor_rects(hwnd)?;
+                let mut slide = None;
                 self.active = true;
                 // TOPMOST: system chowa pasek zadan tylko dla okna na pierwszym
                 // planie. Przy kilku monitorach klikniecie w inny ekran odbiera
@@ -449,15 +608,31 @@ impl Fullscreen {
                 // aplikacji na monitorze stacji. Gdy to uzytkownik wlacza pelny
                 // ekran, okno i tak jest juz aktywne.
                 if self.was_maximized() {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        Some(HWND_TOPMOST),
-                        mon.left,
-                        mon.top,
-                        mon.right - mon.left,
-                        mon.bottom - mon.top,
-                        SWP_FRAMECHANGED | SWP_NOACTIVATE,
-                    );
+                    let mut cur = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut cur);
+                    slide = Slide::new(cur, mon, false);
+                    if slide.is_some() {
+                        // Najpierw na wierzch: rosnace okno wjezdza **nad** pasek zadan.
+                        let _ = SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    } else {
+                        let _ = SetWindowPos(
+                            hwnd,
+                            Some(HWND_TOPMOST),
+                            mon.left,
+                            mon.top,
+                            mon.right - mon.left,
+                            mon.bottom - mon.top,
+                            SWP_FRAMECHANGED | SWP_NOACTIVATE,
+                        );
+                    }
                 } else {
                     let _ = SetWindowPos(
                         hwnd,
@@ -480,6 +655,7 @@ impl Fullscreen {
                 // startuje po bezczynnosci, wiec to czesty przypadek: pasek
                 // zostawal nad falami. Ponowne TOPMOST z timera (`raise`) wygrywa.
                 mark_fullscreen(hwnd, true);
+                slide
             } else {
                 self.active = false;
                 if self.was_maximized() && !is_maximized(hwnd) {
@@ -500,6 +676,13 @@ impl Fullscreen {
                     let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                 } else if self.was_maximized() {
                     if let Some((_, work)) = monitor_rects(hwnd) {
+                        let mut cur = RECT::default();
+                        let _ = GetWindowRect(hwnd, &mut cur);
+                        if let Some(s) = Slide::new(cur, work, true) {
+                            // Okno zostaje na wierzchu i zjezdza z paska zadan;
+                            // reszte robi `finish_exit` po animacji.
+                            return Some(s);
+                        }
                         let _ = SetWindowPos(
                             hwnd,
                             Some(HWND_NOTOPMOST),
@@ -524,6 +707,7 @@ impl Fullscreen {
                     let _ = SetWindowPlacement(hwnd, &self.saved_place);
                 }
                 mark_fullscreen(hwnd, false);
+                None
             }
         }
     }
@@ -838,5 +1022,47 @@ pub fn attach_parent_console() {
     use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
     unsafe {
         let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(right: i32, bottom: i32) -> RECT {
+        RECT {
+            left: 0,
+            top: 0,
+            right,
+            bottom,
+        }
+    }
+
+    #[test]
+    fn wysuwanie_rusza_tylko_dolna_krawedzia_i_konczy_w_celu() {
+        let s = Slide::new(rect(2304, 1368), rect(2304, 1440), false).unwrap();
+        assert_eq!(s.rect_at(0.0), rect(2304, 1368));
+        assert_eq!(s.rect_at(1.0), rect(2304, 1440));
+        let mid = s.rect_at(0.5);
+        assert_eq!((mid.left, mid.top, mid.right), (0, 0, 2304));
+        // Wygaszanie: w polowie czasu wiecej niz polowa drogi.
+        assert!(mid.bottom > 1404 && mid.bottom < 1440, "{}", mid.bottom);
+        let mut prev = 1368;
+        for i in 0..=20 {
+            let b = s.rect_at(i as f32 / 20.0).bottom;
+            assert!(b >= prev, "krawedz sie cofa");
+            prev = b;
+        }
+    }
+
+    #[test]
+    fn pasek_zadan_u_gory_to_zwykly_skok() {
+        let work = RECT {
+            left: 0,
+            top: 72,
+            right: 2304,
+            bottom: 1440,
+        };
+        assert!(Slide::new(work, rect(2304, 1440), false).is_none());
     }
 }

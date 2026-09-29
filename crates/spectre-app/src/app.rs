@@ -94,6 +94,11 @@ const THUMBS_TICK_MS: u32 = 16;
 /// klatki i tak ida z kazdym zdarzeniem rysika, a dodatkowe tylko by je opoznialy.
 const TIMER_ANIM: usize = 9;
 const ANIM_TICK_MS: u32 = 16;
+/// Wysuwanie okna nad pasek zadan przy pelnym ekranie - mniej wiecej tyle,
+/// ile trwa chowanie paska w trybie autoukrywania.
+const SLIDE_MS: f32 = 220.0;
+/// Krok wysuwania okna (`window::VblankPacer`).
+const WM_SLIDE: u32 = WM_APP + 8;
 /// Ponowne "zawsze na wierzchu" po wejsciu w pelny ekran: powloka podnosi
 /// pasek zadan nad nasze okno ~50-100 ms po zmianie jego stanu, gdy sama ma
 /// pierwszy plan (zmierzone), a bywa, ze drugi raz po ~0,8 s. Osiem odswiezen
@@ -387,6 +392,17 @@ pub struct App {
     waves_fs_warned: bool,
     /// Ile prob poprawienia pelnego ekranu zostalo w tym wejsciu ochrony.
     fs_fix_left: u8,
+    /// Okno wlasnie wysuwa sie nad pasek zadan albo z niego zjezdza
+    /// (`window::Slide`); prowadzi je `anim_tick`.
+    slide: Option<(window::Slide, Instant)>,
+    /// Takt krokow `slide` - zyje tyle, co animacja.
+    slide_pacer: Option<window::VblankPacer>,
+    /// Widoczny rozmiar okna w biezacym kroku `slide`. Przy wyjsciu okno ma
+    /// caly czas rozmiar monitora (przycina je region), wiec rozmiaru klienta
+    /// nie da sie tu uzyc.
+    slide_view: Option<(u32, u32)>,
+    /// Ochrona czeka, az okno skonczy wysuwac sie na pelny ekran.
+    waves_pending: bool,
     /// Okno wyboru notatki schowane przez fale - wraca razem z nimi.
     picker_under_waves: bool,
     /// Ile szybkich odswiezen TOPMOST zostalo po wejsciu w pelny ekran.
@@ -789,6 +805,10 @@ impl App {
             waves_fullscreen: false,
             waves_fs_warned: false,
             fs_fix_left: FS_FIX_TRIES,
+            slide: None,
+            slide_pacer: None,
+            slide_view: None,
+            waves_pending: false,
             picker_under_waves: false,
             topmost_ticks: 0,
             code_copied: false,
@@ -1749,7 +1769,10 @@ impl App {
     /// na caly panel, zamiast zostac z paskiem zadan na wierzchu.
     /// Zwraca, czy trzeba bylo poprawiac.
     fn keep_fullscreen_rect(&self) -> bool {
-        self.fullscreen.is_active() && !self.hidden && window::fix_maximized_rect(self.hwnd, true)
+        self.fullscreen.is_active()
+            && !self.hidden
+            && self.slide.is_none()
+            && window::fix_maximized_rect(self.hwnd, true)
     }
 
     fn topmost_tick(&mut self) {
@@ -1773,6 +1796,37 @@ impl App {
                 }
             } else if self.waves.is_none() {
                 let _ = KillTimer(Some(self.hwnd), TIMER_TOPMOST);
+            }
+        }
+    }
+
+    /// Krok wysuwania okna, co kompozycje DWM (`WM_SLIDE` od `VblankPacer`).
+    /// Przy wejsciu zmiana prostokata wysyla `WM_SIZE`, a ten rysuje klatke;
+    /// przy wyjsciu okno przycina region, wiec klatke (pasek zadokowany na
+    /// dole jedzie z krawedzia) rysujemy sami.
+    fn slide_step(&mut self) {
+        if let Some(p) = &self.slide_pacer {
+            p.ack();
+        }
+        let Some((s, t0)) = self.slide else {
+            return;
+        };
+        let t = t0.elapsed().as_secs_f32() * 1000.0 / SLIDE_MS;
+        if t >= 1.0 {
+            // Ostatni krok bywa tym samym prostokatem (bez `WM_SIZE`), a bufor
+            // wlasnie wrocil do rozmiaru okna.
+            self.finish_slide();
+            self.render();
+        } else {
+            let r = s.rect_at(t);
+            self.slide_view = Some((
+                (r.right - r.left).max(1) as u32,
+                (r.bottom - r.top).max(1) as u32,
+            ));
+            s.apply(self.hwnd, t);
+            if s.exit {
+                self.relayout();
+                self.render();
             }
         }
     }
@@ -2240,7 +2294,30 @@ impl App {
     }
 
     fn toggle_fullscreen(&mut self) {
-        self.fullscreen.toggle(self.hwnd);
+        // Druga zmiana w trakcie animacji: poprzednia konczy sie od razu.
+        self.finish_slide();
+        let slide = self.fullscreen.toggle(self.hwnd);
+        if let Some(s) = slide {
+            self.slide_view = Some((
+                (s.from.right - s.from.left).max(1) as u32,
+                (s.from.bottom - s.from.top).max(1) as u32,
+            ));
+            // Bufor od razu w wiekszym z dwoch rozmiarow: przy `DXGI_SCALING_NONE`
+            // okno go tylko odslania albo przycina, nic sie nie skaluje, a
+            // warstwa sucha nie jest przebudowywana w kazdej klatce animacji.
+            let w = (s.from.right - s.from.left).max(s.to.right - s.to.left);
+            let h = (s.from.bottom - s.from.top).max(s.to.bottom - s.to.top);
+            if let Ok(true) = self.renderer.resize(w.max(1) as u32, h.max(1) as u32) {
+                self.dirty = Dirty::Full;
+                self.scroll_x_to(self.cam.scroll_x);
+                self.scroll_to(self.cam.scroll_y);
+            }
+            if let Some(wv) = self.waves.as_mut() {
+                wv.resize(self.renderer.size());
+            }
+            self.slide = Some((s, Instant::now()));
+            self.slide_pacer = Some(window::VblankPacer::start(self.hwnd, WM_SLIDE));
+        }
         unsafe {
             if self.fullscreen.is_active() {
                 self.topmost_ticks = TOPMOST_TICKS;
@@ -2251,13 +2328,50 @@ impl App {
         }
         self.toolbar.chrome = !self.fullscreen.is_active();
         self.relayout();
+        if let Some((s, _)) = self.slide {
+            // Odslaniany pas ma miec tresc juz w pierwszym kroku animacji; zegar
+            // rusza po tej (pelnej) klatce, inaczej pierwszy krok bylby skokiem.
+            self.render();
+            self.slide = Some((s, Instant::now()));
+        }
+    }
+
+    /// Okno staje w docelowym prostokacie, bufor wraca do rozmiaru okna.
+    fn finish_slide(&mut self) {
+        self.slide_pacer = None;
+        self.slide_view = None;
+        let Some((s, _)) = self.slide.take() else {
+            return;
+        };
+        s.apply(self.hwnd, 1.0);
+        if s.exit {
+            self.fullscreen.finish_exit(self.hwnd);
+        }
+        // `apply` wyslal juz `WM_SIZE` bez animacji w toku, wiec zwykle nie ma
+        // tu co robic - chyba ze okno stalo juz w docelowym rozmiarze.
+        let (w, h) = window::client_size(self.hwnd);
+        if let Ok(true) = self.renderer.resize(w, h) {
+            self.dirty = Dirty::Full;
+            self.scroll_x_to(self.cam.scroll_x);
+            self.scroll_to(self.cam.scroll_y);
+            if let Some(wv) = self.waves.as_mut() {
+                wv.resize((w, h));
+            }
+            self.relayout();
+        }
+        // Drugi etap ochrony AMOLED: okno stoi, teraz fale i chowanie UI.
+        if std::mem::take(&mut self.waves_pending) && !s.exit {
+            self.begin_waves();
+        }
     }
 
     /// Uklad UI w fizycznych pikselach: rozmiar okna i DPI monitora, na ktorym
     /// okno teraz jest (po przeniesieniu na inny monitor Windows przysyla
     /// `WM_DPICHANGED`).
     fn relayout(&mut self) {
-        let (w, h) = self.renderer.size();
+        // W trakcie wysuwania bufor jest wiekszy niz okno - pasek zadokowany
+        // na dole ma jechac z krawedzia okna, nie czekac na koncu bufora.
+        let (w, h) = self.slide_view.unwrap_or_else(|| self.renderer.size());
         let ui_scale = window::dpi_scale(self.hwnd);
         self.renderer.set_ui_scale(ui_scale);
         self.toolbar
@@ -4270,6 +4384,8 @@ impl App {
     /// Koniec ochrony: fale znikaja, wraca UI i - jesli to fale wlaczyly pelny
     /// ekran - poprzedni rozmiar okna. Zwraca, czy fale trwaly.
     fn stop_waves(&mut self) -> bool {
+        // Wejscie w trakcie wysuwania: fale jeszcze nie ruszyly i juz nie rusza.
+        self.waves_pending = false;
         let had = self.waves.take().is_some();
         self.waves_fs_warned = false;
         self.fs_fix_left = FS_FIX_TRIES;
@@ -4298,7 +4414,23 @@ impl App {
     /// Start ochrony: chowamy cale UI (pasek, tytul, menu - statyczny chrome
     /// wypala tak samo jak notatka) i przechodzimy na pelny ekran, zeby pasy
     /// przeszly przez caly panel, nie tylko przez okno.
+    ///
+    /// Dwa etapy: najpierw okno wysuwa sie nad pasek zadan (`Slide`), a gdy
+    /// stanie, chowa sie UI i wjezdzaja fale (`begin_waves` z `finish_slide`).
+    /// Naraz to byly dwie animacje nachodzace na siebie.
     fn start_waves(&mut self) {
+        if self.waves_pending {
+            return;
+        }
+        self.ensure_waves_fullscreen();
+        if self.slide.is_some() {
+            self.waves_pending = true;
+            return;
+        }
+        self.begin_waves();
+    }
+
+    fn begin_waves(&mut self) {
         let (w, h) = self.renderer.size();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4321,7 +4453,6 @@ impl App {
         if self.toolbar.begin_hide() {
             self.arm_anim();
         }
-        self.ensure_waves_fullscreen();
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_WAVES, WAVES_TICK_MS, None);
         }
@@ -4433,6 +4564,10 @@ impl App {
             unsafe {
                 SetTimer(Some(self.hwnd), TIMER_WAVES, ms, None);
             }
+            return;
+        }
+        if self.waves_pending {
+            // Okno jeszcze sie wysuwa - fale ruszy `finish_slide`.
             return;
         }
         if self.waves.is_none() {
@@ -5583,7 +5718,9 @@ pub unsafe extern "system" fn wndproc(
             }
             let w = (lparam.0 & 0xffff) as u32;
             let h = ((lparam.0 >> 16) & 0xffff) as u32;
-            if let Ok(true) = app.renderer.resize(w, h) {
+            // W trakcie wysuwania nad pasek zadan bufor ma juz rozmiar docelowy
+            // (`toggle_fullscreen`) - okno go tylko odslania.
+            if app.slide.is_none() && matches!(app.renderer.resize(w, h), Ok(true)) {
                 app.dirty = Dirty::Full;
                 // Zmiana rozmiaru okna **nie rusza zoomu** - w mniejszym oknie widac
                 // mniej canvasu, w wiekszym wiecej, kreska ma ten sam rozmiar
@@ -5602,7 +5739,7 @@ pub unsafe extern "system" fn wndproc(
             app.partner_soon();
             app.relayout();
             if let Some(wv) = app.waves.as_mut() {
-                wv.resize((w, h));
+                wv.resize(app.renderer.size());
             }
             app.render();
             LRESULT(0)
@@ -5618,6 +5755,10 @@ pub unsafe extern "system" fn wndproc(
             window::fix_maximized_rect(hwnd, app.fullscreen.is_active());
             app.relayout();
             app.render();
+            LRESULT(0)
+        }
+        WM_SLIDE => {
+            app.slide_step();
             LRESULT(0)
         }
         WM_PAINT => {

@@ -148,7 +148,18 @@ Technicznie pełny ekran to **maksymalizacja do całego monitora**: okno (bez
 `WM_GETMINMAXINFO` obszarem roboczym, a w pełnym ekranie prostokątem monitora.
 Zmaksymalizowane okno zajmuje więc dokładnie obszar roboczy od (0,0) — bez ramki
 wysuniętej 9 px poza ekran — i przejście do pełnego ekranu to tylko dolna krawędź
-rosnąca o pasek zadań; treść nie drga. Ze zwykłego okna wejście i wyjście grają
+rosnąca o pasek zadań; treść nie drga. Ta krawędź **wysuwa się** jak pasek w trybie
+autoukrywania (`window::Slide`, 220 ms z wygaszaniem): bufor swapchaina od razu dostaje
+rozmiar monitora, a przy `DXGI_SCALING_NONE` okno go tylko odsłania — nic się nie
+skaluje i warstwa sucha nie jest przebudowywana w każdej klatce. Kroki idą w rytmie
+kompozycji DWM (`VblankPacer`, `DwmFlush` w osobnym wątku, najwyżej jeden komunikat
+w kolejce, żeby nie wstrzymywać rysika) — `SetTimer(16)` przy tiku 15,6 ms dawał
+przerwy na przemian 15 i 31 ms; teraz 13–16 kroków zamiast 7–8. Wyjście nie zmienia
+prostokąta do ostatniej klatki, tylko przycina okno regionem (`SetWindowRgn`):
+powłoka podnosi pasek zadań nad wszystko, gdy okno przestaje zakrywać monitor, i pasek
+wyskakiwał w całości w pierwszej klatce — z regionem odsłania się spod podnoszącej się
+krawędzi. Ochrona AMOLED jest dwuetapowa: najpierw okno wysuwa się na pełny ekran,
+a gdy stanie, chowa się UI i wjeżdżają fale. Ze zwykłego okna wejście i wyjście grają
 systemowe animacje maksymalizacji i przywracania. Dwie pułapki, obie zmierzone:
 zapamiętane położenie (`SetWindowPlacement`) musi mieć `ptMaxPosition = (-1,-1)`,
 bo zero jest dla systemu wprost zapisanym punktem i pierwsza maksymalizacja lądowała
