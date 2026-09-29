@@ -247,7 +247,15 @@ czyli poniżej piksela w ~0,2 s. Chodzi o odczucie „jesteśmy na górze": wida
 działa, a nie że się zaciął. `scroll_y` **stoi wtedy na zerze** — odsunięcie żyje
 w `Camera::shift` (ekranowe piksele doklejane na końcu, niewidoczne dla dokumentu),
 więc nic nie trafia do notatki. Odsłonięty pas nie jest canvasem: stoi w nim szary
-nagłówek z tytułem notatki, czysto kosmetyczny. Kreska zaczęta w trakcie powrotu
+**nagłówek** — tytuł notatki z lewej (Segoe UI 17 semibold) i jej data z prawej,
+czysto kosmetycznie. Napisy są **zakotwiczone do górnej krawędzi notatki**, nie do
+okna: jadą dokładnie z treścią i wyjeżdżają zza krawędzi ekranu (zmierzone: pas rośnie
+o 42 px, tytuł zjeżdża o te same 42 px). Wyśrodkowane w pasie płynęłyby o połowę
+wolniej niż notatka i wyglądałyby, jakby żyły własnym życiem. Marginesy omijają pasek
+narzędzi po tej stronie, po której jest zadokowany, a **pasek zadokowany u góry
+powiększa dopuszczalne odsunięcie o swoją grubość** (`over_max`) — bo zasłania
+dokładnie ten pas, w którym stoi nagłówek; bez tego napis wyjeżdżałby tylko pod pasek.
+Zmierzone przy pasku u góry: 60 px paska, 75 px pasa widocznego pod nim. Kreska zaczęta w trakcie powrotu
 najpierw odstawia treść na miejsce (`begin_stroke`), żeby nie wylądowała ponad górą,
 skąd nie dałoby się już do niej przewinąć. Warstwa sucha jest rysowana **bez** tego
 przesunięcia (`spectre_render::dry_cam`), a `present` przesuwa gotową bitmapę przy

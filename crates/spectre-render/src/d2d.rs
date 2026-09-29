@@ -27,8 +27,9 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_PARAGRAPH_ALIGNMENT_FAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_FAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_TRAILING,
+    DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
@@ -172,6 +173,10 @@ struct TextFormats {
     /// Jak `body`, ale wyrownana do dolu prostokata - gdy tekst jest dluzszy
     /// niz pole, widac jego koniec (kursor), nie poczatek.
     body_tail: IDWriteTextFormat,
+    /// Segoe UI 17 semibold, do lewej, wysrodkowana w pionie (naglowek nad notatka).
+    header: IDWriteTextFormat,
+    /// Jak `header`, ale wyrownana do prawej krawedzi pola.
+    header_right: IDWriteTextFormat,
 }
 
 impl TextFormats {
@@ -206,6 +211,26 @@ impl TextFormats {
         let body = make("Segoe UI", 15.0)?;
         let body_tail = make("Segoe UI", 15.0)?;
         body_tail.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR)?;
+        // Naglowek nad gora notatki: wiekszy i grubszy niz listy, bo to napis
+        // czytany katem oka w trakcie przewijania, a nie element formularza.
+        let semibold = |size: f32| -> Result<IDWriteTextFormat> {
+            dwrite.CreateTextFormat(
+                &HSTRING::from("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size * scale,
+                &HSTRING::from("en-us"),
+            )
+        };
+        let header = semibold(17.0)?;
+        header.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        header.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        let header_right = semibold(17.0)?;
+        header_right.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING)?;
+        header_right.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        header_right.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         Ok(Self {
             mono,
             big,
@@ -214,6 +239,8 @@ impl TextFormats {
             title,
             body,
             body_tail,
+            header,
+            header_right,
         })
     }
 }
@@ -232,6 +259,10 @@ pub enum UiFont {
     Title,
     /// Segoe UI 15, do lewej, od gory, zawijana - akapity tekstu.
     Body,
+    /// Segoe UI 17 semibold, do lewej, wysrodkowana w pionie - naglowek nad notatka.
+    Header,
+    /// Jak `Header`, ale do prawej krawedzi pola (data w naglowku).
+    HeaderRight,
     /// Jak `Body`, przy dolnej krawedzi - dlugi tekst pokazuje koniec.
     BodyTail,
 }
@@ -1316,6 +1347,8 @@ impl Renderer {
                         UiFont::Title => &self.fonts.title,
                         UiFont::Body => &self.fonts.body,
                         UiFont::BodyTail => &self.fonts.body_tail,
+                        UiFont::Header => &self.fonts.header,
+                        UiFont::HeaderRight => &self.fonts.header_right,
                     };
                     let wide: Vec<u16> = text.encode_utf16().collect();
                     let rect = D2D_RECT_F {

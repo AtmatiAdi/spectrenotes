@@ -109,9 +109,13 @@ const TOPMOST_TICKS: u32 = 8;
 const OVER_MAX: f32 = 96.0;
 const OVER_DECAY: f32 = 0.78;
 /// Pas ponad notatka: ciemna szarosc (OLED - im blizej czerni, tym lepiej,
-/// ale musi odroznic sie od canvasu) i przygaszony tytul.
+/// ale musi odroznic sie od canvasu), tytul i przygaszona data.
 const OVER_BG: Rgba = Rgba::rgb(26, 26, 26);
-const OVER_FG: Rgba = Rgba::rgb(105, 105, 105);
+const OVER_FG: Rgba = Rgba::rgb(145, 145, 145);
+const OVER_FG_DIM: Rgba = Rgba::rgb(95, 95, 95);
+/// Wysokosc wiersza naglowka (logiczne px). Napisy stoja tuz nad krawedzia
+/// notatki, wiec to ona decyduje, ile trzeba pociagnac, zeby je zobaczyc.
+const HEADER_H: f32 = 34.0;
 
 /// Ile razy w jednym wejsciu ochrony probujemy ustawic okno na caly monitor.
 ///
@@ -1568,10 +1572,7 @@ impl App {
         // Ponad gorna krawedzia tresc jeszcze ustepuje, ale z oporem i wraca
         // sama (`OVER_MAX`, `anim_tick`). To ma dawac odczucie "jestesmy na
         // gorze", a nie dodatkowe miejsce: `scroll_y` stoi na zerze.
-        self.set_over(rubber(
-            (-y).max(0.0) * self.cam.zoom,
-            OVER_MAX * self.toolbar.scale(),
-        ));
+        self.set_over(rubber((-y).max(0.0) * self.cam.zoom, self.over_max()));
         self.cam.scroll_to(y, bottom, h);
         if (self.cam.scroll_y - old).abs() > f32::EPSILON {
             self.dirty = match self.dirty {
@@ -1581,6 +1582,20 @@ impl App {
                 Dirty::Clean => Dirty::Scrolled(old),
             };
         }
+    }
+
+    /// Jak daleko wolno odsunac tresc od gornej krawedzi.
+    ///
+    /// Pasek zadokowany **u gory** zaslania wlasnie ten pas, w ktorym stoi
+    /// naglowek - wiec o jego grubosc wolno pociagnac dalej. Inaczej napis
+    /// wyjezdzalby tylko pod pasek i nie bylo by go widac wcale.
+    fn over_max(&self) -> f32 {
+        let bar = if matches!(self.toolbar.dock, Dock::Top) {
+            self.toolbar.thickness()
+        } else {
+            0.0
+        };
+        OVER_MAX * self.toolbar.scale() + bar
     }
 
     /// Ustawia odsuniecie tresci od gornej krawedzi (ekranowe piksele).
@@ -4650,18 +4665,41 @@ impl App {
                     color: OVER_BG,
                     r: 0.0,
                 });
+                // Napisy sa zakotwiczone do **gornej krawedzi notatki**, nie do
+                // okna: jada dokladnie z trescia i wyjezdzaja zza krawedzi
+                // ekranu. Wysrodkowane w pasie plynelyby o polowe wolniej niz
+                // notatka i wygladalo to, jakby zyly wlasnym zyciem.
+                let hh = HEADER_H * k;
+                let bar = self.toolbar.thickness();
+                let (pad_l, pad_r) = match self.toolbar.dock {
+                    Dock::Left => (bar + 20.0 * k, 20.0 * k),
+                    Dock::Right => (20.0 * k, bar + 20.0 * k),
+                    _ => (20.0 * k, 20.0 * k),
+                };
+                let y = over - hh;
+                let span = (w - pad_l - pad_r).max(0.0);
                 prims.push(UiPrim::Text {
-                    x: self.toolbar.thickness() + 24.0 * k,
-                    y: 0.0,
-                    w,
-                    h: over,
+                    x: pad_l,
+                    y,
+                    // Tytul konczy sie przed data, zeby dlugi nie wszedl pod nia.
+                    w: (span - 150.0 * k).max(0.0),
+                    h: hh,
                     text: if title.is_empty() {
                         "untitled".into()
                     } else {
                         title.clone()
                     },
                     color: OVER_FG,
-                    font: UiFont::Ui,
+                    font: UiFont::Header,
+                });
+                prims.push(UiPrim::Text {
+                    x: pad_l,
+                    y,
+                    w: span,
+                    h: hh,
+                    text: menu::local_date(self.notes[self.note_idx].created_ms),
+                    color: OVER_FG_DIM,
+                    font: UiFont::HeaderRight,
                 });
             }
             if self.mode == Mode::Lasso {

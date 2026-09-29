@@ -121,8 +121,14 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       `OVER_DECAY` 0,78 na klatce 16 ms. `scroll_y` stoi na zerze — odsunięcie żyje
       w `Camera::shift`, martwym od czasu porzucenia pixel shiftu, więc dokument nic
       o nim nie wie, a wejście i tak trafia tam, gdzie widać (`to_canvas`).
-      Odsłonięty pas to nie canvas: szary nagłówek z tytułem, a kreska zaczęta
-      w trakcie powrotu najpierw odstawia treść na miejsce. Koszt animacji zerowy:
+      Odsłonięty pas to nie canvas: szary nagłówek — tytuł z lewej (Segoe UI 17
+      semibold), data notatki z prawej — a kreska zaczęta w trakcie powrotu najpierw
+      odstawia treść na miejsce. Napisy są **zakotwiczone do górnej krawędzi
+      notatki**, nie do okna (uwaga użytkownika z 29 IX: wyśrodkowane w pasie płynęły
+      o połowę wolniej i wyglądały, jakby żyły własnym życiem; zmierzone po
+      poprawce: pas rośnie o 42 px, tytuł zjeżdża o te same 42 px). Pasek zadokowany
+      u góry powiększa dopuszczalne odsunięcie o swoją grubość, bo zasłania właśnie
+      ten pas (zmierzone: 60 px paska, 75 px pasa widocznego pod nim). Koszt animacji zerowy:
       warstwa sucha rysuje się bez przesunięcia (`dry_cam`), a `present` przesuwa
       gotową bitmapę jednym offsetem. Zmierzone na zrzutach: pociągnięcie o 340 px
       daje pas 89 px (wzór przewiduje 88,7), po puszczeniu wraca do 0
