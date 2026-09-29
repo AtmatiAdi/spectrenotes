@@ -300,11 +300,42 @@ na dole nowa notatka (ląduje w folderze bieżącej) i nowy folder (wpisz nazwę
 `Enter`), pod spodem *This note on LAN* (udostępnij, hasło) i *Shared on LAN* (cudze
 udostępnienia). Folder notatki jest jej metadaną w op-logu (jak tytuł), więc
 zsynchronizuje się razem z nią; puste foldery leżą w `<space>/folders.txt`.
+**Open PDF as a new note…** (albo plik PDF upuszczony na okno) zakłada notatkę
+na PDF: plik trafia do `assets/<sha256>.pdf` space'u (jedzie gitem razem z notatką;
+limit 95 MB, bo GitHub odrzuca pliki > 100 MB), a notatka wskazuje go metadaną `pdf`
+w op-logu (LWW jak tytuł, więc dochodzi też przez LAN — bez pliku, dopóki git go nie
+dowiezie). Strony leżą w kolumnie jedna pod drugą, każda na całą szerokość kolumny
+(szerokość przy 100%), pod kreskami warstwy suchej; gumka i zaznaczanie ich nie
+dotykają. Renderuje je `Windows.Data.Pdf` (to, co Edge) w osobnym wątku — strona A4
+w szerokości panelu to 80–120 ms, na wątku okna zabrałoby to pióro — w kafelkach
+1024×1024 na poziomach gęstości 2^k ≥ zoom (zawsze ostre), z tanim podglądem strony
+(1/8) zanim dojdą ostre i LRU 256 MB. Aplikacja po klatce podaje listę kafelków
+potrzebnych teraz (plus ekran zapasu), wątek bierze je od początku i pomija
+nieaktualne — szybkie przewijanie nie zapycha kolejki. Zmierzone: klatka przy
+przewijaniu po stronach 1,9 ms (max 3,9). Na ekranie strony mają domyślnie
+**odwróconą jasność** (biała kartka byłaby jasną, statyczną plamą na AMOLED-zie;
+odcień zostaje — żółte tło ramki jest ciemnożółte): *Ustawienia → PDF → PDF pages
+on screen: dark / paper*.
 **Export this note to PDF…** zapisuje bieżącą notatkę wektorowo (te same obrysy
-kresek co na ekranie, własny writer PDF i zlib — bez zależności): strona to kolumna
-notatki w proporcji A4, cięta po wysokości; plik otwiera się po zapisie. *Ustawienia →
-Export → PDF background*: białe (kolory z odwróconą jasnością, żeby jasna paleta AMOLED
-była czytelna na papierze) albo czarne jak ekran.
+kresek co na ekranie, własny writer PDF i zlib — bez zależności); plik otwiera się
+po zapisie. Zwykła notatka: strona ma szerokość kolumny (to, co widać przy 100%),
+poszerzoną, gdy pismo wystaje, i wysokość ekranu przy 100% (2880×1800 jednostek,
+720×450 pt); kolejne strony w dół, dopóki jest pismo. *Export width: 100% (crop)*
+obcina do samej kolumny. *Export background*: białe (kolory z odwróconą jasnością,
+żeby jasna paleta AMOLED była czytelna na papierze) albo czarne jak ekran.
+Notatka na PDF eksportuje się jako **oryginał z dopisaną warstwą kresek** —
+aktualizacja przyrostowa (`pdfedit.rs`): bajty oryginału zostają nietknięte, na końcu
+dochodzą nowe wersje stron z `/Contents [q, oryginał…, Q + kreski]` i nowa tablica
+xref z `/Prev`, więc tekst, linki i formularze działają dalej. Czytamy xref jako
+tablicę i jako strumień (predyktory PNG), strumienie obiektów, drzewo stron
+z dziedziczonymi `MediaBox`/`CropBox`/`Rotate`; obrót 0/90/180/270 i przycięcie
+sprawdzone rendererem Windows na plikach z Edge i ręcznie złożonym PDF 1.5. Pismo
+wystające poza stronę **powiększa ją** (MediaBox/CropBox), pismo pod ostatnią stroną
+dostaje nowe strony w skali ostatniej; strony bez pisma zostają nietknięte. Kolory
+kresek odwracamy, gdy strony były na ekranie ciemne. Zaszyfrowany PDF (albo budowa,
+której parser nie zna) — PDF zastępczy: strony jako JPEG ~200 dpi od Windows, kreski
+dalej wektorowo, z komunikatem, że tekst nie jest już zaznaczalny. Eksport 6 stron:
+4–5 ms (zastępczy: 340 ms, ~3 MB).
 *Ustawienia*: na samej górze zawsze **Send feedback** — okno nad canvasem z polem
 tekstowym (Enter = nowy wiersz, Ctrl+Enter wysyła, Ctrl+V wkleja), *Attach a file…*
 (systemowy wybór pliku) i *Attach app screenshot* (zrzut aplikacji bez okna i menu);
@@ -545,7 +576,12 @@ Do okna feedbacku (tylko z tą zmienną): `SPECTRENOTES_FEEDBACK_FAKE=ok|err` ud
 zalogowanie i kończy wysyłkę podanym wynikiem bez GitHuba (scenariusz paska, ekrany
 końcowe, załączniki), a `SPECTRENOTES_FEEDBACK_DUMP=<plik.png>` zapisuje na dysk zrzut
 z *Attach app screenshot*.
-`SPECTRENOTES_PDF_OUT=<plik.pdf>` omija okno zapisu przy eksporcie PDF.
+`SPECTRENOTES_PDF_OUT=<plik.pdf>` omija okno zapisu przy eksporcie PDF,
+`SPECTRENOTES_PDF_IN=<plik.pdf>` okno wyboru przy imporcie, a
+`SPECTRENOTES_PDF_RASTER=1` wymusza PDF zastępczy (jak dla zaszyfrowanego). Pozycje
+menu bez trafiania w nie: `menu import-pdf` / `menu export-pdf` na kanale testowym.
+Podgląd stron pliku tak, jak widzi je Windows: `SPECTRENOTES_PDF=<plik>
+SPECTRENOTES_PDF_SHOT=<prefiks> cargo test -p spectre-shell-win zrzut_stron -- --ignored`.
 
 ### Porównania, które warto zrobić od razu
 

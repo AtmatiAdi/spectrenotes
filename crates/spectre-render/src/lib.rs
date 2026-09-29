@@ -13,6 +13,7 @@ mod d2d;
 pub mod geometry;
 mod tess;
 mod thumb;
+pub mod tiles;
 
 pub use d2d::{
     Device, DimMask, Lift, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail, DIM_STEP,

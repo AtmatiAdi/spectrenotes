@@ -38,4 +38,8 @@ features = [
     "Win32_System_Shutdown",
     "Win32_Storage_FileSystem",
     "Win32_System_SystemInformation",
+    "Data_Pdf",
+    "Foundation",
+    "Storage",
+    "Storage_Streams",
 ]

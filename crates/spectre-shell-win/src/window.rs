@@ -996,6 +996,31 @@ pub fn apply_placement(hwnd: HWND, p: &Placement) -> bool {
     }
 }
 
+/// Okno przyjmuje pliki upuszczone z Eksploratora (`WM_DROPFILES`).
+pub fn accept_files(hwnd: HWND) {
+    unsafe { windows::Win32::UI::Shell::DragAcceptFiles(hwnd, true) };
+}
+
+/// Sciezki z `WM_DROPFILES` (i zwolnienie uchwytu - wolac raz na komunikat).
+pub fn dropped_files(wparam: WPARAM) -> Vec<std::path::PathBuf> {
+    use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
+    let drop = HDROP(wparam.0 as _);
+    let mut out = Vec::new();
+    unsafe {
+        let n = DragQueryFileW(drop, u32::MAX, None);
+        for i in 0..n {
+            let len = DragQueryFileW(drop, i, None) as usize;
+            let mut buf = vec![0u16; len + 1];
+            DragQueryFileW(drop, i, Some(&mut buf));
+            out.push(std::path::PathBuf::from(String::from_utf16_lossy(
+                &buf[..len],
+            )));
+        }
+        DragFinish(drop);
+    }
+    out
+}
+
 /// Otwiera adres w domyslnej przegladarce (logowanie GitHub).
 pub fn open_in_browser(url: &str) {
     use windows::Win32::UI::Shell::ShellExecuteW;

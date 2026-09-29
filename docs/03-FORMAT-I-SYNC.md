@@ -38,8 +38,13 @@ space-repo/
       snapshots/
         000000123456-8f3a.snap   # stan do lamporta N; nazwa zawiera hash
   assets/
-    b3-4f2a91....png             # content-addressed (BLAKE3)
+    4f2a91....pdf                # content-addressed (SHA-256 hex) - PDF pod notatka
 ```
+
+Notatka na PDF wskazuje plik metadaną `pdf` = `assets/<sha256>.pdf` (sciezka
+wzgledem katalogu space'u, zawsze z `/`). Metadana przychodzi tez od innych
+(git, LAN), wiec sciezke skladamy z czlonow bez `..`, `:` i `\` - nie wyjdzie
+poza space.
 
 Tytuł notatki jest w `note.json`, nie w nazwie katalogu. Zmiana tytułu nie jest
 wtedy przeniesieniem pliku w gicie i nie generuje szumu w historii.
@@ -145,5 +150,8 @@ payload, żeby dało się je dołożyć bez migracji formatu.
 
 ## Otwarte pytania
 
-- Duże assety (zdjęcia, PDF): Git LFS czy własny store poza repo? Do decyzji przy v2.
+- Duże assety: PDF-y idą zwykłym gitem (limit 95 MB na plik, GitHub odrzuca > 100 MB).
+  Git LFS albo własny store dopiero, gdy repo zacznie od tego puchnąć.
+- LAN nie przesyła plików: peer bez PDF-a widzi kreski bez stron, dopóki git nie dowiezie
+  assetu.
 - Czy klient ma sam odpalać `git gc`, czy zostawiamy to użytkownikowi?

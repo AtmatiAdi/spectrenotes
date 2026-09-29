@@ -117,6 +117,10 @@ pub enum Setting {
     UpdateCheck,
     /// Eksport PDF: biale tlo (kolory z odwrocona jasnoscia) czy czarne jak ekran.
     PdfPaper,
+    /// Strony PDF na ekranie: odwrocona jasnosc (ciemne, AMOLED) czy jak na papierze.
+    PdfDark,
+    /// Eksport: szerokosc wg pisma czy dokladnie kolumna (100%).
+    PdfCrop,
     /// Krzyzyk kursora takze pod piorem.
     PenCursor,
     /// Prog nacisku, ponizej ktorego kontakt nie rysuje (issue #4).
@@ -135,6 +139,8 @@ pub enum MenuHit {
     NewFolder,
     /// Biezaca notatka do PDF (okno zapisu).
     ExportPdf,
+    /// PDF jako nowa notatka (okno wyboru pliku).
+    ImportPdf,
     Setting(Setting),
     Login,
     Logout,
@@ -223,6 +229,8 @@ pub struct MenuState<'a> {
     pub update_check: bool,
     /// Eksport PDF na bialym tle.
     pub pdf_paper: bool,
+    pub pdf_dark: bool,
+    pub pdf_crop: bool,
     pub pen_cursor: bool,
     /// Prog nacisku w procentach (0 = wylaczony) i grubosc przy najlzejszym
     /// dotknieciu w procentach grubosci piora.
@@ -948,6 +956,7 @@ impl Menu {
         for (hit, label) in [
             (MenuHit::NewNote, "+  New note"),
             (MenuHit::NewFolder, "+  New folder"),
+            (MenuHit::ImportPdf, "↑  Open PDF as a new note…"),
             (MenuHit::ExportPdf, "↓  Export this note to PDF…"),
         ] {
             if hit == MenuHit::NewFolder {
@@ -1341,12 +1350,29 @@ impl Menu {
                 )],
             ),
             (
-                "Export",
-                vec![(
-                    Setting::PdfPaper,
-                    "PDF background",
-                    if s.pdf_paper { "white" } else { "black" }.to_string(),
-                )],
+                "PDF",
+                vec![
+                    (
+                        Setting::PdfDark,
+                        "PDF pages on screen",
+                        if s.pdf_dark { "dark" } else { "paper" }.to_string(),
+                    ),
+                    (
+                        Setting::PdfPaper,
+                        "Export background",
+                        if s.pdf_paper { "white" } else { "black" }.to_string(),
+                    ),
+                    (
+                        Setting::PdfCrop,
+                        "Export width",
+                        if s.pdf_crop {
+                            "100% (crop)"
+                        } else {
+                            "fit writing"
+                        }
+                        .to_string(),
+                    ),
+                ],
             ),
             (
                 "System",

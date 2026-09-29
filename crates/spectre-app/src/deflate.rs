@@ -13,8 +13,8 @@ const MAX_CHAIN: usize = 48;
 
 /// Dlugosci: (kod - 257) -> (dlugosc bazowa, bity dodatkowe).
 const LEN_BASE: [u16; 29] = [
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115,
-    131, 163, 195, 227, 258,
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
 const LEN_EXTRA: [u8; 29] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
@@ -25,8 +25,8 @@ const DIST_BASE: [u16; 30] = [
     2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 const DIST_EXTRA: [u8; 30] = [
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12,
-    13, 13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
 
 struct BitWriter {
@@ -189,6 +189,183 @@ pub fn zlib(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Dekompresja zlib/deflate (RFC 1950/1951) - pelna: bloki surowe, stale
+/// i dynamiczne kody Huffmana. Do czytania cudzych PDF-ow (strumienie
+/// `/FlateDecode`, tablice xref w strumieniach). Na bledzie `None`.
+/// `raw` = sam deflate, bez naglowka zlib.
+pub fn inflate(data: &[u8], raw: bool) -> Option<Vec<u8>> {
+    struct Bits<'a> {
+        d: &'a [u8],
+        pos: usize,
+        buf: u64,
+        cnt: u32,
+    }
+    impl Bits<'_> {
+        fn need(&mut self, n: u32) -> Option<()> {
+            while self.cnt < n {
+                let b = *self.d.get(self.pos)?;
+                self.pos += 1;
+                self.buf |= (b as u64) << self.cnt;
+                self.cnt += 8;
+            }
+            Some(())
+        }
+        fn bits(&mut self, n: u32) -> Option<u32> {
+            if n == 0 {
+                return Some(0);
+            }
+            self.need(n)?;
+            let v = (self.buf & ((1u64 << n) - 1)) as u32;
+            self.buf >>= n;
+            self.cnt -= n;
+            Some(v)
+        }
+        fn align(&mut self) {
+            let r = self.cnt % 8;
+            self.buf >>= r;
+            self.cnt -= r;
+        }
+    }
+    /// Kanoniczny kod Huffmana: liczba kodow danej dlugosci i symbole po kolei.
+    struct Huff {
+        count: [u16; 16],
+        sym: Vec<u16>,
+    }
+    impl Huff {
+        fn new(lens: &[u8]) -> Self {
+            let mut count = [0u16; 16];
+            for &l in lens {
+                count[l as usize] += 1;
+            }
+            count[0] = 0;
+            let mut offs = [0u16; 16];
+            for i in 1..15 {
+                offs[i + 1] = offs[i] + count[i];
+            }
+            let mut sym = vec![0u16; lens.len()];
+            for (s, &l) in lens.iter().enumerate() {
+                if l != 0 {
+                    sym[offs[l as usize] as usize] = s as u16;
+                    offs[l as usize] += 1;
+                }
+            }
+            Self { count, sym }
+        }
+        fn decode(&self, b: &mut Bits) -> Option<u16> {
+            let (mut code, mut first, mut index) = (0i32, 0i32, 0i32);
+            for len in 1..16 {
+                code |= b.bits(1)? as i32;
+                let count = self.count[len] as i32;
+                if code - count < first {
+                    return self.sym.get((index + (code - first)) as usize).copied();
+                }
+                index += count;
+                first += count;
+                first <<= 1;
+                code <<= 1;
+            }
+            None
+        }
+    }
+    let start = if raw {
+        0
+    } else {
+        if data.len() < 2
+            || data[0] & 0x0f != 8
+            || ((data[0] as u16) << 8 | data[1] as u16) % 31 != 0
+        {
+            return None;
+        }
+        2
+    };
+    let mut b = Bits {
+        d: &data[start..],
+        pos: 0,
+        buf: 0,
+        cnt: 0,
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(data.len() * 4);
+    loop {
+        let last = b.bits(1)?;
+        match b.bits(2)? {
+            0 => {
+                b.align();
+                let len = b.bits(16)? as usize;
+                let nlen = b.bits(16)? as usize;
+                if len != !nlen & 0xffff {
+                    return None;
+                }
+                // Po wyrownaniu bufor bitow jest pusty albo trzyma pelne bajty.
+                for _ in 0..len {
+                    out.push(b.bits(8)? as u8);
+                }
+            }
+            t @ (1 | 2) => {
+                let (lit, dist) = if t == 1 {
+                    let mut l = [0u8; 288];
+                    l[..144].fill(8);
+                    l[144..256].fill(9);
+                    l[256..280].fill(7);
+                    l[280..].fill(8);
+                    (Huff::new(&l), Huff::new(&[5u8; 30]))
+                } else {
+                    let nlen = b.bits(5)? as usize + 257;
+                    let ndist = b.bits(5)? as usize + 1;
+                    let ncode = b.bits(4)? as usize + 4;
+                    const ORDER: [usize; 19] = [
+                        16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+                    ];
+                    let mut cl = [0u8; 19];
+                    for &o in ORDER.iter().take(ncode) {
+                        cl[o] = b.bits(3)? as u8;
+                    }
+                    let ch = Huff::new(&cl);
+                    let mut lens = vec![0u8; nlen + ndist];
+                    let mut i = 0;
+                    while i < nlen + ndist {
+                        let s = ch.decode(&mut b)?;
+                        let (val, rep) = match s {
+                            0..=15 => (s as u8, 1),
+                            16 => (*lens.get(i.checked_sub(1)?)?, 3 + b.bits(2)? as usize),
+                            17 => (0, 3 + b.bits(3)? as usize),
+                            _ => (0, 11 + b.bits(7)? as usize),
+                        };
+                        if i + rep > lens.len() {
+                            return None;
+                        }
+                        lens[i..i + rep].fill(val);
+                        i += rep;
+                    }
+                    (Huff::new(&lens[..nlen]), Huff::new(&lens[nlen..]))
+                };
+                loop {
+                    let s = lit.decode(&mut b)? as usize;
+                    if s < 256 {
+                        out.push(s as u8);
+                    } else if s == 256 {
+                        break;
+                    } else {
+                        let i = s - 257;
+                        let len =
+                            *LEN_BASE.get(i)? as usize + b.bits(LEN_EXTRA[i] as u32)? as usize;
+                        let di = dist.decode(&mut b)? as usize;
+                        let d =
+                            *DIST_BASE.get(di)? as usize + b.bits(DIST_EXTRA[di] as u32)? as usize;
+                        let from = out.len().checked_sub(d)?;
+                        for k in 0..len {
+                            out.push(out[from + k]);
+                        }
+                    }
+                }
+            }
+            _ => return None,
+        }
+        if last == 1 {
+            return Some(out);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +439,48 @@ mod tests {
         out
     }
 
+    /// Pelny dekoder zgadza sie z testowym na strumieniach tego kodera...
+    #[test]
+    fn pelny_dekoder_na_wlasnych_strumieniach() {
+        let s: Vec<u8> = (0..20_000)
+            .map(|i| b"0123456789 m l h f\n"[i % 19])
+            .collect();
+        for data in [&b""[..], b"a", b"abcabcabcabc", &s] {
+            assert_eq!(super::inflate(&zlib(data), false).unwrap(), data);
+        }
+    }
+
+    /// ...i czyta bloki surowe i dynamiczne, ktorych nasz koder nie robi.
+    #[test]
+    fn pelny_dekoder_bloki_surowe_i_dynamiczne() {
+        // Blok surowy (zlib, poziom 0), z naglowkiem i Adler-32.
+        let stored = [
+            0x78, 0x01, 0x01, 0x05, 0x00, 0xfa, 0xff, b'h', b'e', b'l', b'l', b'o', 0x06, 0x2c,
+            0x02, 0x15,
+        ];
+        assert_eq!(super::inflate(&stored, false).unwrap(), b"hello");
+        // Blok dynamiczny (BTYPE=2): surowy deflate z .NET `DeflateStream`
+        // (CompressionLevel.Optimal), wygenerowany na Windows 11.
+        let dynamic = [
+            0xb5, 0xca, 0xd9, 0x15, 0x82, 0x30, 0x10, 0x40, 0xd1, 0x56, 0x5e, 0x01, 0x1e, 0x8e,
+            0xfb, 0xd2, 0x03, 0x9f, 0x36, 0x30, 0xc2, 0x08, 0xc1, 0x84, 0xc1, 0x2c, 0x2e, 0xa9,
+            0xde, 0x2a, 0xbc, 0xdf, 0xb7, 0xb5, 0xa8, 0x01, 0xb7, 0xa4, 0x12, 0xe8, 0xcd, 0x5b,
+            0x24, 0xb9, 0x8c, 0x04, 0xcd, 0x2b, 0xaa, 0x54, 0xf3, 0x1d, 0x83, 0x26, 0x2f, 0x4c,
+            0x52, 0xe7, 0x86, 0xf6, 0xaf, 0xfd, 0x3a, 0x2a, 0xcf, 0xe2, 0xba, 0x07, 0xb7, 0x68,
+            0xef, 0x99, 0xbb, 0x7d, 0x98, 0x4a, 0x58, 0x12, 0xf6, 0xd2, 0x48, 0x1e, 0x15, 0x2f,
+            0xf5, 0x4b, 0x6f, 0x03, 0xeb, 0xcd, 0x76, 0xb7, 0x3f, 0x1c, 0x4f, 0xe7, 0x4b, 0xc3,
+            0x0f,
+        ];
+        assert_eq!((dynamic[0] >> 1) & 3, 2, "wektor ma blok dynamiczny");
+        let want = "Lorem ipsum dolor sit amet, zazolc gesla jazn. ".repeat(3)
+            + "The quick brown fox jumps over the lazy dog 0123456789. ";
+        let got = super::inflate(&dynamic, true).unwrap();
+        assert_eq!(String::from_utf8_lossy(&got), want);
+        // Uszkodzone dane: brak paniki, `None`.
+        assert!(super::inflate(&[0x78, 0x9c, 0xff, 0xff, 0xff], false).is_none());
+        assert!(super::inflate(&[1, 2, 3], false).is_none());
+    }
+
     #[test]
     fn puste_i_krotkie() {
         assert_eq!(inflate(&zlib(b"")), b"");
@@ -296,7 +515,11 @@ mod tests {
         assert_eq!(inflate(&zlib(&rnd)), rnd);
         let mut pdf = String::new();
         for i in 0..3000 {
-            pdf.push_str(&format!("{:.1} {:.1} l\n", i as f32 * 0.37, (i * 7 % 900) as f32 * 1.3));
+            pdf.push_str(&format!(
+                "{:.1} {:.1} l\n",
+                i as f32 * 0.37,
+                (i * 7 % 900) as f32 * 1.3
+            ));
         }
         let z = zlib(pdf.as_bytes());
         assert_eq!(inflate(&z), pdf.as_bytes());

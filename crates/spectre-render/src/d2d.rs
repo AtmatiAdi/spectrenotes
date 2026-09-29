@@ -45,6 +45,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::geometry;
 use crate::tess::stroke_segments;
+use crate::tiles::{self, PageRect, TileKey};
 
 /// Czysta czern: na AMOLED piksel jest wtedy fizycznie zgaszony (Z7).
 pub const BG_COLOR: D2D1_COLOR_F = D2D1_COLOR_F {
@@ -374,7 +375,32 @@ pub struct Renderer {
     hidden: HashSet<StrokeId>,
     /// Bufor teselacji wielokrotnego uzytku.
     seg_scratch: Vec<Segment>,
+
+    /// Strony tla (PDF) na canvasie - pod kreskami warstwy suchej.
+    pages: Vec<PageRect>,
+    /// Wyrenderowane kafelki stron (`tiles.rs`), z licznikiem ostatniego uzycia.
+    tiles: HashMap<TileKey, TileBmp>,
+    tile_bytes: usize,
+    tile_clock: u64,
 }
+
+struct TileBmp {
+    bmp: ID2D1Bitmap1,
+    bytes: usize,
+    used: u64,
+}
+
+/// Pamiec na kafelki stron PDF. Kafelek to 4 MB; przy przewijaniu widac
+/// 2-6 naraz, reszta to zapas na powrot w gore bez ponownego renderu.
+const TILE_BUDGET: usize = 256 << 20;
+
+/// Obrys strony: bez niego ciemna (odwrocona) strona zlewa sie z czarnym canvasem.
+const PAGE_EDGE: Rgba = Rgba {
+    r: 48,
+    g: 48,
+    b: 48,
+    a: 255,
+};
 
 /// Obrys kreski w cache: realizacja (mesh na GPU, jedno wywolanie) albo sama
 /// geometria sciezki, gdy kreska jest za cienka na realizacje.
@@ -563,6 +589,10 @@ impl Renderer {
                 geo_cache_verts: 0,
                 hidden: HashSet::new(),
                 seg_scratch: Vec::with_capacity(4096),
+                pages: Vec::new(),
+                tiles: HashMap::new(),
+                tile_bytes: 0,
+                tile_clock: 0,
             };
             r.create_size_dependent()?;
             Ok(r)
@@ -758,6 +788,142 @@ impl Renderer {
         self.avatar.is_some()
     }
 
+    /// Strony tla notatki (pusto = zwykla notatka). Inny uklad stron to inne
+    /// kafelki - stare ida do kosza.
+    pub fn set_pages(&mut self, pages: Vec<PageRect>) {
+        if pages != self.pages {
+            self.pages = pages;
+            self.tiles.clear();
+            self.tile_bytes = 0;
+        }
+    }
+
+    pub fn pages(&self) -> &[PageRect] {
+        &self.pages
+    }
+
+    pub fn has_tile(&self, key: &TileKey) -> bool {
+        self.tiles.contains_key(key)
+    }
+
+    /// Kafelek od watku renderu PDF: piksele BGRA (nieprzezroczyste) do
+    /// bitmapy. Po przekroczeniu budzetu odpadaja najdawniej rysowane
+    /// (podglady stron zostaja - sa male i to one zaslaniaja luki).
+    pub fn put_tile(&mut self, key: TileKey, w: u32, h: u32, bgra: &[u8]) -> Result<()> {
+        if w == 0 || h == 0 || bgra.len() != (w * h * 4) as usize {
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_FAIL,
+            ));
+        }
+        unsafe {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+                ..Default::default()
+            };
+            let bmp = self.ctx.CreateBitmap(
+                D2D_SIZE_U {
+                    width: w,
+                    height: h,
+                },
+                None,
+                0,
+                &props,
+            )?;
+            bmp.CopyFromMemory(None, bgra.as_ptr() as *const _, w * 4)?;
+            let bytes = bgra.len();
+            self.tile_clock += 1;
+            if let Some(old) = self.tiles.insert(
+                key,
+                TileBmp {
+                    bmp,
+                    bytes,
+                    used: self.tile_clock,
+                },
+            ) {
+                self.tile_bytes -= old.bytes;
+            }
+            self.tile_bytes += bytes;
+        }
+        while self.tile_bytes > TILE_BUDGET {
+            let Some(victim) = self
+                .tiles
+                .iter()
+                .filter(|(k, _)| k.level != tiles::OVERVIEW)
+                .min_by_key(|(_, t)| t.used)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            if let Some(t) = self.tiles.remove(&victim) {
+                self.tile_bytes -= t.bytes;
+            }
+        }
+        Ok(())
+    }
+
+    /// Strony pod kreskami, w transformacji kamery (ustawionej przez
+    /// `draw_document`). Kafelki innych poziomow niz biezacy rysujemy
+    /// najpierw (od najgrubszego) - zaslaniaja strone, zanim dojdzie ostry.
+    unsafe fn draw_pages(&mut self, cam: &Camera, rect: Bbox) -> Result<()> {
+        if self.pages.is_empty() {
+            return Ok(());
+        }
+        let level = tiles::level_for(cam.zoom);
+        self.tile_clock += 1;
+        let clock = self.tile_clock;
+        let edge = self.brush(PAGE_EDGE)?;
+        let mut keys: Vec<TileKey> = Vec::new();
+        for (i, p) in self.pages.iter().enumerate() {
+            let pb = p.bbox();
+            if !pb.intersects(&rect) {
+                continue;
+            }
+            keys.clear();
+            keys.extend(
+                self.tiles
+                    .keys()
+                    .filter(|k| k.page == i as u32 && tiles::tile_rect(p, **k).intersects(&rect)),
+            );
+            keys.sort_by_key(|k| (k.level == level, k.level));
+            for k in &keys {
+                let t = self.tiles.get_mut(k).unwrap();
+                t.used = clock;
+                let r = tiles::tile_rect(p, *k);
+                self.ctx.DrawBitmap(
+                    &t.bmp,
+                    Some(&D2D_RECT_F {
+                        left: r.min_x,
+                        top: r.min_y,
+                        right: r.max_x,
+                        bottom: r.max_y,
+                    }),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    None,
+                    None,
+                );
+            }
+            self.ctx.DrawRectangle(
+                &D2D_RECT_F {
+                    left: pb.min_x,
+                    top: pb.min_y,
+                    right: pb.max_x,
+                    bottom: pb.max_y,
+                },
+                &edge,
+                1.0 / cam.zoom,
+                None,
+            );
+        }
+        Ok(())
+    }
+
     /// Okno schowane: oddajemy pamiec sterownika (Z2). Bitmapy zostaja, ale
     /// sterownik moze zwolnic swoje bufory posrednie.
     pub fn trim(&self) {
@@ -889,8 +1055,11 @@ impl Renderer {
         rect: Bbox,
     ) -> Result<()> {
         self.ctx.SetTransform(&Self::cam_matrix(cam));
-        let mut res = Ok(());
+        let mut res = self.draw_pages(cam, rect);
         for (id, data, _) in doc.visible_in(rect) {
+            if res.is_err() {
+                break;
+            }
             if self.hidden.contains(&id) {
                 continue;
             }

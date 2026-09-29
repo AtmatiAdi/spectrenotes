@@ -16,11 +16,19 @@ use crate::window::wide;
 
 /// Sciezka wybranego pliku albo `None`, gdy uzytkownik zrezygnowal.
 pub fn pick_file(hwnd: HWND, title: &str) -> Option<PathBuf> {
+    pick_file_filtered(
+        hwnd,
+        title,
+        "All files\0*.*\0Images\0*.png;*.jpg;*.jpeg;*.gif;*.webp\0\0",
+    )
+}
+
+/// Jak `pick_file`, z wlasnym filtrem w formacie `OPENFILENAMEW`
+/// (pary "opis\0wzorce\0", na koncu dodatkowe `\0`).
+pub fn pick_file_filtered(hwnd: HWND, title: &str, filter: &str) -> Option<PathBuf> {
     let mut buf = vec![0u16; 32 * 1024];
     let title = wide(title);
-    let filter: Vec<u16> = "All files\0*.*\0Images\0*.png;*.jpg;*.jpeg;*.gif;*.webp\0\0"
-        .encode_utf16()
-        .collect();
+    let filter: Vec<u16> = filter.encode_utf16().collect();
     let mut ofn = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: hwnd,

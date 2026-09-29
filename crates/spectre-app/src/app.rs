@@ -33,6 +33,8 @@ use crate::lan::LanConfig;
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
 use crate::pdf;
+use crate::pdfedit;
+use crate::pdfview::{self, WM_PDF};
 use crate::picker::{self, Picker};
 use crate::select;
 use crate::spaces::{self, SpaceInfo};
@@ -427,6 +429,12 @@ pub struct App {
     update_check: bool,
     /// Eksport PDF na bialym tle (`pdf_paper=0` w config = czarne jak ekran).
     pdf_paper: bool,
+    /// Notatka na PDF: strony pod kreskami i watek, ktory je renderuje.
+    pdf: Option<pdfview::PdfView>,
+    /// Strony PDF na ekranie z odwrocona jasnoscia (`pdf_dark=0` = jak na papierze).
+    pdf_dark: bool,
+    /// Eksport w szerokosci dokladnie kolumny (100%), pismo poza nia obciete.
+    pdf_crop: bool,
     /// Kursor (krzyzyk) takze pod piorem; domyslnie schowany - czubek rysika
     /// sam jest wskaznikiem (issue #3). `pen_cursor=1` w config.
     pen_cursor: bool,
@@ -521,6 +529,8 @@ pub fn install(
             app.show_placed(placement.as_ref());
         }
     }
+    // PDF upuszczony na okno = "Open PDF as a new note".
+    window::accept_files(hwnd);
     if let Err(e) = tray::register_toggle_hotkey(hwnd, 'N') {
         eprintln!("hotkey Win+Shift+N is taken: {e}");
     }
@@ -688,6 +698,8 @@ impl App {
         let update = Updater::start(hwnd, &update_repo, &data_dir);
         let update_check = config.get("update_check") != Some("0");
         let pdf_paper = config.get("pdf_paper") != Some("0");
+        let pdf_dark = config.get("pdf_dark") != Some("0");
+        let pdf_crop = config.get("pdf_crop") == Some("1");
         let pen_cursor = config.get("pen_cursor") == Some("1");
         if update_check {
             unsafe {
@@ -822,6 +834,9 @@ impl App {
             update,
             update_check,
             pdf_paper,
+            pdf: None,
+            pdf_dark,
+            pdf_crop,
             pen_cursor,
             pen_min_pressure,
             last_input_pen: false,
@@ -1149,6 +1164,17 @@ impl App {
         }
         if op == "esc" {
             self.clear_selection();
+            self.render();
+            return;
+        }
+        // `menu import-pdf|export-pdf` - pozycje menu ta sama droga, co dotkniecie
+        // (plik zamiast okna wyboru: SPECTRENOTES_PDF_IN / SPECTRENOTES_PDF_OUT).
+        if op == "menu" {
+            match it.next() {
+                Some("import-pdf") => self.menu_tap(MenuHit::ImportPdf),
+                Some("export-pdf") => self.menu_tap(MenuHit::ExportPdf),
+                _ => {}
+            }
             self.render();
             return;
         }
@@ -1585,9 +1611,16 @@ impl App {
         }
     }
 
+    /// Dolna krawedz tresci do ograniczenia przewijania: kreski albo koniec
+    /// ostatniej strony PDF, co nizej.
+    fn content_bottom(&self) -> f32 {
+        let pages = self.pdf.as_ref().map_or(0.0, |v| v.bottom());
+        self.doc.content_bottom().max(pages)
+    }
+
     fn scroll_to(&mut self, y: f32) {
         let old = self.cam.scroll_y;
-        let bottom = self.doc.content_bottom();
+        let bottom = self.content_bottom();
         let h = self.view_h();
         // Ponad gorna krawedzia tresc jeszcze ustepuje, ale z oporem i wraca
         // sama (`OVER_MAX`, `anim_tick`). To ma dawac odczucie "jestesmy na
@@ -1660,7 +1693,7 @@ impl App {
         // Po zmianie zoomu ten sam punkt canvasu ma zostac pod kursorem
         // (w osi X tylko przy odblokowanym widoku - zablokowany centruje).
         let scroll = cy - (sy - self.cam.shift.1) / new_zoom;
-        let bottom = self.doc.content_bottom();
+        let bottom = self.content_bottom();
         let h = self.view_h();
         self.cam.scroll_to(scroll, bottom, h);
         let scroll_x = cx - (sx - self.cam.shift.0) / new_zoom;
@@ -1680,7 +1713,7 @@ impl App {
     fn fit_width(&mut self) {
         let w = self.renderer.size().0 as f32;
         self.cam.fit_width(w);
-        let bottom = self.doc.content_bottom();
+        let bottom = self.content_bottom();
         let h = self.view_h();
         self.cam.scroll_to(self.cam.scroll_y, bottom, h);
         self.dirty = Dirty::Full;
@@ -2073,6 +2106,7 @@ impl App {
             MenuHit::MoveToSpace(i) => self.move_note_to_space(i),
             MenuHit::Feedback => self.open_feedback(),
             MenuHit::ExportPdf => self.export_pdf(),
+            MenuHit::ImportPdf => self.import_pdf(),
         }
     }
 
@@ -2211,6 +2245,19 @@ impl App {
                 self.pdf_paper = !self.pdf_paper;
                 self.config
                     .set("pdf_paper", if self.pdf_paper { "1" } else { "0" });
+                self.config.save();
+            }
+            Setting::PdfCrop => {
+                self.pdf_crop = !self.pdf_crop;
+                self.config
+                    .set("pdf_crop", if self.pdf_crop { "1" } else { "0" });
+                self.config.save();
+            }
+            // Widok stron przebuduje `sync_pdf` w nastepnej klatce (inne piksele).
+            Setting::PdfDark => {
+                self.pdf_dark = !self.pdf_dark;
+                self.config
+                    .set("pdf_dark", if self.pdf_dark { "1" } else { "0" });
                 self.config.save();
             }
             Setting::Autostart => {
@@ -3136,14 +3183,69 @@ impl App {
             },
         };
         let t0 = Instant::now();
-        let pdf = pdf::export(
-            &self.doc,
-            &self.ink,
-            &pdf::Options {
-                paper: self.pdf_paper,
-                title,
-            },
-        );
+        let mut fallback = None;
+        let pdf = match self.pdf.as_ref() {
+            // Notatka na PDF: oryginal z dopisanymi kreskami. Kolory kresek
+            // odwracamy wtedy, gdy strony byly na ekranie ciemne - w pliku sa
+            // biale, a pismo ma wygladac jak na ekranie wzgledem strony.
+            Some(v) => {
+                if v.layout.is_empty() {
+                    self.status = "PDF: pages are not loaded yet".into();
+                    return;
+                }
+                let src = pdfview::asset_path(&v.root, &v.asset);
+                let original = match std::fs::read(&src) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        self.status = format!("PDF: original {}: {e}", src.display());
+                        return;
+                    }
+                };
+                // Test: wymuszona droga zastepcza (zaszyfrowany PDF bez pliku).
+                let force_raster =
+                    self.test_input && std::env::var_os("SPECTRENOTES_PDF_RASTER").is_some();
+                let direct = if force_raster {
+                    Err(pdfedit::Error::Encrypted)
+                } else {
+                    pdf::export_on(
+                        &original,
+                        &v.layout,
+                        pdfview::PAGE_GAP,
+                        &self.doc,
+                        &self.ink,
+                        self.pdf_dark,
+                        self.pdf_crop,
+                    )
+                };
+                match direct {
+                    Ok(p) => p,
+                    // Zaszyfrowany albo o budowie, ktorej nie znamy: strony
+                    // jako obrazy (Windows je otwiera), kreski dalej wektorowo.
+                    Err(e) => match self.export_raster(&src, &title) {
+                        Ok(p) => {
+                            let status = format!("{e} - pages exported as images");
+                            eprintln!("PDF: {status}");
+                            fallback = Some(status);
+                            p
+                        }
+                        Err(e2) => {
+                            self.status = format!("PDF: {e}; {e2}");
+                            eprintln!("{}", self.status);
+                            return;
+                        }
+                    },
+                }
+            }
+            None => pdf::export(
+                &self.doc,
+                &self.ink,
+                &pdf::Options {
+                    paper: self.pdf_paper,
+                    crop: self.pdf_crop,
+                    title,
+                },
+            ),
+        };
         match std::fs::write(&path, &pdf.bytes) {
             Ok(()) => {
                 self.status = format!(
@@ -3154,6 +3256,9 @@ impl App {
                     t0.elapsed().as_secs_f32() * 1000.0,
                     path.display()
                 );
+                if let Some(f) = fallback {
+                    self.status.push_str(&format!(" ({f})"));
+                }
                 eprintln!("{}", self.status);
                 if !self.test_input {
                     window::open_in_browser(&path.to_string_lossy());
@@ -3161,6 +3266,197 @@ impl App {
             }
             Err(e) => self.status = format!("PDF: {}: {e}", path.display()),
         }
+    }
+
+    /// PDF zastepczy (`pdf::export_raster`): strony oryginalu renderuje Windows
+    /// do JPEG-a w ~200 dpi.
+    fn export_raster(&self, src: &Path, title: &str) -> std::result::Result<pdf::Pdf, String> {
+        let Some(v) = self.pdf.as_ref() else {
+            return Err("no PDF".into());
+        };
+        let file = spectre_shell_win::pdfdoc::PdfFile::open(src).map_err(|e| e.message())?;
+        let sizes = file.pages().map_err(|e| e.message())?;
+        let mut pages = Vec::with_capacity(sizes.len());
+        for (i, s) in sizes.iter().enumerate() {
+            let w = (s.w * 200.0 / 96.0).round().clamp(64.0, 4000.0) as u32;
+            let j = file.render_jpeg(i as u32, w).map_err(|e| e.message())?;
+            pages.push(pdf::RasterPage {
+                jpeg: j.bytes,
+                w_px: j.w,
+                h_px: j.h,
+                w_pt: s.w * 0.75,
+                h_pt: s.h * 0.75,
+            });
+        }
+        Ok(pdf::export_raster(
+            &pages,
+            &v.layout,
+            pdfview::PAGE_GAP,
+            &self.doc,
+            &self.ink,
+            self.pdf_dark,
+            self.pdf_crop,
+            title,
+        ))
+    }
+
+    // ----- notatka na PDF --------------------------------------------------------
+
+    /// Widok stron zgodny z biezaca notatka: metadana `pdf` mowi, jaki plik,
+    /// space notatki - gdzie on lezy. Wolane na poczatku klatki, wiec obejmuje
+    /// kazda droge zmiany notatki (przelaczenie, merge z gita, operacja z LAN).
+    /// Porownanie dwoch napisow - tanie.
+    fn sync_pdf(&mut self) {
+        let asset = self
+            .doc
+            .meta(pdfview::META_KEY)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        let root = self.cur_space().root().to_path_buf();
+        let same = match (&asset, &self.pdf) {
+            (None, None) => true,
+            (Some(a), Some(v)) => v.asset == *a && v.root == root && v.dark == self.pdf_dark,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.pdf = asset.map(|a| pdfview::PdfView::start(self.hwnd, &root, &a, self.pdf_dark));
+        self.renderer.set_pages(Vec::new());
+        self.dirty = Dirty::Full;
+    }
+
+    /// Kafelki stron dla biezacego widoku, plus ekran zapasu nad i pod nim -
+    /// przewijanie trafia wtedy na gotowe strony.
+    fn pdf_want(&mut self) {
+        let Some(v) = &self.pdf else {
+            return;
+        };
+        if v.layout.is_empty() {
+            return;
+        }
+        let (w, h) = self.renderer.size();
+        let view = self.cam.visible(w as f32, h as f32);
+        let margin = view.max_y - view.min_y;
+        let ahead = Bbox {
+            min_y: view.min_y - margin,
+            max_y: view.max_y + margin,
+            ..view
+        };
+        let level = spectre_render::tiles::level_for(self.cam.zoom);
+        let now = spectre_render::tiles::needed(&v.layout, view, self.cam.zoom);
+        let later = v
+            .layout
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| spectre_render::tiles::tiles_in(p, i as u32, level, ahead));
+        let renderer = &self.renderer;
+        v.want(now.into_iter().chain(later), |k| renderer.has_tile(k));
+    }
+
+    /// `WM_PDF`: strony otwarte albo kolejne kafelki od watku renderu.
+    fn pdf_events(&mut self) {
+        let Some(v) = self.pdf.as_mut() else {
+            return;
+        };
+        for ev in v.poll() {
+            match ev {
+                pdfview::Event::Pages(layout) => {
+                    self.renderer.set_pages(layout);
+                    self.dirty = Dirty::Full;
+                }
+                pdfview::Event::Tile(key, px) => {
+                    let Some(page) = self.renderer.pages().get(key.page as usize).copied() else {
+                        continue;
+                    };
+                    if self.renderer.put_tile(key, px.w, px.h, &px.bgra).is_ok() {
+                        let r = spectre_render::tiles::tile_rect(&page, key);
+                        self.dirty = self.dirty.add_region(r);
+                    }
+                }
+                pdfview::Event::Failed(msg) => self.status = msg,
+            }
+        }
+        // Po otwarciu stron zmienia sie dolna granica przewijania.
+        let y = self.cam.scroll_y;
+        self.scroll_to(y);
+    }
+
+    /// "Open PDF": plik do `assets/` space'u biezacej notatki (nazwa = skrot
+    /// tresci, ten sam PDF drugi raz nie zajmuje miejsca), nowa notatka
+    /// z tytulem z nazwy pliku i metadana `pdf`. Wtedy zwykla droga: notatka
+    /// jedzie gitem, strony pokazuje `sync_pdf`.
+    fn import_pdf(&mut self) {
+        let path = match std::env::var("SPECTRENOTES_PDF_IN") {
+            Ok(p) if self.test_input => PathBuf::from(p),
+            _ => match dialog::pick_file_filtered(
+                self.hwnd,
+                "Open PDF as a new note",
+                "PDF documents\0*.pdf\0All files\0*.*\0\0",
+            ) {
+                Some(p) => p,
+                None => return,
+            },
+        };
+        match self.import_pdf_file(&path) {
+            Ok(()) => {}
+            Err(e) => self.status = format!("PDF: {e}"),
+        }
+    }
+
+    fn import_pdf_file(&mut self, path: &Path) -> std::result::Result<(), String> {
+        let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+        if len > pdfview::MAX_BYTES {
+            return Err(format!(
+                "{} MB is too large to sync (limit {} MB)",
+                len >> 20,
+                pdfview::MAX_BYTES >> 20
+            ));
+        }
+        // Sprawdzenie, zanim cokolwiek powstanie: plik musi sie otworzyc.
+        let file = spectre_shell_win::pdfdoc::PdfFile::open(path)
+            .map_err(|e| format!("cannot open {}: {}", path.display(), e.message()))?;
+        let pages = file.pages().map_err(|e| e.message().to_string())?.len();
+        drop(file);
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let hash = spectre_shell_win::hash::sha256(&bytes).map_err(|e| e.to_string())?;
+        let asset = format!("assets/{hash}.pdf");
+        let slot = match self.notes[self.note_idx].space {
+            LAN_SLOT => 0,
+            s => s,
+        };
+        let dst = pdfview::asset_path(self.spaces[slot].space.root(), &asset);
+        if !dst.exists() {
+            let dir = dst.parent().unwrap();
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            // Przez plik tymczasowy: przerwany zapis nie zostawi uszkodzonego assetu
+            // pod ostateczna nazwa (ta jest skrotem tresci - nikt by go nie poprawil).
+            let tmp = dst.with_extension("pdf.part");
+            std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())?;
+        }
+        let before = self.notes[self.note_idx].id.clone();
+        self.new_note();
+        if self.notes[self.note_idx].id == before {
+            return Err("could not create the note".into());
+        }
+        let title = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let ops = [
+            self.doc.set_meta("title", &title),
+            self.doc.set_meta(pdfview::META_KEY, &asset),
+        ];
+        self.persist(&ops);
+        self.sync_entry();
+        self.status = format!(
+            "PDF: {} page{} imported",
+            pages,
+            if pages == 1 { "" } else { "s" }
+        );
+        eprintln!("{} -> {asset}", self.status);
+        Ok(())
     }
 
     // ----- feedback ------------------------------------------------------------
@@ -4706,6 +5002,7 @@ impl App {
             return;
         }
         let t0 = Instant::now();
+        self.sync_pdf();
         // Klatka przewijania - z piora albo z kolka; decyduje o trybie prezentacji.
         let scrolling = self.mode == Mode::Pan || matches!(self.dirty, Dirty::Scrolled(_));
         match self.dirty {
@@ -4721,6 +5018,10 @@ impl App {
             }
         }
         self.dirty = Dirty::Clean;
+        // W trakcie kreski widok stoi - zamowienia sa te same co klatke temu.
+        if self.mode != Mode::Draw {
+            self.pdf_want();
+        }
 
         // Mokra kreska: odcinki ostateczne zbieraja sie w `wet_pending` i ida do
         // warstwy suchej porcjami; wszystko niewypalone plus czubek rysujemy co
@@ -4912,6 +5213,8 @@ impl App {
                 update: &update_view,
                 update_check: self.update_check,
                 pdf_paper: self.pdf_paper,
+                pdf_dark: self.pdf_dark,
+                pdf_crop: self.pdf_crop,
                 pen_cursor: self.pen_cursor,
                 pen_min_pressure_pct: (self.pen_min_pressure * 100.0).round() as u32,
                 pen_min_width_pct: (self.ink.min_width_ratio * 100.0).round() as u32,
@@ -5759,6 +6062,29 @@ pub unsafe extern "system" fn wndproc(
         }
         WM_SLIDE => {
             app.slide_step();
+            LRESULT(0)
+        }
+        WM_PDF => {
+            app.pdf_events();
+            app.render();
+            LRESULT(0)
+        }
+        WM_DROPFILES => {
+            let files = window::dropped_files(wparam);
+            let pdfs: Vec<_> = files
+                .iter()
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")))
+                .collect();
+            if pdfs.is_empty() {
+                app.status = "drop a PDF file to open it as a new note".into();
+            }
+            // Kilka naraz: kazdy jako osobna notatka, na koncu widac ostatnia.
+            for p in pdfs {
+                if let Err(e) = app.import_pdf_file(p) {
+                    app.status = format!("PDF: {e}");
+                }
+            }
+            app.render();
             LRESULT(0)
         }
         WM_PAINT => {

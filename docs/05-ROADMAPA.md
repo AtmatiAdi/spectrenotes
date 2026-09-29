@@ -340,6 +340,19 @@ zanim zamkniemy kształt menu; każda z tych rzeczy dokłada własne wejścia do
       paleta AMOLED czytelna na papierze) albo czarne jak ekran. Zweryfikowane:
       PDF wyrenderowany `Windows.Data.Pdf` pokrywa się ze zrzutem ekranu (4 kreski +
       kropka, kolory), 5 kresek = 2,3 kB. Poza zakresem: tylko widoczny wycinek.
+- [x] **PDF jako notatka i eksport na oryginał** (2026-09-29): *Open PDF as a new
+      note…* albo upuszczenie pliku — asset `assets/<sha256>.pdf` w space, metadana
+      `pdf`, strony w kolumnie pod kreskami (`Windows.Data.Pdf` w wątku, kafelki
+      2^k, podgląd 1/8, LRU 256 MB; klatka przewijania 1,9 ms), domyślnie z odwróconą
+      jasnością. Eksport notatki na PDF = oryginał + warstwa kresek aktualizacją
+      przyrostową (`pdfedit.rs`: xref tablica/strumień, ObjStm, predyktory PNG,
+      dziedziczenie, Rotate, CropBox; własny pełny inflate), pismo poza stroną ją
+      powiększa, pod ostatnią — nowe strony; zaszyfrowany → strony jako JPEG. Zwykła
+      notatka: strony 2880×1800 (ekran przy 100%), szerokość wg pisma albo *100%
+      (crop)*. Zweryfikowane rendererem Windows: pozycje kresek względem tekstu,
+      obroty 90/270, przycięcie, PDF 1.5.
+      Dalej: miniatury notatek z PDF (dziś czarne — rysują tylko kreski), przesyłanie
+      assetu przez LAN, test przeciągania pliku prawdziwą myszą.
 - [ ] **Snapshoty i przycinanie HEAD** (Etap 3/5) razem z przycinaniem `via-*` (Etap 6)
       — jeden mechanizm: stan HEAD do pliku, stare `.ops` do usunięcia w gicie.
 - [ ] **Zoom bez pełnego rebuildu** (Etap 2): podgląd skalowaniem warstwy suchej,
