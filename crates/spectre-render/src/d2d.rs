@@ -27,9 +27,8 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_FAR,
-    DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_FAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
@@ -53,6 +52,21 @@ pub const BG_COLOR: D2D1_COLOR_F = D2D1_COLOR_F {
     b: 0.0,
     a: 1.0,
 };
+
+/// Kamera do **warstwy suchej**: bez `shift`.
+///
+/// `Camera::shift` to ekranowe piksele doklejane na samym koncu (sprezynowanie
+/// przy gornej krawedzi). Warstwa sucha jest bitmapa trzymana miedzy klatkami
+/// i przesuwana przyrostowo, wiec nie moze miec tego przesuniecia wypalonego -
+/// inaczej kazda zmiana `shift` uniewazniala by cala bitmape. Rysujemy ja wiec
+/// zawsze "bez sprezyny", a `present` przesuwa gotowy obraz przy skladaniu
+/// klatki: jeden offset zamiast przebudowy.
+fn dry_cam(cam: &Camera) -> Camera {
+    Camera {
+        shift: (0.0, 0.0),
+        ..*cam
+    }
+}
 
 /// Jak prezentowac klatke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -875,6 +889,7 @@ impl Renderer {
         ink: &InkConfig,
         rect: Bbox,
     ) -> Result<()> {
+        let cam = &dry_cam(cam);
         let Some(dry) = self.dry[self.dry_cur].clone() else {
             return Ok(());
         };
@@ -917,6 +932,7 @@ impl Renderer {
 
     /// Pelna przebudowa warstwy suchej.
     pub fn rebuild(&mut self, doc: &Document, cam: &Camera, ink: &InkConfig) -> Result<()> {
+        let cam = &dry_cam(cam);
         let Some(dry) = self.dry[self.dry_cur].clone() else {
             return Ok(());
         };
@@ -941,6 +957,7 @@ impl Renderer {
         old_scroll: f32,
         ink: &InkConfig,
     ) -> Result<()> {
+        let cam = &dry_cam(cam);
         let (w, h) = self.size;
         let exact = (cam.scroll_y - old_scroll) * cam.zoom;
         let dy = exact.round();
@@ -1009,6 +1026,7 @@ impl Renderer {
 
     /// Wypala odcinki biezacej kreski do warstwy suchej.
     pub fn commit(&mut self, segs: &[Segment], color: Rgba, cam: &Camera) -> Result<()> {
+        let cam = &dry_cam(cam);
         if segs.is_empty() {
             return Ok(());
         }
@@ -1047,8 +1065,21 @@ impl Renderer {
         unsafe {
             self.ctx.SetTarget(&back);
             self.ctx.BeginDraw();
-            self.ctx
-                .DrawImage(&dry, None, None, Default::default(), Default::default());
+            // Warstwa sucha jest narysowana bez `shift` (patrz `dry_cam`) -
+            // sprezynowanie przy gornej krawedzi to przesuniecie gotowego
+            // obrazu przy skladaniu klatki. Odsloniety pas u gory zakrywa
+            // naglowek rysowany w prymitywach UI.
+            let dry_off = Vector2 {
+                X: cam.shift.0,
+                Y: cam.shift.1,
+            };
+            self.ctx.DrawImage(
+                &dry,
+                Some(&dry_off),
+                None,
+                Default::default(),
+                Default::default(),
+            );
             if let Some(lift) = overlay.lift {
                 self.draw_lift(&lift, cam)?;
             }

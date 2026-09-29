@@ -5,7 +5,7 @@ use std::time::Instant;
 use spectre_core::hittest::stroke_hit;
 use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
-use spectre_render::{Overlay, PresentMode, Renderer, UiPrim, WetTail};
+use spectre_render::{Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail};
 
 /// Urzadzenie D3D tworzone w tle od startu `main` (`spectre_render::Device`).
 type DeviceHandle = Option<std::thread::JoinHandle<windows::core::Result<spectre_render::Device>>>;
@@ -102,6 +102,17 @@ const ANIM_TICK_MS: u32 = 16;
 const TIMER_TOPMOST: usize = 10;
 const TOPMOST_TICK_MS: u32 = 200;
 const TOPMOST_TICKS: u32 = 8;
+/// Sprezynowanie przy gornej krawedzi notatki: najwieksze odsuniecie tresci
+/// (logiczne piksele) i ile z niego zostaje po kazdej klatce animacji powrotu.
+/// 0.78 na klatce 16 ms to powrot ponizej piksela w ~0,2 s - wyraznie widac,
+/// ze cos odbilo, i nie trzeba na to czekac.
+const OVER_MAX: f32 = 96.0;
+const OVER_DECAY: f32 = 0.78;
+/// Pas ponad notatka: ciemna szarosc (OLED - im blizej czerni, tym lepiej,
+/// ale musi odroznic sie od canvasu) i przygaszony tytul.
+const OVER_BG: Rgba = Rgba::rgb(26, 26, 26);
+const OVER_FG: Rgba = Rgba::rgb(105, 105, 105);
+
 /// Ile razy w jednym wejsciu ochrony probujemy ustawic okno na caly monitor.
 ///
 /// Sterownik potrafi miec w tej sprawie wlasne zdanie: NVIDIA Surround spina
@@ -1240,6 +1251,10 @@ impl App {
     }
 
     fn begin_stroke(&mut self, batch: &PenBatch) {
+        // Pas nad notatka to nie canvas: kreska zaczeta w trakcie powrotu
+        // sprezyny wyladowalaby ponad gora, czyli tam, gdzie nie da sie juz
+        // przewinac. Najpierw odstawiamy tresc na miejsce.
+        self.set_over(0.0);
         self.stroke.clear();
         self.wet_pending.clear();
         self.mode = Mode::Draw;
@@ -1550,6 +1565,13 @@ impl App {
         let old = self.cam.scroll_y;
         let bottom = self.doc.content_bottom();
         let h = self.view_h();
+        // Ponad gorna krawedzia tresc jeszcze ustepuje, ale z oporem i wraca
+        // sama (`OVER_MAX`, `anim_tick`). To ma dawac odczucie "jestesmy na
+        // gorze", a nie dodatkowe miejsce: `scroll_y` stoi na zerze.
+        self.set_over(rubber(
+            (-y).max(0.0) * self.cam.zoom,
+            OVER_MAX * self.toolbar.scale(),
+        ));
         self.cam.scroll_to(y, bottom, h);
         if (self.cam.scroll_y - old).abs() > f32::EPSILON {
             self.dirty = match self.dirty {
@@ -1558,6 +1580,20 @@ impl App {
                 Dirty::Region(_) => Dirty::Full,
                 Dirty::Clean => Dirty::Scrolled(old),
             };
+        }
+    }
+
+    /// Ustawia odsuniecie tresci od gornej krawedzi (ekranowe piksele).
+    /// Trzymamy je w `cam.shift`, wiec wejscie rysika trafia tam, gdzie widac
+    /// (`Camera::to_canvas`), a dokument nic o tym nie wie.
+    fn set_over(&mut self, px: f32) {
+        if (px - self.cam.shift.1).abs() < 0.05 {
+            return;
+        }
+        self.cam.shift.1 = px;
+        if px > 0.0 {
+            // Powrot chodzi z timera animacji - tego samego, ktorym chowa sie pasek.
+            self.arm_anim();
         }
     }
 
@@ -1727,7 +1763,13 @@ impl App {
     }
 
     fn anim_tick(&mut self) {
-        if !self.toolbar.animating() {
+        // Sprezyna gornej krawedzi wraca, gdy nikt juz nie ciagnie. W trakcie
+        // przewijania rysikiem `scroll_to` i tak nadpisuje ja co probke.
+        if self.mode != Mode::Pan && self.cam.shift.1 > 0.0 {
+            let next = self.cam.shift.1 * OVER_DECAY;
+            self.cam.shift.1 = if next < 0.5 { 0.0 } else { next };
+        }
+        if !self.toolbar.animating() && self.cam.shift.1 <= 0.0 {
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
             }
@@ -4593,6 +4635,35 @@ impl App {
         // rysowania albo ramka z uchwytami ida jako pierwsze, pod pasek i panel.
         if self.waves.is_none() {
             let k = self.toolbar.scale();
+            // Pas odsloniety przez sprezynowanie: tam nie ma juz notatki, wiec
+            // zamiast czerni (i starych pikseli warstwy suchej) stoi tam szary
+            // naglowek z tytulem. Nic tam nie mozna narysowac - to nie canvas.
+            let over = self.cam.shift.1;
+            if over > 0.5 {
+                let w = self.renderer.size().0 as f32;
+                prims.push(UiPrim::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    // Piksel zapasu, zeby na styku z notatka nie bylo szpary.
+                    h: over + 1.0,
+                    color: OVER_BG,
+                    r: 0.0,
+                });
+                prims.push(UiPrim::Text {
+                    x: self.toolbar.thickness() + 24.0 * k,
+                    y: 0.0,
+                    w,
+                    h: over,
+                    text: if title.is_empty() {
+                        "untitled".into()
+                    } else {
+                        title.clone()
+                    },
+                    color: OVER_FG,
+                    font: UiFont::Ui,
+                });
+            }
             if self.mode == Mode::Lasso {
                 select::build_lasso(&self.lasso, &self.cam, k, &mut prims);
             } else if let Some(sel) = &self.selection {
@@ -4873,6 +4944,17 @@ fn open_note(
         doc.apply(op);
     }
     Ok((store, doc))
+}
+
+/// Opor gumki przy gornej krawedzi: ile tresc naprawde ustapi, gdy ciagniesz
+/// ja o `pull` pikseli ponad gore notatki. Funkcja rosnie coraz wolniej
+/// i nigdy nie przekracza `max` - dlatego czuc opor, a ekran nie odjezdza
+/// w nieskonczonosc. Ten sam ksztalt, co w gumce ekranow dotykowych.
+fn rubber(pull: f32, max: f32) -> f32 {
+    if pull <= 0.0 || max <= 0.0 {
+        return 0.0;
+    }
+    max * (1.0 - 1.0 / (pull / max + 1.0))
 }
 
 /// Co zrobic z autostartem przy starcie aplikacji (`App::autostart_sync`).
@@ -5561,6 +5643,25 @@ mod tests {
         // Wymuszony podglad (`W`) i wylaczona ochrona nie czekaja na nic.
         assert_eq!(waves_delay(0, want, true), None);
         assert_eq!(waves_delay(0, 0, false), None);
+    }
+
+    /// Gumka przy gornej krawedzi: ma ustepowac, ale coraz oporniej, i nigdy
+    /// nie odjechac dalej niz o `max` - inaczej "jestesmy na gorze" zmienia sie
+    /// w "mozna przewijac w nieskonczonosc".
+    #[test]
+    fn gumka_ustepuje_coraz_oporniej() {
+        let max = 96.0;
+        assert_eq!(rubber(0.0, max), 0.0);
+        assert_eq!(rubber(-50.0, max), 0.0);
+        // Ciagniesz o `max`, ustepuje polowa.
+        assert!((rubber(max, max) - max * 0.5).abs() < 0.01);
+        // Nawet ogromne ciagniecie nie przekracza maksimum.
+        assert!(rubber(100_000.0, max) < max);
+        // Monotoniczna, ale drugie 50 px daje mniej niz pierwsze.
+        let first = rubber(50.0, max);
+        let second = rubber(100.0, max) - first;
+        assert!(first < rubber(100.0, max));
+        assert!(second < first, "opor ma rosnac: {first} potem {second}");
     }
 
     /// Autostart: rejestr bywa czyszczony nie przez nas (antywirus zdejmujacy

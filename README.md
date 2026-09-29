@@ -240,6 +240,19 @@ szerokości. Odblokowany — canvas nieskończony w osi X, przewijanie w bok bez
 (dawniej granicą była kolumna poszerzona o treść poza nią, co pozwalało „odblokować"
 scroll w bok rysując po oddaleniu — stąd ta kłódka).
 
+**Sprężynowanie przy górnej krawędzi**: przewijanie ponad górę notatki jeszcze
+ustępuje, ale z oporem (`rubber`: im dalej ciągniesz, tym mniej ustępuje, nigdy dalej
+niż `OVER_MAX` = 96 px logicznych) i wraca samo — `OVER_DECAY` 0,78 na klatce 16 ms,
+czyli poniżej piksela w ~0,2 s. Chodzi o odczucie „jesteśmy na górze": widać, że scroll
+działa, a nie że się zaciął. `scroll_y` **stoi wtedy na zerze** — odsunięcie żyje
+w `Camera::shift` (ekranowe piksele doklejane na końcu, niewidoczne dla dokumentu),
+więc nic nie trafia do notatki. Odsłonięty pas nie jest canvasem: stoi w nim szary
+nagłówek z tytułem notatki, czysto kosmetyczny. Kreska zaczęta w trakcie powrotu
+najpierw odstawia treść na miejsce (`begin_stroke`), żeby nie wylądowała ponad górą,
+skąd nie dałoby się już do niej przewinąć. Warstwa sucha jest rysowana **bez** tego
+przesunięcia (`spectre_render::dry_cam`), a `present` przesuwa gotową bitmapę przy
+składaniu klatki — jeden offset zamiast przebudowy, więc animacja nic nie kosztuje.
+
 **Menu** (☰ na pasku narzędzi albo `M`) to panel z trzema zakładkami. U góry stały
 **nagłówek konta**: zdjęcie profilowe z GitHuba (albo inicjał, gdy niezalogowany),
 nazwa i stan logowania, licznik od ostatniej synchronizacji tykający co sekundę

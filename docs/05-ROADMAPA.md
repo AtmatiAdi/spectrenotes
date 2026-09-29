@@ -114,6 +114,18 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       **samym końcu paska**, za kłódką komputera (2026-09-15) — na początku, przy
       menu, łapał się przypadkiem; w doku u góry koniec paska trzyma zapas od
       uchwytu przesuwania okna, żeby dwa ⠿ nie stały obok siebie
+- [x] **Sprężynowanie przy górnej krawędzi** (2026-09-29, prośba użytkownika:
+      „canvas i tak daje się przesuwać, ale sprężynująco wraca do maksymalnej
+      wysokości — da to feeling, że jesteśmy na górze i widać będzie, że scroll
+      działa"). Opór gumki (`rubber`, asymptota w `OVER_MAX` = 96 px log.) i powrót
+      `OVER_DECAY` 0,78 na klatce 16 ms. `scroll_y` stoi na zerze — odsunięcie żyje
+      w `Camera::shift`, martwym od czasu porzucenia pixel shiftu, więc dokument nic
+      o nim nie wie, a wejście i tak trafia tam, gdzie widać (`to_canvas`).
+      Odsłonięty pas to nie canvas: szary nagłówek z tytułem, a kreska zaczęta
+      w trakcie powrotu najpierw odstawia treść na miejsce. Koszt animacji zerowy:
+      warstwa sucha rysuje się bez przesunięcia (`dry_cam`), a `present` przesuwa
+      gotową bitmapę jednym offsetem. Zmierzone na zrzutach: pociągnięcie o 340 px
+      daje pas 89 px (wzór przewiduje 88,7), po puszczeniu wraca do 0
 - [x] **Lasso bierze to, przez co przeszło** (2026-09-25, prośba użytkownika:
       „zaznaczenie na canvasie powinno zaznaczać wszystkie elementy przez które
       przechodzi, nie tylko elementy które w pełni okala"). Kreska wchodzi do

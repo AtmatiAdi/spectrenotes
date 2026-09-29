@@ -25,7 +25,11 @@ pub struct Camera {
     pub scroll_x: f32,
     pub scroll_y: f32,
     pub zoom: f32,
-    /// Dryf AMOLED (Z7) - ekranowe piksele dodawane na koncu, niewidoczne dla dokumentu.
+    /// Ekranowe piksele doklejane na samym koncu, niewidoczne dla dokumentu:
+    /// sprezynowanie przy gornej krawedzi (tresc odjezdza w dol, `scroll_y`
+    /// stoi na zerze). Wejscie idzie przez `to_canvas`, wiec rysuje sie tam,
+    /// gdzie widac; warstwa sucha jest rysowana bez tego przesuniecia
+    /// (`spectre_render::dry_cam`) i przesuwana dopiero przy skladaniu klatki.
     pub shift: (f32, f32),
 }
 
