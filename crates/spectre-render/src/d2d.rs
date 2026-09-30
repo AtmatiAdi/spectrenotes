@@ -17,8 +17,8 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_INTERPOLATION_MODE_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT,
-    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    D2D1_INTERPOLATION_MODE_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_PRIMITIVE_BLEND_MIN,
+    D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
@@ -314,6 +314,10 @@ pub struct DimMask {
     pub w: u32,
     pub h: u32,
     pub alpha: Vec<u8>,
+    /// Przesuniecie koloru pod fala (opcja): BGRA w tej samej siatce, laczone
+    /// z klatka przez minimum kanalow - jasny piksel swieci tylko tym, na co
+    /// pozwala barwa, czarne tlo zostaje czarne. Puste = wylaczone.
+    pub tint: Vec<u8>,
 }
 
 /// Krok siatki maski przyciemnienia w pikselach ekranu.
@@ -328,6 +332,7 @@ impl DimMask {
             w,
             h,
             alpha: vec![0; (w * h) as usize],
+            tint: Vec::new(),
         }
     }
 }
@@ -355,6 +360,8 @@ pub struct Renderer {
     cursor_brush: ID2D1Brush,
     /// Bitmapa maski przyciemnienia (Z7) i jej rozmiar; bufor BGRA do przeslania.
     dim_bmp: Option<(ID2D1Bitmap1, u32, u32)>,
+    /// Bitmapa barwy pod fala (`DimMask::tint`).
+    tint_bmp: Option<(ID2D1Bitmap1, u32, u32)>,
     dim_px: Vec<u8>,
     /// Avatar zalogowanego uzytkownika (naglowek menu): pedzel bitmapowy i rozmiar zrodla.
     avatar: Option<(ID2D1BitmapBrush1, u32, u32)>,
@@ -579,6 +586,7 @@ impl Renderer {
                 hud_bg,
                 cursor_brush,
                 dim_bmp: None,
+                tint_bmp: None,
                 dim_px: Vec::new(),
                 avatar: None,
                 thumbs: HashMap::new(),
@@ -1371,22 +1379,51 @@ impl Renderer {
         if m.w == 0 || m.h == 0 || m.alpha.len() != (m.w * m.h) as usize {
             return Ok(());
         }
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+            ..Default::default()
+        };
+        let size = D2D_SIZE_U {
+            width: m.w,
+            height: m.h,
+        };
+        // Srodek piksela maski (i, j) laduje w (i * DIM_STEP, j * DIM_STEP) ekranu.
+        let step = DIM_STEP as f32;
+        let dest = D2D_RECT_F {
+            left: -0.5 * step,
+            top: -0.5 * step,
+            right: (m.w as f32 - 0.5) * step,
+            bottom: (m.h as f32 - 0.5) * step,
+        };
+        // Przesuniecie koloru: minimum kanalow klatki i barwy. Przed
+        // przyciemnieniem - czern fali dalej gasi do zera.
+        if m.tint.len() == (m.w * m.h * 4) as usize {
+            if !matches!(&self.tint_bmp, Some((_, w, h)) if *w == m.w && *h == m.h) {
+                let bmp = self.ctx.CreateBitmap(size, None, 0, &props)?;
+                self.tint_bmp = Some((bmp, m.w, m.h));
+            }
+            if let Some((bmp, _, _)) = &self.tint_bmp {
+                bmp.CopyFromMemory(None, m.tint.as_ptr() as *const _, m.w * 4)?;
+                self.ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_MIN);
+                self.ctx.DrawBitmap(
+                    bmp,
+                    Some(&dest),
+                    1.0,
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    None,
+                    None,
+                );
+                self.ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+            }
+        }
         let need_new = !matches!(&self.dim_bmp, Some((_, w, h)) if *w == m.w && *h == m.h);
         if need_new {
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
-                ..Default::default()
-            };
-            let size = D2D_SIZE_U {
-                width: m.w,
-                height: m.h,
-            };
             let bmp = self.ctx.CreateBitmap(size, None, 0, &props)?;
             self.dim_bmp = Some((bmp, m.w, m.h));
         }
@@ -1399,14 +1436,6 @@ impl Renderer {
             self.dim_px.extend_from_slice(&[0, 0, 0, a]);
         }
         bmp.CopyFromMemory(None, self.dim_px.as_ptr() as *const _, m.w * 4)?;
-        // Srodek piksela maski (i, j) laduje w (i * DIM_STEP, j * DIM_STEP) ekranu.
-        let step = DIM_STEP as f32;
-        let dest = D2D_RECT_F {
-            left: -0.5 * step,
-            top: -0.5 * step,
-            right: (m.w as f32 - 0.5) * step,
-            bottom: (m.h as f32 - 0.5) * step,
-        };
         self.ctx.DrawBitmap(
             bmp,
             Some(&dest),

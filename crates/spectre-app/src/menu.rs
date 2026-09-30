@@ -111,6 +111,8 @@ pub enum Setting {
     WavesIdle,
     /// Jasnosc reszty notatki podczas fal (procent); 100 = bez przyciemnienia.
     WavesDim,
+    /// Pod fala jasne piksele swieca teczowo, nie tylko przygasaja.
+    WavesColor,
     /// Warstwa live w LAN (Etap 6) wl./wyl.
     Live,
     /// Automatyczne sprawdzanie wydan na GitHubie.
@@ -217,6 +219,7 @@ pub struct MenuState<'a> {
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     pub waves_idle_s: u32,
     pub waves_dim_pct: u32,
+    pub waves_color: bool,
     /// Stan gita (Etap 5) i ostatni komunikat synchronizacji.
     /// Repozytorium space'u domyslnego i konto GitHub (wspolne dla space'ow).
     pub sync: &'a SyncStatus,
@@ -1338,6 +1341,11 @@ impl Menu {
                         } else {
                             format!("{}%", s.waves_dim_pct)
                         },
+                    ),
+                    (
+                        Setting::WavesColor,
+                        "Color shift",
+                        on_off(s.waves_color).to_string(),
                     ),
                 ],
             ),

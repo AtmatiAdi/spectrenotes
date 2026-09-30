@@ -135,6 +135,27 @@ pub struct Waves {
     /// Ile maski zostaje, 0..1 - `1` w trakcie ochrony, w dol przy wyjsciu
     /// (`leave_gain`).
     keep: f32,
+    /// Ustawienie "Color shift": pod fala jasne piksele swieca teczowo (maska
+    /// `DimMask::tint`), wiec ten sam subpiksel nie swieci bez przerwy.
+    color_shift: bool,
+}
+
+/// Teczowe przesuniecie koloru pod fala: jak daleko od srodka pasa siega
+/// (mnoznik krycia fali - barwa jest pelna juz przy ~55% krycia, czyli tez
+/// na brzegu pasa, gdzie tresc jeszcze swieci), ile trwa pelny obieg barw
+/// i na jakiej dlugosci wzdluz pasa miesci sie cala tecza (ulamek przekatnej).
+const TINT_REACH: f32 = 1.8;
+const HUE_PERIOD_S: f32 = 24.0;
+const HUE_SPAN: f32 = 0.6;
+
+/// Barwa o odcieniu `h` (0..1), pelne nasycenie i jasnosc: (r, g, b) w 0..1.
+#[inline]
+fn rainbow(h: f32) -> (f32, f32, f32) {
+    let x = fract_pos(h) * 6.0;
+    let r = ((x - 3.0).abs() - 1.0).clamp(0.0, 1.0);
+    let g = (2.0 - (x - 2.0).abs()).clamp(0.0, 1.0);
+    let b = (2.0 - (x - 4.0).abs()).clamp(0.0, 1.0);
+    (r, g, b)
 }
 
 /// Czesc maski, ktora zostaje `t` sekund po wejsciu uzytkownika (1 -> 0).
@@ -153,6 +174,7 @@ impl Waves {
             row_buf: Vec::new(),
             brightness: 1.0,
             keep: 1.0,
+            color_shift: false,
         };
         w.layers = w.make_layers();
         w
@@ -257,6 +279,13 @@ impl Waves {
         self.keep = k.clamp(0.0, 1.0);
     }
 
+    pub fn set_color_shift(&mut self, on: bool) {
+        self.color_shift = on;
+        if !on {
+            self.mask.tint.clear();
+        }
+    }
+
     pub fn resize(&mut self, view: (u32, u32)) {
         if view != self.view {
             self.view = view;
@@ -289,6 +318,16 @@ impl Waves {
         let step = DIM_STEP as f32;
         let (mw, mh) = (self.mask.w as usize, self.mask.h as usize);
         self.row_buf.resize(mw, 1.0);
+        if self.color_shift {
+            self.mask.tint.resize(mw * mh * 4, 255);
+        }
+        // Tecza biegnie wzdluz pasow glownej warstwy i powoli wedruje w czasie.
+        let (ts, tc) = self.layers.first().map_or((0.0, 1.0), |l| l.sc);
+        let diag = ((self.view.0 as f32).powi(2) + (self.view.1 as f32).powi(2))
+            .sqrt()
+            .max(1.0);
+        let inv_span = 1.0 / (HUE_SPAN * diag);
+        let hue_t = self.t / HUE_PERIOD_S;
         for j in 0..mh {
             let y = j as f32 * step;
             // Zlozenie warstw jak krycie kolejnych czarnych szyb: przepuszczalnosc
@@ -303,6 +342,25 @@ impl Waves {
             for (out, &through) in row.iter_mut().zip(self.row_buf.iter()) {
                 *out = ((1.0 - through * b) * k + 0.5) as u8;
             }
+            if self.color_shift {
+                // Barwa dozwolona dla piksela: biel poza fala, tecza pod nia.
+                // Renderer bierze minimum kanalow klatki i tej barwy.
+                let tint = &mut self.mask.tint[j * mw * 4..(j + 1) * mw * 4];
+                for (i, (px, &through)) in tint
+                    .chunks_exact_mut(4)
+                    .zip(self.row_buf.iter())
+                    .enumerate()
+                {
+                    let x = i as f32 * step;
+                    let s = ((1.0 - through) * TINT_REACH).min(1.0) * self.keep;
+                    let (r, g, bl) = rainbow((y * tc - x * ts) * inv_span + hue_t);
+                    let ch = |v: f32| (255.0 - s * 255.0 * (1.0 - v) + 0.5) as u8;
+                    px[0] = ch(bl);
+                    px[1] = ch(g);
+                    px[2] = ch(r);
+                    px[3] = 255;
+                }
+            }
         }
         &self.mask
     }
@@ -311,6 +369,43 @@ impl Waves {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tecza_pod_fala_biel_poza_nia() {
+        // Odcienie: czerwien, zielen, niebieski na swoich miejscach.
+        assert_eq!(rainbow(0.0), (1.0, 0.0, 0.0));
+        assert_eq!(rainbow(1.0 / 3.0), (0.0, 1.0, 0.0));
+        let (r, g, b) = rainbow(2.0 / 3.0);
+        assert!(r < 1e-5 && g < 1e-5 && (b - 1.0).abs() < 1e-5);
+        let mut w = Waves::new((1200, 800), 5);
+        w.set_brightness(0.3);
+        w.set_color_shift(true);
+        for _ in 0..1000 {
+            w.step(0.06);
+        }
+        let m = w.step(0.06).clone();
+        assert_eq!(m.tint.len(), m.alpha.len() * 4);
+        // Tam, gdzie fala gasi mocno, barwa ma przygaszony co najmniej jeden
+        // kanal (piksel swieci teczowo); tam, gdzie fali prawie nie ma - biel.
+        let mut colored = 0;
+        let mut white = 0;
+        for (i, &a) in m.alpha.iter().enumerate() {
+            let px = &m.tint[i * 4..i * 4 + 3];
+            let min = *px.iter().min().unwrap();
+            if a > 230 && min < 60 {
+                colored += 1;
+            }
+            // 30% jasnosci miedzy pasami = krycie ~178: tam barwa bliska bieli.
+            if a < 182 && min > 200 {
+                white += 1;
+            }
+        }
+        assert!(colored > 100, "pod pasem teczowo: {colored}");
+        assert!(white > 100, "miedzy pasami biel: {white}");
+        // Wylaczone: brak mapy barwy.
+        w.set_color_shift(false);
+        assert!(w.step(0.06).tint.is_empty());
+    }
 
     #[test]
     fn wyjscie_blednie_lagodnie_do_zera() {
@@ -445,5 +540,12 @@ mod perf {
         let per = t0.elapsed().as_secs_f64() * 1e3 / n as f64;
         let (mw, mh) = (w.mask.w, w.mask.h);
         println!("krok maski {mw}x{mh}: {per:.3} ms");
+        w.set_color_shift(true);
+        let t0 = std::time::Instant::now();
+        for _ in 0..n {
+            w.step(0.06);
+        }
+        let per = t0.elapsed().as_secs_f64() * 1e3 / n as f64;
+        println!("krok maski z przesunieciem koloru: {per:.3} ms");
     }
 }

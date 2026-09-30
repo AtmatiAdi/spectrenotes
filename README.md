@@ -357,7 +357,14 @@ a praca na innym ekranie nie trzyma panelu rozświetlonego
 włączone: w zwykłym oknie fale nie startują i Spectre nie dostaje próśb, bo skok okna na
 cały ekran w trakcie pracy obok był uciążliwy; gdy ochrona czuwa, przed tytułem notatki
 stoi tarcza 🛡 — potwierdzenie, że okno jest tam, gdzie ma chronić; czas bezczynności
-10 s – 10 min; jasność notatki między pasami 0–100 %), *Sieć lokalna* (rysowanie na żywo), *System* (**autostart** — wpis
+10 s – 10 min; jasność notatki między pasami 0–100 %; **Color shift** — domyślnie
+wyłączone: pod falą jasne piksele nie tylko przygasają, ale świecą tęczowo (barwa
+wzdłuż pasa, obieg co 24 s), więc przez białą kreskę przechodzą kolejne kolory i ten
+sam subpiksel nie świeci bez przerwy; środek fali nadal gasi do czerni. Mapa barwy
+liczy się na CPU w tej samej siatce co maska (+0,28 ms na krok fal) i wchodzi jednym
+`DrawBitmap` z mieszaniem MIN — kanał piksela zostaje obcięty do barwy, czarne tło
+zostaje czarne. Wyjście z ochrony: fale i barwa bledną przez 0,9 s, pióro rysuje od
+pierwszej próbki), *Sieć lokalna* (rysowanie na żywo), *System* (**autostart** — wpis
 w kluczu `Run` użytkownika, aplikacja startuje z `--tray`, czyli schowana w trayu;
 **wybór pamięta też `config.txt`**, a `autostart_sync` odtwarza wpis przy starcie
 zainstalowanej kopii, gdy ktoś go skasował — antywirus zdejmujący „trwałość",

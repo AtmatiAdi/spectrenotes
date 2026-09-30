@@ -392,6 +392,8 @@ pub struct App {
     waves_forced: bool,
     /// Jasnosc notatki miedzy pasami podczas fal, procent (100 = bez).
     waves_dim_pct: u32,
+    /// "Color shift": pod fala jasne piksele swieca teczowo (`waves_color=1`).
+    waves_color: bool,
     /// Pelny ekran wlaczony przez fale (ochrona calego panelu) - do cofniecia.
     waves_fullscreen: bool,
     /// Czy w tym wejsciu ochrony zapisano juz klopot z pelnym ekranem.
@@ -819,6 +821,7 @@ impl App {
             waves_idle_s,
             waves_forced: false,
             waves_dim_pct,
+            waves_color: config.get("waves_color") == Some("1"),
             waves_fullscreen: false,
             waves_fs_warned: false,
             fs_fix_left: FS_FIX_TRIES,
@@ -2338,6 +2341,15 @@ impl App {
                 self.config.save();
                 if let Some(wv) = self.waves.as_mut() {
                     wv.set_brightness(self.waves_dim_pct as f32 / 100.0);
+                }
+            }
+            Setting::WavesColor => {
+                self.waves_color = !self.waves_color;
+                self.config
+                    .set("waves_color", if self.waves_color { "1" } else { "0" });
+                self.config.save();
+                if let Some(wv) = self.waves.as_mut() {
+                    wv.set_color_shift(self.waves_color);
                 }
             }
         }
@@ -4764,6 +4776,7 @@ impl App {
         let seed = nanos ^ (self.doc.lamport() as u32);
         let mut wv = Waves::new((w, h), seed.max(1));
         wv.set_brightness(self.waves_dim_pct as f32 / 100.0);
+        wv.set_color_shift(self.waves_color);
         self.waves = Some(wv);
         self.waves_leaving = None;
         self.waves_tick = Instant::now();
@@ -5235,6 +5248,7 @@ impl App {
                 autostart: self.autostart,
                 waves_idle_s: self.waves_idle_s,
                 waves_dim_pct: self.waves_dim_pct,
+                waves_color: self.waves_color,
                 sync: self.sync.status(0),
                 account: &self.sync.account,
                 sync_last: &self.sync.last,
