@@ -699,6 +699,7 @@ dependencies = [
  "socket2",
  "spectre-core",
  "spectre-proto",
+ "windows",
 ]
 
 [[package]]

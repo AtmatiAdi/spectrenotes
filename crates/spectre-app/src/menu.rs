@@ -160,8 +160,10 @@ pub enum MenuHit {
     ShareToggle,
     /// Biezaca notatka: ustaw albo zdejmij haslo udostepnienia.
     SharePassword,
-    /// Cudza udostepniona notatka (indeks w `MenuState::offers`): otworz / zamknij.
+    /// Cudza udostepniona notatka (indeks w `MenuState::offers`): otworz i pokaz.
     Offer(usize),
+    /// Biezaca notatka jest cudza z LAN: zamknij sesje (kopia zostaje).
+    LanClose,
     /// Staly adres peera: dodaj (pole tekstowe) / usun (indeks).
     AddPeer,
     Peer(usize),
@@ -834,7 +836,7 @@ impl Menu {
             let thumb = (o.state == OfferState::Open).then(|| thumb_key(&o.note));
             let c = Card {
                 hit: MenuHit::Offer(shown[slot]),
-                active: false,
+                active: s.notes.get(s.note_idx).is_some_and(|n| n.space == LAN_SLOT && n.id == o.note),
                 thumb,
                 title,
                 sub: &sub,
@@ -996,13 +998,17 @@ impl Menu {
         // do ustalenia w Etapie 6 1/2.
         y += 12.0 * k;
         y += self.section(list, y, "This note on LAN", out);
+        // Cudzej notatki nie udostepniamy dalej - mozna ja tylko zamknac.
+        let foreign = s.notes.get(s.note_idx).is_some_and(|n| n.space == LAN_SLOT);
         let label = match s.share {
+            _ if foreign => "Close this LAN note (your copy stays)".to_string(),
             None => "Share on LAN: off".to_string(),
             Some(false) => "Share on LAN: on, no password".to_string(),
             Some(true) => "Share on LAN: on, password set".to_string(),
         };
-        y += self.action_row(list, y, MenuHit::ShareToggle, &label, FG, out);
-        if s.share.is_some() {
+        let hit = if foreign { MenuHit::LanClose } else { MenuHit::ShareToggle };
+        y += self.action_row(list, y, hit, &label, FG, out);
+        if s.share.is_some() && !foreign {
             if let Some(buf) = self.share_edit.clone() {
                 y += self.edit_row(list, y, &buf, "password, Enter (empty = none)", out);
             } else {

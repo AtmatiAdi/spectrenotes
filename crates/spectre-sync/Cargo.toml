@@ -16,3 +16,14 @@ git2 = { version = "0.21", default-features = false, features = ["https", "vendo
 socket2 = "0.6"
 # Haslo udostepnionej notatki: klucz pochodny i dowod challenge-response (ADR 0008).
 sha2 = "0.10"
+
+# Lista interfejsow IPv4 (GetAdaptersAddresses): beacon idzie przez kazdy, nie
+# tylko przez ten z trasa domyslna - przy wlaczonym VPN to tunel, nie Wi-Fi.
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+]

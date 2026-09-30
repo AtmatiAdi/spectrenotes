@@ -29,12 +29,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use spectre_proto::codec::{decode_str, encode_str};
 use spectre_proto::varint::{put_u64, Reader};
 use spectre_proto::{AuthorId, Op, StrokeData};
 
 use crate::author::AuthorName;
+use crate::live::ifaces;
 use crate::live::replica::{encode_records, Key, Replica};
 use crate::live::share::{self, Key as ShareKey, Proof};
 use crate::live::wire::{next_frame, Frame, Msg, SharedNote, PROTO_VERSION};
@@ -55,6 +56,11 @@ fn mcast_port() -> u16 {
 
 const BEACON_MAGIC: &[u8; 8] = b"SPCTLV2\0";
 const BEACON_EVERY: Duration = Duration::from_secs(2);
+/// Co tyle odswiezamy liste interfejsow do multicastu.
+const IFACES_EVERY: Duration = Duration::from_secs(10);
+/// Tyle slyszymy beacony peera o mniejszym id bez polaczenia od niego, zanim
+/// polaczymy sie sami - beacony moga isc tylko w jedna strone (VPN, zapora).
+const LONE_BEACON_AFTER: Duration = Duration::from_secs(6);
 /// Po nieudanym polaczeniu do tego samego peera probujemy dopiero po tym czasie.
 const CONNECT_RETRY: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -248,6 +254,7 @@ impl Node {
                     wants: BTreeMap::new(),
                     static_peers: Vec::new(),
                     static_instance: HashMap::new(),
+                    heard: HashMap::new(),
                     enabled: true,
                     visible: true,
                     quit_requested: false,
@@ -340,17 +347,47 @@ fn multicast_socket() -> io::Result<UdpSocket> {
     Ok(s.into())
 }
 
+/// Dolacza grupe na kazdym nowym interfejsie; zwraca aktualna liste.
+/// Blad `join` (np. grupa juz dolaczona na tym interfejsie) jest nieistotny.
+fn join_all(udp: &UdpSocket, joined: &mut Vec<Ipv4Addr>) -> Vec<Ipv4Addr> {
+    let now = ifaces::local_ipv4();
+    let s = SockRef::from(udp);
+    for a in &now {
+        if !joined.contains(a) {
+            let _ = s.join_multicast_v4(&MCAST_ADDR, a);
+            joined.push(*a);
+        }
+    }
+    now
+}
+
 fn beacon_loop(udp: UdpSocket, beacon: Vec<u8>, discovering: Arc<AtomicBool>, tx: Sender<Cmd>) {
     let target = SocketAddrV4::new(MCAST_ADDR, mcast_port());
     let mut last_sent: Option<Instant> = None;
     let mut buf = [0u8; 512];
+    // Interfejsy zmieniaja sie w locie (VPN, Wi-Fi, stacja dokujaca).
+    let mut joined = Vec::new();
+    let mut ifs = join_all(&udp, &mut joined);
+    let mut ifs_at = Instant::now();
     loop {
         if discovering.load(Ordering::Relaxed)
             && last_sent
                 .map(|t| t.elapsed() >= BEACON_EVERY)
                 .unwrap_or(true)
         {
-            let _ = udp.send_to(&beacon, target);
+            if ifs_at.elapsed() >= IFACES_EVERY {
+                ifs = join_all(&udp, &mut joined);
+                ifs_at = Instant::now();
+            }
+            let s = SockRef::from(&udp);
+            if ifs.is_empty() {
+                let _ = udp.send_to(&beacon, target);
+            }
+            for a in &ifs {
+                if s.set_multicast_if_v4(a).is_ok() {
+                    let _ = udp.send_to(&beacon, target);
+                }
+            }
             last_sent = Some(Instant::now());
         }
         match udp.recv_from(&mut buf) {
@@ -426,6 +463,9 @@ struct State {
     static_peers: Vec<SocketAddr>,
     /// Instancja widziana pod stalym adresem - zeby nie laczyc sie ponownie,
     /// gdy to polaczenie od tamtej strony przezylo deduplikacje.
+    /// Od kiedy slyszymy beacony instancji o mniejszym id (ktora powinna
+    /// polaczyc sie z nami) - patrz `LONE_BEACON_AFTER`.
+    heard: HashMap<u64, Instant>,
     static_instance: HashMap<SocketAddr, u64>,
     enabled: bool,
     visible: bool,
@@ -1123,11 +1163,16 @@ impl State {
             return;
         }
         if self.conns.values().any(|c| c.instance == Some(b.instance)) {
+            self.heard.remove(&b.instance);
             return;
         }
-        // Laczy ten z mniejszym id; drugi czeka na `accept`.
+        // Laczy ten z mniejszym id; drugi czeka na `accept` - chyba ze czeka
+        // za dlugo: wtedy tamten nie slyszy naszych beaconow i laczymy sami.
         if self.instance > b.instance {
-            return;
+            let since = *self.heard.entry(b.instance).or_insert_with(Instant::now);
+            if since.elapsed() < LONE_BEACON_AFTER {
+                return;
+            }
         }
         let addr = SocketAddr::new(src.ip(), b.port);
         if let Some(t) = self.connecting.get(&addr) {

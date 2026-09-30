@@ -463,6 +463,9 @@ pub struct App {
     lan: LanConfig,
     /// Cudze notatki, ktore peer potwierdzil (`Opened ok`): notatka -> instancja.
     lan_open: HashMap<String, u64>,
+    /// Cudza notatka, na ktora przejsc, gdy tylko bedzie na dysku (dotknieta
+    /// w "Shared on LAN", sesja jeszcze sie otwiera).
+    lan_show: Option<String>,
     remote_wet: HashMap<AuthorId, RemoteWet>,
     peer_cursors: HashMap<AuthorId, (f32, f32)>,
     /// Numer paczki probek biezacej kreski (0 = poczatek) - do `LiveJob::Wet`.
@@ -854,6 +857,7 @@ impl App {
             live,
             lan,
             lan_open: HashMap::new(),
+            lan_show: None,
             remote_wet: HashMap::new(),
             peer_cursors: HashMap::new(),
             wet_seq: 0,
@@ -2099,6 +2103,7 @@ impl App {
                 }
             }
             MenuHit::ShareToggle => self.toggle_share(),
+            MenuHit::LanClose => self.close_lan_note(),
             MenuHit::SharePassword => {
                 self.menu.share_edit = Some(String::new());
                 unsafe {
@@ -3975,9 +3980,16 @@ impl App {
                         })
                         .unwrap_or_else(|| note.clone());
                     if ok {
+                        let show = self.lan_show.as_deref() == Some(note.as_str());
                         self.lan_open.insert(note, instance);
+                        if show {
+                            self.show_lan_note();
+                        }
                         self.status = format!("LAN: opened \"{title}\" from {author_dir}");
                     } else {
+                        if self.lan_show.as_deref() == Some(note.as_str()) {
+                            self.lan_show = None;
+                        }
                         // Zle haslo (albo cofniete udostepnienie): nie ponawiac
                         // z tym samym kluczem - uzytkownik wpisze je jeszcze raz.
                         self.lan.opened.remove(&note);
@@ -3993,6 +4005,9 @@ impl App {
         }
         if list_changed {
             self.reload_entries();
+            if self.lan_show.as_ref().is_some_and(|n| self.lan_open.contains_key(n)) {
+                self.show_lan_note();
+            }
             self.arm_thumbs(true);
             repaint = true;
         }
@@ -4249,17 +4264,22 @@ impl App {
         }
     }
 
-    /// Dotkniecie cudzej notatki: otworz (z haslem, gdy chroniona) albo zamknij.
+    /// Dotkniecie cudzej notatki: pokaz ja; nieotwarta najpierw sie otwiera
+    /// (z haslem, gdy chroniona) i pokazuje, gdy tylko dojdzie. Zamykanie to
+    /// osobna pozycja ("Close this LAN note") - wczesniej to samo dotkniecie
+    /// otwieralo i zamykalo, a notatki nie dalo sie zobaczyc (30 IX 2026).
     fn offer_tap(&mut self, i: usize) {
         let Some(o) = self.visible_offers().get(i).map(|o| (*o).clone()) else {
             return;
         };
+        self.lan_show = Some(o.note.clone());
+        if self.lan_open.contains_key(&o.note) {
+            self.show_lan_note();
+            return;
+        }
         if self.lan.opened.contains_key(&o.note) {
-            self.lan.opened.remove(&o.note);
-            self.lan_open.remove(&o.note);
-            self.lan.save();
-            self.live.send(LiveJob::Close(o.note));
-            self.status = "LAN: note closed (your copy stays)".to_string();
+            // Sesja juz sie otwiera - pokazemy po `Opened`.
+            self.status = "LAN: opening...".to_string();
             return;
         }
         if o.protected {
@@ -4270,6 +4290,51 @@ impl App {
             return;
         }
         self.open_offer(&o.note, None);
+    }
+
+    /// Przejdz na `lan_show`, jesli jej operacje sa juz na dysku; inaczej
+    /// zostaje w kolejce do nastepnej zmiany listy.
+    fn show_lan_note(&mut self) {
+        let Some(note) = self.lan_show.clone() else {
+            return;
+        };
+        let find = |notes: &[NoteEntry]| {
+            notes
+                .iter()
+                .position(|e| e.space == LAN_SLOT && e.id == note)
+        };
+        let mut idx = find(&self.notes);
+        if idx.is_none() {
+            self.reload_entries();
+            idx = find(&self.notes);
+        }
+        if let Some(idx) = idx {
+            self.lan_show = None;
+            self.switch_note(idx);
+        }
+    }
+
+    /// Zamkniecie biezacej cudzej notatki: sesja konczy sie, lokalna kopia
+    /// zostaje; wracamy do ostatniej wlasnej notatki.
+    fn close_lan_note(&mut self) {
+        let e = &self.notes[self.note_idx];
+        if e.space != LAN_SLOT {
+            return;
+        }
+        let note = e.id.clone();
+        self.lan.opened.remove(&note);
+        self.lan_open.remove(&note);
+        self.lan.save();
+        self.live.send(LiveJob::Close(note));
+        let back = self
+            .config
+            .get("last_note")
+            .and_then(|id| self.notes.iter().position(|e| e.space != LAN_SLOT && e.id == id))
+            .or_else(|| self.notes.iter().rposition(|e| e.space != LAN_SLOT));
+        if let Some(i) = back {
+            self.switch_note(i);
+        }
+        self.status = "LAN: note closed (your copy stays)".to_string();
     }
 
     fn open_offer(&mut self, note: &str, key: Option<spectre_sync::live::share::Key>) {

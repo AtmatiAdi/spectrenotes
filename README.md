@@ -434,11 +434,13 @@ notatka powstaje w space'ie bieżącej. Rejestr space'ów tej maszyny:
 space domyślny.
 
 **Rysowanie na żywo w sieci (Etap 6).** Urządzenia w tej samej sieci **znajdują się
-same** (multicast, bez internetu) i łączą po TCP; przez Tailscale — adres `host:port`
+same** (multicast na każdym aktywnym interfejsie — włączony VPN nie zabiera wykrywania
+z Wi-Fi; gdy beacony idą tylko w jedną stronę, łączy się ta strona, która słyszy) i łączą po TCP; przez Tailscale — adres `host:port`
 wpisany w *Konto → Sieć lokalna*. **Sieć widzi tylko to, co udostępnisz** (ADR 0008):
 w menu *Notatki → This note on LAN* włączasz udostępnienie bieżącej notatki i opcjonalnie
 ustawiasz hasło; u innych pojawia się ona w sekcji *Shared on LAN* (z kłódką, gdy
-chroniona) — dotknięcie otwiera (pyta o hasło), ponowne zamyka, kopia zostaje.
+chroniona) — dotknięcie otwiera (pyta o hasło) i przechodzi do niej; *Close this LAN note*
+w *This note on LAN* kończy sesję, kopia zostaje.
 Otwarta notatka płynie w obie strony: kreska drugiej osoby pojawia się **w trakcie
 rysowania**, jej rysik jako kropka, tytuł natychmiast — niezależnie od GitHuba.
 Hasło nie idzie siecią (dowód SHA-256 z kluczem pochodnym i nonce'ami), ale treść
