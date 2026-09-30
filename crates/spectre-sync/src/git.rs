@@ -340,19 +340,38 @@ impl Git {
             )?;
             tree
         };
-        self.checkout_force(&new_tree)?;
         let mut diff_opts = DiffOptions::new();
         let diff =
             self.repo
                 .diff_tree_to_tree(Some(&our_tree), Some(&new_tree), Some(&mut diff_opts))?;
-        Ok(diff_paths(&diff))
+        let paths = diff_paths(&diff);
+        self.checkout_paths(&new_tree, &paths)?;
+        Ok(paths)
     }
 
-    /// Drzewo robocze = `tree`. Nadpisuje pliki innych autorow (tylko one sie
-    /// zmieniaja), wlasnych nie rusza, bo sa identyczne w obu drzewach.
+    /// Drzewo robocze = `tree`. Tylko na start z origin, gdy lokalnie nic nie ma.
     fn checkout_force(&self, tree: &Tree) -> Result<()> {
         let mut co = git2::build::CheckoutBuilder::new();
         co.force();
+        self.repo.checkout_tree(tree.as_object(), Some(&mut co))?;
+        Ok(())
+    }
+
+    /// Do drzewa roboczego tylko pliki zmienione przez merge (pliki innych
+    /// autorow i `folders.txt`). Pelny `force` nadpisywal tez wlasne pliki,
+    /// do ktorych aplikacja dopisala cos miedzy commitem a merge'em (fetch
+    /// trwa) - kreski i operacje z LAN wracaly do stanu z commita.
+    fn checkout_paths(&self, tree: &Tree, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.force();
+        // Sciezki doslownie, nie jako wzorce (nazwy autorow maja `@`, `.`).
+        co.disable_pathspec_match(true);
+        for p in paths {
+            co.path(p);
+        }
         self.repo.checkout_tree(tree.as_object(), Some(&mut co))?;
         Ok(())
     }
@@ -569,6 +588,85 @@ mod tests {
         let log = a.log_note("N1", 10).unwrap();
         assert!(log.len() >= 2, "{log:?}");
         assert!(log[0].unix_s > 0);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Aplikacja dopisuje do plikow w trakcie synchronizacji (kreska, operacje
+    /// z LAN) - miedzy commitem a merge'em mija czas fetch. Merge nie moze
+    /// cofnac tych dopisow do wersji z commita (30 IX 2026: trzy kreski
+    /// zniknely u odbiorcy LAN po scaleniu, bo `via-*` wrocil do stanu z
+    /// commita sprzed sekundy).
+    #[test]
+    fn merge_nie_cofa_dopisow_po_commicie() {
+        let base = tmp("dopisy");
+        let bare = base.join("remote.git");
+        let mut opts = RepositoryInitOptions::new();
+        opts.bare(true).initial_head(BRANCH);
+        Repository::init_opts(&bare, &opts).unwrap();
+        let url = bare.to_string_lossy().replace('\\', "/");
+
+        let root_a = base.join("a");
+        fs::create_dir_all(root_a.join("notes/N1/ops/test@a")).unwrap();
+        fs::write(root_a.join("notes/N1/ops/test@a/000001.ops"), b"A1").unwrap();
+        let a = Git::open_or_init(&root_a, &author("a")).unwrap();
+        a.set_remote(&url).unwrap();
+        a.sync("a: pierwszy").unwrap();
+
+        let root_b = base.join("b");
+        let own = root_b.join("notes/N1/ops/test@b/000001.ops");
+        let via = root_b.join("notes/N1/ops/test@a/via-test@b-000001.ops");
+        fs::create_dir_all(own.parent().unwrap()).unwrap();
+        fs::write(&own, b"B1").unwrap();
+        let b = Git::open_or_init(&root_b, &author("b")).unwrap();
+        b.set_remote(&url).unwrap();
+        b.sync("b: pierwszy").unwrap();
+        fs::create_dir_all(via.parent().unwrap()).unwrap();
+        fs::write(&via, b"V1").unwrap();
+        b.sync("b: via").unwrap();
+
+        // A dopisuje; B robi commit, a potem - jakby w trakcie fetch - dopisuje
+        // do wlasnego pliku i do `via-*`, i dopiero scala.
+        fs::write(root_a.join("notes/N1/ops/test@a/000001.ops"), b"A1A2").unwrap();
+        a.sync("a: drugi").unwrap();
+        fs::write(&own, b"B1B2").unwrap();
+        b.commit_all("b: drugi").unwrap();
+        fs::write(&own, b"B1B2B3").unwrap();
+        fs::write(&via, b"V1V2").unwrap();
+        let mut t = Transfer::default();
+        b.fetch(&mut t).unwrap();
+        let merged = b.merge().unwrap();
+        assert_eq!(merged, vec!["notes/N1/ops/test@a/000001.ops".to_string()]);
+        assert_eq!(
+            fs::read(root_b.join("notes/N1/ops/test@a/000001.ops")).unwrap(),
+            b"A1A2"
+        );
+        assert_eq!(fs::read(&own).unwrap(), b"B1B2B3", "wlasny dopis po commicie");
+        assert_eq!(fs::read(&via).unwrap(), b"V1V2", "via-* dopisany po commicie");
+        // Nastepny cykl zabiera dopisy normalnie.
+        b.sync("b: trzeci").unwrap();
+        let tree = b.head_commit().unwrap().tree().unwrap();
+        let blob = tree
+            .get_path(Path::new("notes/N1/ops/test@b/000001.ops"))
+            .unwrap()
+            .to_object(&b.repo)
+            .unwrap()
+            .peel_to_blob()
+            .unwrap();
+        assert_eq!(blob.content(), b"B1B2B3");
+
+        // Usuniecie po stronie A (przeniesienie notatki) dochodzi do B.
+        let moved = root_a.join("notes/N2/ops/test@a/000001.ops");
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        fs::write(&moved, b"N2").unwrap();
+        a.sync("a: N2").unwrap();
+        b.sync("b: po N2").unwrap();
+        assert!(root_b.join("notes/N2/ops/test@a/000001.ops").exists());
+        fs::remove_dir_all(root_a.join("notes/N2")).unwrap();
+        a.sync("a: bez N2").unwrap();
+        let r = b.sync("b: po usunieciu N2").unwrap();
+        assert!(r.merged.iter().any(|f| f.starts_with("notes/N2/")), "{:?}", r.merged);
+        assert!(!root_b.join("notes/N2/ops/test@a/000001.ops").exists());
 
         let _ = fs::remove_dir_all(&base);
     }

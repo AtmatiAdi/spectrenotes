@@ -46,12 +46,18 @@ pub const MCAST_PORT: u16 = 47941;
 /// uruchomiona na tej samej maszynie prawdziwa aplikacja slyszalaby ich
 /// beacony, laczyla sie z wezlami testowymi i psula asercje (16 IX 2026:
 /// `heartbeat_zrzuca_milczacego_peera` dostal Hello od "adi@laptop").
+/// `SPECTRENOTES_LAN_PORT` przenosi wykrywanie na inny port: instancje
+/// testowe widza wtedy tylko siebie, a nie aplikacje w calej sieci
+/// (30 IX 2026 test polaczyl sie z prawdziwymi komputerami i otworzyl
+/// cudza notatke).
 fn mcast_port() -> u16 {
     if cfg!(test) {
-        MCAST_PORT + 1
-    } else {
-        MCAST_PORT
+        return MCAST_PORT + 1;
     }
+    std::env::var("SPECTRENOTES_LAN_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(MCAST_PORT)
 }
 
 const BEACON_MAGIC: &[u8; 8] = b"SPCTLV2\0";
