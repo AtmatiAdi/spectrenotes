@@ -27,6 +27,10 @@ const DIM_IN_S: f32 = 25.0;
 const STRIPES_DELAY_S: f32 = 12.0;
 const STRIPES_IN_S: f32 = 35.0;
 const SLOW_START: f32 = 0.25;
+/// Wyjscie po wejsciu uzytkownika: maska blednie do zera przez tyle sekund
+/// (smoothstep), pasy plyna dalej. Notatka juz wtedy nalezy do uzytkownika -
+/// rysik rysuje od pierwszej probki, tylko obraz rozjasnia sie lagodnie.
+pub const LEAVE_S: f32 = 0.9;
 
 /// Smoothstep 0..1 dla `t / len`, obcinany.
 #[inline]
@@ -128,6 +132,14 @@ pub struct Waves {
     /// Jasnosc notatki miedzy pasami, 0..1 (z ustawien) - reszta ekranu tez
     /// przygasa, tylko lagodniej niz pod pasem.
     brightness: f32,
+    /// Ile maski zostaje, 0..1 - `1` w trakcie ochrony, w dol przy wyjsciu
+    /// (`leave_gain`).
+    keep: f32,
+}
+
+/// Czesc maski, ktora zostaje `t` sekund po wejsciu uzytkownika (1 -> 0).
+pub fn leave_gain(t: f32) -> f32 {
+    1.0 - ease(t, LEAVE_S)
 }
 
 impl Waves {
@@ -140,6 +152,7 @@ impl Waves {
             mask: DimMask::for_view(view.0, view.1),
             row_buf: Vec::new(),
             brightness: 1.0,
+            keep: 1.0,
         };
         w.layers = w.make_layers();
         w
@@ -240,6 +253,10 @@ impl Waves {
         self.brightness = b.clamp(0.0, 1.0);
     }
 
+    pub fn set_keep(&mut self, k: f32) {
+        self.keep = k.clamp(0.0, 1.0);
+    }
+
     pub fn resize(&mut self, view: (u32, u32)) {
         if view != self.view {
             self.view = view;
@@ -282,8 +299,9 @@ impl Waves {
             }
             let row = &mut self.mask.alpha[j * mw..(j + 1) * mw];
             // Miedzy pasami swieci `b`, pod pasem odpowiednio mniej.
+            let k = self.keep * 255.0;
             for (out, &through) in row.iter_mut().zip(self.row_buf.iter()) {
-                *out = ((1.0 - through * b) * 255.0 + 0.5) as u8;
+                *out = ((1.0 - through * b) * k + 0.5) as u8;
             }
         }
         &self.mask
@@ -293,6 +311,33 @@ impl Waves {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wyjscie_blednie_lagodnie_do_zera() {
+        assert_eq!(leave_gain(0.0), 1.0);
+        assert_eq!(leave_gain(LEAVE_S), 0.0);
+        let mut prev = 1.0;
+        for i in 1..=20 {
+            let g = leave_gain(LEAVE_S * i as f32 / 20.0);
+            assert!(g <= prev, "nie rosnie");
+            prev = g;
+        }
+        // Maska z `keep` = 0.5 ma polowe krycia.
+        let mut w = Waves::new((800, 600), 3);
+        w.set_brightness(0.0);
+        for _ in 0..1000 {
+            w.step(0.06);
+        }
+        let full = *w.step(0.0).alpha.iter().max().unwrap();
+        w.set_keep(0.5);
+        let half = *w.step(0.0).alpha.iter().max().unwrap();
+        assert!(
+            (half as i32 - full as i32 / 2).abs() <= 1,
+            "{full} -> {half}"
+        );
+        w.set_keep(0.0);
+        assert!(w.step(0.0).alpha.iter().all(|&a| a == 0));
+    }
 
     #[test]
     fn fale_rozjasniaja_sie_stopniowo_i_plyna() {

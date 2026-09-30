@@ -33,10 +33,13 @@ pub fn px(v: f32, scale: f32) -> f32 {
 pub const BAR_THICK: f32 = 48.0;
 /// Strefa przy krawedzi, ktora odslania pasek.
 pub const EDGE_ZONE: f32 = 16.0;
-/// Czas chowania paska: wsuwa sie w swoja krawedz i blednie. Krotko - to ma
-/// byc "znikniecie, ktore widac", nie animacja, na ktora sie czeka; pasek
-/// wraca natychmiast, gdy rysik wroci do krawedzi.
-pub const HIDE_MS: f32 = 220.0;
+/// Czas chowania paska: wsuwa sie w swoja krawedz i blednie - spokojnie, to
+/// ma byc "znikniecie, ktore widac", a nikt na nie nie czeka.
+pub const HIDE_MS: f32 = 360.0;
+/// Czas wysuwania paska z krawedzi. Krocej niz chowanie, bo uzytkownik wlasnie
+/// po niego siega - a przyciski i tak dzialaja od pierwszej klatki (trafienia
+/// sa liczone w miejscu docelowym).
+pub const SHOW_MS: f32 = 280.0;
 /// Ikonka "ekran chroniony" przed tytulem notatki (Segoe UI Symbol; tarcza).
 pub const PROTECTED_GLYPH: char = '\u{1F6E1}';
 pub const ITEM_LEN: f32 = 38.0;
@@ -201,6 +204,9 @@ pub struct Toolbar {
     /// ekranie) jeszcze sie rysuje - wsuwany w krawedz i coraz bledszy - ale
     /// juz nie przyjmuje dotkniec. `None` = nic sie nie chowa.
     hiding: Option<Instant>,
+    /// Poczatek wysuwania (`show`): przez `SHOW_MS` pasek wyjezdza z krawedzi
+    /// i nabiera koloru.
+    showing: Option<Instant>,
     /// Ustawienie: pasek nie chowa sie po bezczynnosci (swiadome odstepstwo od Z7).
     pub pinned: bool,
     items: Vec<Item>,
@@ -236,6 +242,7 @@ impl Toolbar {
             dock,
             visible: false,
             hiding: None,
+            showing: None,
             pinned: false,
             items: Vec::new(),
             hot: None,
@@ -276,9 +283,34 @@ impl Toolbar {
         (t < 1.0).then_some(t)
     }
 
-    /// Czy trwa animacja chowania - wtedy klatki trzeba rysowac bez wejscia.
+    /// Postep wysuwania 0..1, gdy trwa.
+    fn show_progress(&self) -> Option<f32> {
+        if !self.visible {
+            return None;
+        }
+        let t = self.showing?.elapsed().as_secs_f32() * 1000.0 / SHOW_MS;
+        (t < 1.0).then_some(t)
+    }
+
+    /// Czy trwa animacja chowania albo wysuwania - wtedy klatki trzeba
+    /// rysowac bez wejscia.
     pub fn animating(&self) -> bool {
-        self.hide_progress().is_some()
+        self.hide_progress().is_some() || self.show_progress().is_some()
+    }
+
+    /// Pasek wraca: wysuwa sie z krawedzi. Gdy byl w polowie chowania, rusza
+    /// z miejsca, w ktorym jest, a nie od krawedzi - bez przeskoku.
+    pub fn show(&mut self) {
+        if self.visible {
+            return;
+        }
+        // Wysuniecie o `(1 - s)^2` grubosci (`build`); chowanie bylo w `p^2`.
+        // Ten sam odstep od krawedzi: s0 = 1 - sqrt(p^2) = 1 - p.
+        let s0 = self.hide_progress().map_or(0.0, |p| 1.0 - p);
+        self.visible = true;
+        self.hiding = None;
+        self.showing =
+            Some(Instant::now() - std::time::Duration::from_secs_f32(s0 * SHOW_MS / 1000.0));
     }
 
     /// Schowanie paska od zaraz, z animacja (bezczynnosc, start ochrony AMOLED).
@@ -681,8 +713,7 @@ impl Toolbar {
     pub fn hover(&mut self, x: f32, y: f32) -> bool {
         let was_visible = self.visible;
         if self.in_edge_zone(x, y) {
-            self.visible = true;
-            self.hiding = None;
+            self.show();
         }
         let hot = if self.visible && self.bar_rect().contains(x, y) {
             self.hit_at(x, y)
@@ -751,15 +782,21 @@ impl Toolbar {
 
     pub fn build(&self, s: &UiState, out: &mut Vec<UiPrim>) {
         let hide = self.hide_progress();
+        let show = self.show_progress();
         // Chowanie: ruch przyspiesza w strone krawedzi (kwadrat postepu), kolor
         // blednie liniowo - koniec ruchu zbiega sie z ostatnimi widocznymi pikselami.
-        let slide = hide.map_or(0.0, |p| p * p);
-        let alpha = hide.map_or(1.0, |p| 1.0 - p);
+        // Wysuwanie odwrotnie: szybko z krawedzi, lagodnie na miejsce.
+        let (slide, alpha) = match (hide, show) {
+            (Some(p), _) => (p * p, 1.0 - p),
+            (None, Some(s)) => ((1.0 - s) * (1.0 - s), s),
+            _ => (0.0, 1.0),
+        };
+        let moving = hide.is_some() || show.is_some();
         if self.tabs_shown() {
             let start = out.len();
             self.build_tabs(s, out);
             // W pelnym ekranie zakladki chodza z paskiem: wsuwaja sie w gorna krawedz.
-            if !self.chrome && hide.is_some() {
+            if !self.chrome && moving {
                 let up = self.px(TAB_H) + 10.0 * self.scale;
                 shift_fade(&mut out[start..], 0.0, -slide * up, alpha);
             }
@@ -773,7 +810,7 @@ impl Toolbar {
         }
         let start = out.len();
         self.build_toolbar(s, out);
-        if hide.is_some() {
+        if moving {
             let d = slide * self.thickness();
             let (dx, dy) = match self.dock {
                 Dock::Left => (-d, 0.0),

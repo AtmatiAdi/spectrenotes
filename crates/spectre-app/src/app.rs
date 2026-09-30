@@ -337,6 +337,10 @@ pub struct App {
     fullscreen: Fullscreen,
     /// Fale przyciemnienia po bezczynnosci; `None` = ekran w pelnej jasnosci.
     waves: Option<Waves>,
+    /// Fale po wejsciu uzytkownika: ochrona juz sie skonczyla (`waves` puste,
+    /// UI wraca, rysik rysuje), a maska jeszcze przez `amoled::LEAVE_S`
+    /// blednie na wierzchu klatki - ekran rozjasnia sie lagodnie.
+    waves_leaving: Option<(Waves, Instant)>,
     waves_tick: Instant,
     /// Ostatnie przestawienie timera bezczynnosci (nie robimy tego 266 razy/s).
     waves_armed: Instant,
@@ -787,6 +791,7 @@ impl App {
             pan_tearing: true,
             fullscreen: Fullscreen::default(),
             waves: None,
+            waves_leaving: None,
             waves_tick: Instant::now(),
             waves_armed: Instant::now(),
             activity_pos: (0.0, 0.0),
@@ -1081,6 +1086,9 @@ impl App {
             let t = self.toolbar.hover(pos.0, pos.1);
             if t && self.toolbar.visible {
                 self.arm_ui_timer();
+            }
+            if self.toolbar.animating() {
+                self.arm_anim();
             }
             m || t
         };
@@ -1775,7 +1783,7 @@ impl App {
     fn toggle_menu(&mut self) {
         self.menu.toggle();
         if self.menu.open {
-            self.toolbar.visible = true;
+            self.show_toolbar();
         } else if !self.toolbar.pinned {
             // Po zamknieciu pasek zyje jak zwykle: znika po chwili bez rysika.
             self.arm_ui_timer();
@@ -1785,6 +1793,14 @@ impl App {
     fn arm_ui_timer(&self) {
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_UI, UI_HIDE_MS, None);
+        }
+    }
+
+    /// Pasek wraca z wysuwaniem (`Toolbar::show`) - klatki animacji do konca.
+    fn show_toolbar(&mut self) {
+        self.toolbar.show();
+        if self.toolbar.animating() {
+            self.arm_anim();
         }
     }
 
@@ -1871,7 +1887,14 @@ impl App {
             let next = self.cam.shift.1 * OVER_DECAY;
             self.cam.shift.1 = if next < 0.5 { 0.0 } else { next };
         }
-        if !self.toolbar.animating() && self.cam.shift.1 <= 0.0 {
+        if self
+            .waves_leaving
+            .as_ref()
+            .is_some_and(|(_, t)| t.elapsed().as_secs_f32() >= crate::amoled::LEAVE_S)
+        {
+            self.waves_leaving = None;
+        }
+        if !self.toolbar.animating() && self.cam.shift.1 <= 0.0 && self.waves_leaving.is_none() {
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
             }
@@ -2132,7 +2155,7 @@ impl App {
                 self.toolbar_pin = !self.toolbar_pin;
                 self.toolbar.pinned = self.toolbar_pin;
                 if self.toolbar_pin {
-                    self.toolbar.visible = true;
+                    self.show_toolbar();
                 }
                 self.config
                     .set("toolbar_pin", if self.toolbar_pin { "1" } else { "0" });
@@ -4682,7 +4705,13 @@ impl App {
     fn stop_waves(&mut self) -> bool {
         // Wejscie w trakcie wysuwania: fale jeszcze nie ruszyly i juz nie rusza.
         self.waves_pending = false;
-        let had = self.waves.take().is_some();
+        let taken = self.waves.take();
+        let had = taken.is_some();
+        // Schowane okno nie ma czego rozjasniac.
+        if let Some(wv) = taken.filter(|_| !self.hidden) {
+            self.waves_leaving = Some((wv, Instant::now()));
+            self.arm_anim();
+        }
         self.waves_fs_warned = false;
         self.fs_fix_left = FS_FIX_TRIES;
         if had {
@@ -4691,7 +4720,7 @@ impl App {
         // Pasek "zawsze widoczny" schowal sie pod fale - ma wrocic razem z
         // notatka, nie dopiero po podjechaniu rysikiem do krawedzi (issue #9).
         if had && self.toolbar.pinned {
-            self.toolbar.visible = true;
+            self.show_toolbar();
         }
         // Okno wyboru notatki tez schowalo sie pod fale (statyczne kafelki
         // wypalaja jak menu) - uzytkownik nadal nie wybral, wiec wraca.
@@ -4736,6 +4765,7 @@ impl App {
         let mut wv = Waves::new((w, h), seed.max(1));
         wv.set_brightness(self.waves_dim_pct as f32 / 100.0);
         self.waves = Some(wv);
+        self.waves_leaving = None;
         self.waves_tick = Instant::now();
         self.apply_cursor();
         if self.menu.open {
@@ -5246,13 +5276,20 @@ impl App {
         }
 
         // Fale (Z7): krok symulacji o czas od poprzedniej klatki, tylko gdy trwaja.
-        let dim = match self.waves.as_mut() {
-            Some(wv) => {
+        let dim = match (self.waves.as_mut(), self.waves_leaving.as_mut()) {
+            (Some(wv), _) => {
                 let dt = self.waves_tick.elapsed().as_secs_f32().min(0.5);
                 self.waves_tick = Instant::now();
                 Some(wv.step(dt))
             }
-            None => None,
+            // Wyjscie: te same pasy plyna dalej, maska blednie do zera.
+            (None, Some((wv, since))) => {
+                let dt = self.waves_tick.elapsed().as_secs_f32().min(0.5);
+                self.waves_tick = Instant::now();
+                wv.set_keep(crate::amoled::leave_gain(since.elapsed().as_secs_f32()));
+                Some(wv.step(dt))
+            }
+            (None, None) => None,
         };
         let tail = std::mem::take(&mut self.tail_buf);
         let color = PALETTE[self.color_idx];
@@ -5703,6 +5740,9 @@ pub unsafe extern "system" fn wndproc(
             let (x, y) = window::nc_point_to_client(hwnd, lparam);
             app.activity_move((x, y));
             let ui_changed = app.toolbar.hover(x, y);
+            if app.toolbar.animating() {
+                app.arm_anim();
+            }
             app.last_screen = (x, y);
             app.hover = true;
             if ui_changed {
