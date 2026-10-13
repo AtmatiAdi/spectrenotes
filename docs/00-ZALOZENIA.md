@@ -98,12 +98,15 @@ Konsekwencje:
   żeby renderer nie zakładał, że kolumna treści jest przyklejona do krawędzi okna.
 - **ustalone (Etap 2):** kolumna ma 2880 jednostek canvasu — tyle, żeby na
   docelowym panelu 2880 px zoom „dopasuj szerokość" wynosił 1,0 i pióro miało
-  dokładnie tę grubość, która została oceniona jako dobra. Na innym oknie/monitorze
-  notatka **otwiera się** dopasowana do szerokości okna. Zmiana rozmiaru okna zoomu
-  już nie rusza — w mniejszym oknie widać mniej canvasu, w większym więcej, a kreska
-  ma zawsze ten sam rozmiar fizyczny; `0` (albo procent na pasku) dopasowuje na
-  żądanie. Przy zoomie większym niż dopasowanie przycisk boczny przewija
-  także w poziomie.
+  dokładnie tę grubość, która została oceniona jako dobra.
+- **ustalone (X 2026): canvas się nie skaluje — piksel to piksel.** Notatka otwiera
+  się w 100% (jednostka canvasu = piksel fizyczny) na każdym ekranie i w każdej
+  orientacji: 4K pokazuje więcej canvasu, HD mniej, panel obrócony do pionu — pionowy
+  wycinek od lewej krawędzi kolumny. Wcześniej notatka otwierała się dopasowana do
+  szerokości okna, więc w pionie była pomniejszona (62,5%). Rozmiar okna i obrót
+  zoomu nie ruszają; zoom zmienia tylko użytkownik, `0` (albo procent na pasku)
+  wraca do 100%. Gdy kolumna nie mieści się w oknie, przycisk boczny przewija
+  także w poziomie — przy zablokowanym widoku w granicach kolumny.
 
 ### Z10. Dotyk wyłączony w trybie notatki
 Rysuje **wyłącznie** pióro. Dotyk jest ignorowany całkowicie, nie warunkowo.

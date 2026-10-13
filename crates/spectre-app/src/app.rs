@@ -320,10 +320,10 @@ pub struct App {
     last_erase_canvas: Option<(f32, f32)>,
     /// Poczatek przewijania rysikiem: (pozycja ekranowa, (scroll_x, scroll_y)).
     pan_start: ((f32, f32), (f32, f32)),
-    /// Pierwsze `WM_SIZE` jeszcze nie przyszlo. Tylko wtedy zoom dopasowuje sie
-    /// sam do okna - pozniejsze zmiany rozmiaru zostawiaja go w spokoju.
+    /// Pierwsze `WM_SIZE` jeszcze nie przyszlo. Tylko wtedy widok ustawia sie na start
+    /// (`home_view`) - pozniejsze zmiany rozmiaru zostawiaja go w spokoju.
     first_size: bool,
-    /// Widok zablokowany: kolumna wysrodkowana, bez przesuwania w poziomie
+    /// Widok zablokowany: przesuwanie w poziomie tylko w granicach kolumny
     /// (zoom nadal wolno). Odblokowany: canvas nieskonczony w osi X.
     view_locked: bool,
 
@@ -754,7 +754,7 @@ impl App {
         }
         live.send(LiveJob::Peers(lan.peer_addrs()));
         let mut cam = Camera::default();
-        cam.fit_width(w as f32);
+        cam.home(w as f32);
 
         Ok(Self {
             hwnd,
@@ -1680,15 +1680,15 @@ impl App {
         }
     }
 
-    /// Przesuniecie w poziomie. Widok zablokowany: kolumna zawsze wysrodkowana
-    /// (`x` ignorowane) - to jest bezwzgledny srodek notatki. Odblokowany:
-    /// canvas nieskonczony, bez ograniczen. Warstwa sucha nie ma sciezki
+    /// Przesuniecie w poziomie. Widok zablokowany: w granicach kolumny (bez
+    /// tresci poza nia - rysowanie po oddaleniu nie poszerza zakresu), a gdy
+    /// kolumna sie miesci, wysrodkowana. Odblokowany: canvas nieskonczony. Warstwa sucha nie ma sciezki
     /// przyrostowej dla osi X - pelna przebudowa, ktora kosztuje pojedyncze ms.
     fn scroll_x_to(&mut self, x: f32) {
         let old = self.cam.scroll_x;
         let w = self.renderer.size().0 as f32;
         if self.view_locked {
-            self.cam.center_column(w);
+            self.cam.scroll_x_to(x, w, None);
         } else {
             self.cam.scroll_x_free(x);
         }
@@ -1722,31 +1722,36 @@ impl App {
         self.zoom_at(factor, w as f32 * 0.5, h as f32 * 0.5);
     }
 
-    /// Zoom "dopasuj szerokosc" (Z9): kolumna na cala szerokosc okna. Stan
-    /// poczatkowy notatki i jawne zyczenie uzytkownika (procent na pasku, `0`) -
-    /// nie chodzi za oknem: zmiana rozmiaru okna zoomu nie rusza.
-    fn fit_width(&mut self) {
+    /// Stan poczatkowy notatki (Z9): 100%, piksel canvasu = piksel ekranu, lewa
+    /// krawedz kolumny. Ekran sie nie dopasowuje - mniejszy albo obrocony do
+    /// pionu pokazuje mniejszy wycinek; zoom zmienia tylko uzytkownik.
+    fn home_view(&mut self) {
         let w = self.renderer.size().0 as f32;
-        self.cam.fit_width(w);
+        self.cam.home(w);
         let bottom = self.content_bottom();
         let h = self.view_h();
         self.cam.scroll_to(self.cam.scroll_y, bottom, h);
         self.dirty = Dirty::Full;
     }
 
-    /// Klodka widoku na pasku. Zablokowanie wraca do dopasowanej szerokosci
-    /// i srodka kolumny - to "dom" notatki; odblokowanie zostawia widok tam,
-    /// gdzie jest, i od tej chwili wolno jechac w bok bez konca.
+    /// Procent na pasku i `0`: z powrotem 100% wokol srodka okna.
+    fn zoom_actual(&mut self) {
+        self.zoom_center(1.0 / self.cam.zoom);
+    }
+
+    /// Klodka widoku na pasku. Zablokowanie wraca w granice kolumny;
+    /// odblokowanie zostawia widok tam, gdzie jest, i od tej chwili wolno
+    /// jechac w bok bez konca.
     fn toggle_view_lock(&mut self) {
         self.view_locked = !self.view_locked;
         self.config
             .set("view_lock", if self.view_locked { "1" } else { "0" });
         self.config.save();
         if self.view_locked {
-            self.fit_width();
+            self.scroll_x_to(self.cam.scroll_x);
         }
         self.status = if self.view_locked {
-            "view locked: column centred, no sideways scroll".to_string()
+            "view locked: sideways scroll only within the column".to_string()
         } else {
             "view unlocked: scroll sideways over the infinite canvas".to_string()
         };
@@ -1939,7 +1944,7 @@ impl App {
             Action::Paste => self.paste_clipboard(),
             Action::ZoomOut => self.zoom_center(0.8),
             Action::ZoomIn => self.zoom_center(1.25),
-            Action::ZoomFit => self.fit_width(),
+            Action::ZoomActual => self.zoom_actual(),
             Action::ViewLock => self.toggle_view_lock(),
             Action::LockPc => {
                 if !window::lock_workstation() {
@@ -2921,7 +2926,7 @@ impl App {
                 self.remote_wet.clear();
                 self.peer_cursors.clear();
                 self.cam = Camera::default();
-                self.fit_width();
+                self.home_view();
                 self.status.clear();
                 self.sync_entry();
                 self.remember_note();
@@ -5903,7 +5908,7 @@ pub unsafe extern "system" fn wndproc(
                 // M
                 0x4D => app.toggle_menu(),
                 // 0 - dopasuj szerokosc kolumny do okna
-                0x30 => app.fit_width(),
+                0x30 => app.zoom_actual(),
                 // W - fale przyciemnienia od razu (podglad bez czekania 3 min)
                 0x57 => {
                     app.toggle_forced_waves();
@@ -6144,13 +6149,12 @@ pub unsafe extern "system" fn wndproc(
             // (`toggle_fullscreen`) - okno go tylko odslania.
             if app.slide.is_none() && matches!(app.renderer.resize(w, h), Ok(true)) {
                 app.dirty = Dirty::Full;
-                // Zmiana rozmiaru okna **nie rusza zoomu** - w mniejszym oknie widac
-                // mniej canvasu, w wiekszym wiecej, kreska ma ten sam rozmiar
-                // fizyczny. Dopasowanie szerokosci jest tylko na start notatki
-                // i na zadanie (procent na pasku, `0`).
+                // Zmiana rozmiaru okna (i obrot ekranu) **nie rusza zoomu** - w mniejszym
+                // oknie widac mniej canvasu, w wiekszym wiecej, kreska ma ten sam rozmiar
+                // fizyczny (Z9: piksel = piksel).
                 if app.first_size {
                     app.first_size = false;
-                    app.fit_width();
+                    app.home_view();
                 } else {
                     app.scroll_x_to(app.cam.scroll_x);
                     app.scroll_to(app.cam.scroll_y);

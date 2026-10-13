@@ -203,8 +203,8 @@ Dwuklik na uchwycie maksymalizuje, snap i `Win+strzałki` działają jak zwykle.
 zadokowany, i chowa się po 2,5 s bezczynności (Z7). **Jest dokowalny**: złap za
 uchwyt (kropki ⠿ na **samym końcu** paska) i upuść przy dowolnej krawędzi — góra/dół
 przełącza go w orientację poziomą. Kolejno: menu, pióro, gumka, zaznaczanie, kolory, grubość
-(co 0,1 px), cofnij/ponów, kopiuj/wklej, lupa −/+, procent zoomu (tap = dopasuj
-szerokość), **kłódka widoku**, dalej **kłódka komputera** (jak `Win+L`), a na samym
+(co 0,1 px), cofnij/ponów, kopiuj/wklej, lupa −/+, procent zoomu (tap = z powrotem
+100%), **kłódka widoku**, dalej **kłódka komputera** (jak `Win+L`), a na samym
 końcu uchwyt przesuwania paska. Uchwyt był kiedyś pierwszy, tuż przy menu, i łapał
 się zamiast przycisków — na końcu, za kłódką, jest mniej pod ręką. W pasku u góry
 koniec paska trzyma zapas od uchwytu przesuwania okna, żeby dwa takie same ⠿ nie
@@ -245,9 +245,9 @@ przełączenie notatki i space'u). Wklejona treść ląduje na środku widoku i 
 akcja historii (`Document::add_strokes`), więc jedno `Ctrl+Z` je zdejmuje.
 
 **Widok zablokowany / odblokowany** (kłódka widoku na pasku, `view_lock` w config):
-zablokowany — kolumna notatki zawsze wyśrodkowana (jej środek to bezwzględny środek
-notatki), zoom wolno, przesuwanie w poziomie nie; zablokowanie wraca do dopasowanej
-szerokości. Odblokowany — canvas nieskończony w osi X, przewijanie w bok bez granic
+zablokowany — przewijanie w bok (przycisk boczny) tylko w granicach kolumny notatki
+(2880 jednostek, szerokość panelu), a gdy cała kolumna mieści się w oknie, jest
+wyśrodkowana; zoom wolno. Odblokowany — canvas nieskończony w osi X, przewijanie w bok bez granic
 (dawniej granicą była kolumna poszerzona o treść poza nią, co pozwalało „odblokować"
 scroll w bok rysując po oddaleniu — stąd ta kłódka).
 
@@ -468,7 +468,7 @@ druga instancja z innym `COMPUTERNAME` i `APPDATA` oraz własnym katalogiem spac
 |---|---|
 | pióro | rysowanie |
 | rysik przy krawędzi doku | pasek: uchwyt, menu, pióro, gumka, kolory, grubość, undo/redo, lupa, procent, kłódka widoku, kłódka komputera (notatki: menu, `PgUp/PgDn`, `Ctrl+N`) |
-| `Ctrl+kółko`, `0` | zoom wokół kursora, powrót do „dopasuj szerokość" (kolumna 2880 jednostek) |
+| `Ctrl+kółko`, `0` | zoom wokół kursora, powrót do 100% (piksel canvasu = piksel ekranu) |
 | **przycisk gumki (trzymany)** | gumka kresek — usuwa całe kreski, które dotknie |
 | **przycisk boczny (trzymany)** | przewijanie (w poziomie tylko przy odblokowanym widoku) |
 | kółko myszy, `Home` | przewijanie, powrót na górę |
@@ -563,10 +563,11 @@ skalowane w trakcie rysowania: każdy prostokąt, glif i czcionka DWrite ma
 policzony docelowy rozmiar (ostrość i brak kosztu skalowania rastra). Po
 przeniesieniu okna na monitor o innym DPI `WM_DPICHANGED` przelicza układ i
 odtwarza czcionki. **Canvas jest osobny** — kreski żyją we własnych jednostkach,
-zoom to sprawa kamery, nie DPI. **Zmiana rozmiaru okna zoomu nie rusza**: notatka
-otwiera się dopasowana do szerokości okna, a potem mniejsze okno pokazuje mniej
-canvasu, a większe więcej — kreska ma zawsze ten sam rozmiar fizyczny. Dopasowanie
-jest na żądanie: procent na pasku albo `0`.
+zoom to sprawa kamery, nie DPI. **Canvas się nie skaluje**: notatka otwiera się
+w 100%, gdzie jednostka canvasu to piksel fizyczny ekranu. Ekran 4K pokazuje więcej
+canvasu, HD mniej, a obrócony do pionu — pionowy wycinek (od lewej krawędzi kolumny).
+Zmiana rozmiaru okna i obrót zoomu nie ruszają; zoom zmienia tylko użytkownik (lupa,
+`Ctrl+kółko`), a procent na pasku albo `0` wraca do 100%.
 
 ### Testy GUI bez ruszania myszy
 

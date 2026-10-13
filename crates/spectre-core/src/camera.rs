@@ -8,16 +8,20 @@
 //!
 //! `screen = (canvas - (scroll_x, scroll_y)) * zoom + pixel_shift`
 //!
-//! Kolumna ma `COLUMN_W` jednostek. Przy zoomie "dopasuj szerokosc" zajmuje
-//! cala szerokosc okna. Os X ma dwa tryby (klodka widoku w aplikacji):
-//! **zablokowany** - kolumna zawsze wysrodkowana (`center_column`), **odblokowany** -
-//! przesuniecie bez ograniczen (`scroll_x_free`), canvas w bok jest nieskonczony.
+//! Canvas sie nie skaluje do ekranu: przy zoomie 1,0 jednostka canvasu to piksel
+//! fizyczny (`home`). Wiekszy ekran albo okno pokazuje wiekszy wycinek, mniejszy -
+//! mniejszy; obrocony do pionu - pionowy wycinek. Zoom zmienia tylko uzytkownik.
+//!
+//! Kolumna ma `COLUMN_W` jednostek. Os X ma dwa tryby (klodka widoku w aplikacji):
+//! **zablokowany** - przesuniecie w granicach kolumny, a gdy cala sie miesci,
+//! kolumna wysrodkowana (`scroll_x_to`); **odblokowany** - bez ograniczen
+//! (`scroll_x_free`), canvas w bok jest nieskonczony.
 
 use crate::document::Bbox;
 
-/// Szerokosc kolumny w jednostkach canvasu. Wybrana tak, zeby na docelowym panelu
-/// (2880 px fizycznych) zoom "dopasuj szerokosc" wynosil 1.0 - grubosc piora
-/// 3,2 px, ktora zostala oceniona jako dobra, jest wtedy dokladnie 3,2 px.
+/// Szerokosc kolumny w jednostkach canvasu - szerokosc docelowego panelu (2880 px
+/// fizycznych w poziomie), czyli tego, co widac na nim przy 100%. Granica
+/// przewijania w bok przy zablokowanym widoku i szerokosc stron PDF.
 pub const COLUMN_W: f32 = 2880.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,14 +77,11 @@ impl Camera {
         }
     }
 
-    /// Zoom, przy ktorym kolumna zajmuje dokladnie szerokosc okna.
-    pub fn fit_zoom(view_w: f32) -> f32 {
-        (view_w / COLUMN_W).max(0.05)
-    }
-
-    /// Ustawia zoom "dopasuj szerokosc" i centruje kolumne.
-    pub fn fit_width(&mut self, view_w: f32) {
-        self.zoom = Self::fit_zoom(view_w);
+    /// Widok startowy notatki: 100% (piksel = piksel), lewa krawedz kolumny -
+    /// albo kolumna wysrodkowana, gdy okno jest od niej szersze.
+    pub fn home(&mut self, view_w: f32) {
+        self.zoom = 1.0;
+        self.scroll_x = 0.0;
         self.clamp_x(view_w, None);
     }
 
@@ -94,14 +95,6 @@ impl Camera {
         let max = (content_bottom + view_h * 0.5 / self.zoom).max(0.0);
         let clamped = y.clamp(0.0, max);
         self.scroll_y = (clamped * self.zoom).round() / self.zoom;
-    }
-
-    /// Widok **zablokowany**: srodek kolumny na srodku okna - jedyna
-    /// dopuszczalna pozycja X, niezaleznie od zoomu i od tresci poza kolumna.
-    /// To jest "bezwzgledny srodek" notatki.
-    pub fn center_column(&mut self, view_w: f32) {
-        let view = view_w / self.zoom;
-        self.scroll_x = ((COLUMN_W - view) * 0.5 * self.zoom).round() / self.zoom;
     }
 
     /// Widok **odblokowany**: canvas w osi X jest nieskonczony, przesuniecie
@@ -140,10 +133,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dopasowanie_centruje_i_kwantuje() {
-        let mut c = Camera::default();
-        c.fit_width(1440.0);
-        assert!((c.zoom - 0.5).abs() < 1e-6);
+    fn start_piksel_w_piksel_centruje_tylko_szersze_okno() {
+        let mut c = Camera {
+            zoom: 0.5,
+            scroll_x: 300.0,
+            ..Default::default()
+        };
+        // Panel w pionie (1800 px): 100% i lewa krawedz kolumny, bez dopasowania.
+        c.home(1800.0);
+        assert_eq!(c.zoom, 1.0);
+        assert_eq!(c.scroll_x, 0.0);
+        // 4K (3840 px): kolumna sie miesci - margines 480 z kazdej strony.
+        c.home(3840.0);
+        assert_eq!(c.scroll_x, -480.0);
+        c.zoom = 0.5;
+        c.clamp_x(1440.0, None);
         assert_eq!(c.scroll_x, 0.0, "kolumna na cala szerokosc: brak marginesu");
         c.zoom = 0.25;
         c.clamp_x(1440.0, None);
@@ -174,18 +178,20 @@ mod tests {
     }
 
     #[test]
-    fn widok_zablokowany_centruje_kolumne_odblokowany_nie_ogranicza() {
+    fn widok_zablokowany_w_kolumnie_odblokowany_nie_ogranicza() {
         // Zoom 0.5, okno 1440 px = 2880 jednostek = cala kolumna: brak marginesu.
         let mut c = Camera {
             zoom: 0.5,
             ..Default::default()
         };
-        c.center_column(1440.0);
+        c.scroll_x_to(700.0, 1440.0, None);
         assert_eq!(c.scroll_x, 0.0);
-        // Zoom 1.0: okno pokazuje polowe kolumny, srodek kolumny na srodku okna.
+        // Zoom 1.0: okno pokazuje polowe kolumny - w bok tylko do jej konca.
         c.zoom = 1.0;
-        c.center_column(1440.0);
-        assert_eq!(c.scroll_x, 720.0);
+        c.scroll_x_to(700.0, 1440.0, None);
+        assert_eq!(c.scroll_x, 700.0);
+        c.scroll_x_to(9000.0, 1440.0, None);
+        assert_eq!(c.scroll_x, 1440.0);
         // Odblokowany: dowolna wartosc, takze daleko poza kolumna.
         c.scroll_x_free(-9000.0);
         assert_eq!(c.scroll_x, -9000.0);

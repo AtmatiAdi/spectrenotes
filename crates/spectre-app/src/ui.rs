@@ -150,7 +150,7 @@ pub enum Action {
     ZoomOut,
     ZoomIn,
     /// Procent zoomu jako przycisk: dopasuj szerokosc kolumny do okna.
-    ZoomFit,
+    ZoomActual,
     /// Widok zablokowany (kolumna wysrodkowana, bez scrolla w poziomie)
     /// albo odblokowany (canvas nieskonczony w osi X).
     ViewLock,
@@ -356,7 +356,7 @@ impl Toolbar {
             (Action::Paste, 0.0, item),
             (Action::ZoomOut, px(8.0), item),
             (Action::ZoomIn, 0.0, item),
-            (Action::ZoomFit, 0.0, px(ZOOM_W)),
+            (Action::ZoomActual, 0.0, px(ZOOM_W)),
             (Action::ViewLock, 0.0, item),
         ]);
 
@@ -1226,7 +1226,7 @@ impl Toolbar {
                         });
                     }
                 }
-                Action::ZoomFit => out.push(UiPrim::Text {
+                Action::ZoomActual => out.push(UiPrim::Text {
                     x: r.x,
                     y: r.y,
                     w: r.w,
