@@ -1,6 +1,6 @@
 //! Okno Win32 i drobiazgi wokol niego, wspolne dla aplikacji i demo.
 
-use windows::core::{Result, PCWSTR};
+use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateRectRgn, GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, SetWindowRgn, MONITORINFO,
@@ -130,7 +130,7 @@ impl Placement {
                 ..Default::default()
             };
             if GetMonitorInfoW(mon, &mut mi).as_bool() {
-                mi.rcWork
+                maximized_rect(mi.rcMonitor, mi.rcWork)
             } else {
                 normal
             }
@@ -308,6 +308,66 @@ fn monitor_rects(hwnd: HWND) -> Option<(RECT, RECT)> {
     }
 }
 
+/// Prostokat zmaksymalizowanego okna na monitorze `mon` o obszarze roboczym `work`.
+///
+/// Zwykle to obszar roboczy. Gdy pasek zadan nie rezerwuje miejsca (Spectre
+/// zdejmuje rezerwacje, autoukrywanie), obszar roboczy to caly monitor - a okno
+/// bez paska tytulowego zakrywajace caly monitor powloka bierze za pelny ekran
+/// i chowa pod nim pasek. Wtedy okno jest o 1 px nizsze od strony paska: ten
+/// piksel lezy pod paskiem, a okno przestaje udawac pelny ekran (tak samo
+/// Chromium przy autoukrywanym pasku).
+fn maximized_rect(mon: RECT, work: RECT) -> RECT {
+    if work != mon {
+        return work;
+    }
+    let mut r = work;
+    match taskbar_edge(mon) {
+        Edge::Top => r.top += 1,
+        Edge::Left => r.left += 1,
+        Edge::Right => r.right -= 1,
+        Edge::Bottom => r.bottom -= 1,
+    }
+    r
+}
+
+enum Edge {
+    Top,
+    Left,
+    Right,
+    Bottom,
+}
+
+/// Krawedz, przy ktorej stoi pasek zadan na monitorze `mon` (glowny pasek albo
+/// pasek dodatkowego monitora). Bez paska - dol, tam stoi domyslnie.
+fn taskbar_edge(mon: RECT) -> Edge {
+    for class in [w!("Shell_TrayWnd"), w!("Shell_SecondaryTrayWnd")] {
+        let mut prev = None;
+        while let Ok(h) = unsafe { FindWindowExW(None, prev, class, None) } {
+            prev = Some(h);
+            let mut r = RECT::default();
+            if unsafe { GetWindowRect(h, &mut r) }.is_err() {
+                continue;
+            }
+            let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+            if cx < mon.left || cx >= mon.right || cy < mon.top || cy >= mon.bottom {
+                continue;
+            }
+            return if r.right - r.left >= r.bottom - r.top {
+                if cy < (mon.top + mon.bottom) / 2 {
+                    Edge::Top
+                } else {
+                    Edge::Bottom
+                }
+            } else if cx < (mon.left + mon.right) / 2 {
+                Edge::Left
+            } else {
+                Edge::Right
+            };
+        }
+    }
+    Edge::Bottom
+}
+
 /// Obsluga WM_GETMINMAXINFO: polozenie i rozmiar okna **zmaksymalizowanego**.
 ///
 /// Domyslnie Windows maksymalizuje okno z `WS_THICKFRAME` na obszar roboczy
@@ -317,13 +377,17 @@ fn monitor_rects(hwnd: HWND) -> Option<(RECT, RECT)> {
 /// w pelny ekran poczatek okna przeskakiwal z (-9,-9) do (0,0) - DWM pokazywal
 /// stara klatke przesunieta o te 9 px, zanim aplikacja narysowala nowa.
 ///
-/// Tu zmaksymalizowane okno zajmuje **dokladnie obszar roboczy**, a w pelnym
+/// Tu zmaksymalizowane okno zajmuje **obszar roboczy** (`maximized_rect`), a w pelnym
 /// ekranie (`fullscreen`) caly monitor. Wspolrzedne w `MINMAXINFO` sa
 /// wzgledem lewego gornego rogu monitora, na ktorym okno jest maksymalizowane
 /// (tak robi np. GLFW dla okien bez ramki).
 pub fn min_max_info(hwnd: HWND, lparam: LPARAM, fullscreen: bool) -> LRESULT {
     if let Some((mon, work)) = monitor_rects(hwnd) {
-        let r = if fullscreen { mon } else { work };
+        let r = if fullscreen {
+            mon
+        } else {
+            maximized_rect(mon, work)
+        };
         let mmi = lparam.0 as *mut MINMAXINFO;
         unsafe {
             (*mmi).ptMaxPosition = POINT {

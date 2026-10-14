@@ -1739,19 +1739,19 @@ impl App {
         self.zoom_center(1.0 / self.cam.zoom);
     }
 
-    /// Klodka widoku na pasku. Zablokowanie wraca w granice kolumny;
-    /// odblokowanie zostawia widok tam, gdzie jest, i od tej chwili wolno
-    /// jechac w bok bez konca.
+    /// Klodka widoku na pasku. Zablokowanie wraca do "domu" notatki: 100%
+    /// i lewa krawedz kolumny (`home_view`); odblokowanie zostawia widok tam,
+    /// gdzie jest, i od tej chwili wolno jechac w bok bez konca.
     fn toggle_view_lock(&mut self) {
         self.view_locked = !self.view_locked;
         self.config
             .set("view_lock", if self.view_locked { "1" } else { "0" });
         self.config.save();
         if self.view_locked {
-            self.scroll_x_to(self.cam.scroll_x);
+            self.home_view();
         }
         self.status = if self.view_locked {
-            "view locked: sideways scroll only within the column".to_string()
+            "view locked: back to 100%, sideways scroll only within the column".to_string()
         } else {
             "view unlocked: scroll sideways over the infinite canvas".to_string()
         };

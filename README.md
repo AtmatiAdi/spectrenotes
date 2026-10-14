@@ -148,7 +148,11 @@ Technicznie pełny ekran to **maksymalizacja do całego monitora**: okno (bez
 `WM_GETMINMAXINFO` obszarem roboczym, a w pełnym ekranie prostokątem monitora.
 Zmaksymalizowane okno zajmuje więc dokładnie obszar roboczy od (0,0) — bez ramki
 wysuniętej 9 px poza ekran — i przejście do pełnego ekranu to tylko dolna krawędź
-rosnąca o pasek zadań; treść nie drga. Ta krawędź **wysuwa się** jak pasek w trybie
+rosnąca o pasek zadań; treść nie drga. Gdy pasek zadań nie rezerwuje miejsca
+(Spectre zdejmuje rezerwację, autoukrywanie), obszar roboczy to cały monitor, a okno
+bez paska tytułowego zakrywające cały monitor powłoka bierze za pełny ekran i chowa
+pod nim pasek — wtedy zmaksymalizowane okno jest o 1 px mniejsze od strony paska
+(`window::maximized_rect`), ten piksel leży pod paskiem. Ta krawędź **wysuwa się** jak pasek w trybie
 autoukrywania (`window::Slide`, 220 ms z wygaszaniem): bufor swapchaina od razu dostaje
 rozmiar monitora, a przy `DXGI_SCALING_NONE` okno go tylko odsłania — nic się nie
 skaluje i warstwa sucha nie jest przebudowywana w każdej klatce. Kroki idą w rytmie
@@ -247,7 +251,8 @@ akcja historii (`Document::add_strokes`), więc jedno `Ctrl+Z` je zdejmuje.
 **Widok zablokowany / odblokowany** (kłódka widoku na pasku, `view_lock` w config):
 zablokowany — przewijanie w bok (przycisk boczny) tylko w granicach kolumny notatki
 (2880 jednostek, szerokość panelu), a gdy cała kolumna mieści się w oknie, jest
-wyśrodkowana; zoom wolno. Odblokowany — canvas nieskończony w osi X, przewijanie w bok bez granic
+wyśrodkowana; zoom wolno, a zablokowanie wraca do 100% i lewej krawędzi kolumny.
+Odblokowany — canvas nieskończony w osi X, przewijanie w bok bez granic
 (dawniej granicą była kolumna poszerzona o treść poza nią, co pozwalało „odblokować"
 scroll w bok rysując po oddaleniu — stąd ta kłódka).
 
