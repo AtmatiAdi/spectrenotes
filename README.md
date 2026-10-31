@@ -601,6 +601,19 @@ wtedy **bez zabierania pierwszego planu** (`SWP_NOACTIVATE`) — aplikacja, w
 której się pracuje, zostaje aktywna. Bez tego ustawienia chronimy ekran, na
 którym użytkownik właśnie pracuje, i każde wejście odsuwa fale.
 
+### Utrata GPU (puste okno po przepięciu monitorów)
+
+Przepięcie monitorów, odpięcie stacji albo reset sterownika potrafi zabrać
+urządzenie D3D: każde `Present` kończy się wtedy błędem, a nieudane `ResizeBuffers`
+zostawia renderer bez bufora okna — okno pokazywało samą ramkę z pulpitem pod spodem
+aż do restartu. Teraz po każdej klatce `Renderer::healthy` (swapchain, bufor,
+`GetDeviceRemovedReason`) i przy problemie `Renderer::reset`: urządzenie, swapchain
+i D2D od nowa (~95 ms), strony PDF, skala UI i awatar przechodzą, reszta dociąga się
+sama. Swapchain flip jest jeden na okno, więc stary jest zwalniany przed nowym, z
+opróżnieniem kontekstów D2D/D3D (bez tego `E_ACCESSDENIED`). Nieudana próba —
+kolejna za 500 ms. Każde zdarzenie: `display: renderer rebuilt …` w `partner.log`.
+Wejście testowe `lose-gpu` symuluje utratę bufora.
+
 ### DPI i piksele
 
 Całe UI aplikacji (pasek, zakładki, menu) jest liczone w **pikselach logicznych**

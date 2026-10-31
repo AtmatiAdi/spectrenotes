@@ -40,7 +40,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, IDXGIAdapter1, IDXGIDevice, IDXGIDevice3, IDXGIFactory6, IDXGISurface,
     IDXGISwapChain1, IDXGISwapChain2, DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_SOFTWARE,
-    DXGI_CREATE_FACTORY_FLAGS, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+    DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
     DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT,
     DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
     DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
@@ -376,7 +376,10 @@ pub struct Renderer {
     size: (u32, u32),
 
     device: ID3D11Device,
-    swapchain: IDXGISwapChain1,
+    /// `None` tylko w trakcie `reset` (albo po nieudanym) - okno moze miec
+    /// jeden swapchain flip, wiec stary trzeba zwolnic przed zalozeniem nowego.
+    swapchain: Option<IDXGISwapChain1>,
+    hwnd: HWND,
     factory2d: ID2D1Factory1,
     ctx: ID2D1DeviceContext,
     /// D2D 1.2 - realizacje geometrii (Windows 8.1+).
@@ -626,7 +629,8 @@ impl Renderer {
                 tearing_supported,
                 size: (width.max(1), height.max(1)),
                 device,
-                swapchain,
+                swapchain: Some(swapchain),
+                hwnd,
                 factory2d,
                 ctx,
                 ctx1,
@@ -691,7 +695,7 @@ impl Renderer {
 
     fn create_size_dependent(&mut self) -> Result<()> {
         unsafe {
-            let surface: IDXGISurface = self.swapchain.GetBuffer(0)?;
+            let surface: IDXGISurface = self.swapchain()?.GetBuffer(0)?;
             let props = D2D1_BITMAP_PROPERTIES1 {
                 pixelFormat: D2D1_PIXEL_FORMAT {
                     format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -734,6 +738,68 @@ impl Renderer {
         }
     }
 
+    fn swapchain(&self) -> Result<&IDXGISwapChain1> {
+        self.swapchain
+            .as_ref()
+            .ok_or_else(|| windows::core::Error::from_hresult(DXGI_ERROR_DEVICE_REMOVED))
+    }
+
+    /// Renderer moze rysowac: ma swapchain i bufor okna, a urzadzenie D3D nie
+    /// zostalo utracone. Po przepieciu monitorow / odpieciu stacji sterownik
+    /// potrafi zresetowac GPU (TDR, zmiana adaptera) - urzadzenie jest wtedy
+    /// martwe na zawsze, kazde `Present` konczy sie bledem, a nieudane
+    /// `ResizeBuffers` zostawia renderer bez bufora. Okno pokazywalo wtedy
+    /// sama ramke z pulpitem pod spodem. Ratunek to `reset`.
+    pub fn healthy(&self) -> bool {
+        self.swapchain.is_some()
+            && self.backbuffer.is_some()
+            && unsafe { self.device.GetDeviceRemovedReason().is_ok() }
+    }
+
+    /// Wszystko od nowa: urzadzenie, swapchain, kontekst D2D, bitmapy. Stan,
+    /// ktory nie zalezy od urzadzenia (strony PDF, skala UI, ukryte kreski),
+    /// przechodzi na nowy renderer; reszte (kafelki, miniatury, geometria)
+    /// klatki odbuduja same. Przy bledzie renderer zostaje bez swapchaina
+    /// (`healthy` = false) i mozna probowac ponownie.
+    pub fn reset(&mut self) -> Result<()> {
+        unsafe {
+            self.ctx.SetTarget(None);
+        }
+        // Okno ma jeden swapchain flip: stary musi zniknac przed nowym. Razem
+        // z nim wszystko, co trzyma jego bufory.
+        self.backbuffer = None;
+        self.dry = [None, None];
+        self.fx_bmp = None;
+        self.fx_effects = None;
+        self.swapchain = None;
+        // D2D i D3D11 niszcza obiekty z opoznieniem: bez oproznienia kontekstow
+        // swapchain zyje dalej i nowy dla tego samego okna dostaje
+        // E_ACCESSDENIED (zmierzone: kazda proba odbudowy padala).
+        unsafe {
+            let _ = self.ctx.Flush(None, None);
+            if let Ok(imm) = self.device.GetImmediateContext() {
+                imm.ClearState();
+                imm.Flush();
+            }
+        }
+        let (w, h) = self.size;
+        let mut fresh = Renderer::new(self.hwnd, w, h, None)?;
+        fresh.pages = std::mem::take(&mut self.pages);
+        fresh.hidden = std::mem::take(&mut self.hidden);
+        fresh.set_ui_scale(self.ui_scale);
+        *self = fresh;
+        Ok(())
+    }
+
+    /// Haczyk testowy: renderer jak po nieudanym `ResizeBuffers` na utraconym
+    /// urzadzeniu (bez bufora okna) - sciezka `healthy` -> `reset`.
+    pub fn simulate_loss(&mut self) {
+        unsafe {
+            self.ctx.SetTarget(None);
+        }
+        self.backbuffer = None;
+    }
+
     /// Zwraca `true`, gdy rozmiar sie zmienil i warstwa sucha wymaga przebudowy.
     pub fn resize(&mut self, width: u32, height: u32) -> Result<bool> {
         if width == 0 || height == 0 || (width, height) == self.size {
@@ -743,7 +809,7 @@ impl Renderer {
             self.ctx.SetTarget(None);
             self.backbuffer = None;
             self.dry = [None, None];
-            self.swapchain.ResizeBuffers(
+            self.swapchain()?.ResizeBuffers(
                 0,
                 width,
                 height,
@@ -1406,7 +1472,7 @@ impl Renderer {
                 }
                 PresentMode::Immediate | PresentMode::Latest => (0u32, DXGI_PRESENT(0)),
             };
-            self.swapchain.Present(interval, flags).ok()?;
+            self.swapchain()?.Present(interval, flags).ok()?;
         }
         Ok(())
     }

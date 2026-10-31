@@ -106,6 +106,10 @@ const ANIM_TICK_MS: u32 = 16;
 /// priorytet w kolejce komunikatow, wiec probki piora zawsze ida przed klatka
 /// efektow; w trakcie kreski klatki i tak daje rysik.
 const TIMER_FX: usize = 13;
+/// Ponowna proba odbudowy renderera po utracie GPU (`recover_renderer`), gdy
+/// poprzednia sie nie udala - np. sterownik jeszcze sie przeladowuje.
+const TIMER_GPU_RETRY: usize = 14;
+const GPU_RETRY_MS: u32 = 500;
 const FX_TICK_MS: u32 = 33;
 /// Zapas wokol widoku przy wyborze kresek z efektem - poswiata siega poza kreske.
 const FX_MARGIN_PX: f32 = 40.0;
@@ -331,6 +335,13 @@ pub struct App {
     /// Historia cofania biezacej notatki zmienila sie od ostatniego zapisu
     /// (`save_history`, razem z fsync op-logu).
     history_dirty: bool,
+    /// Awatar z GitHuba w pamieci - po odbudowie renderera (utrata GPU) wraca bez
+    /// ponownego pobierania.
+    avatar_px: Option<(u32, u32, Vec<u8>)>,
+    /// Trwa odbudowa renderera - `render` z jej wnetrza nie zaczyna kolejnej.
+    recovering: bool,
+    /// Ostatnia odbudowa renderera - nie czesciej niz raz na `GPU_RETRY_MS`.
+    last_recover: Option<Instant>,
 
     mode: Mode,
     buttons: PenButtons,
@@ -811,6 +822,9 @@ impl App {
             clipboard: Vec::new(),
             paste_spot: None,
             history_dirty: false,
+            avatar_px: None,
+            recovering: false,
+            last_recover: None,
             mode: Mode::Idle,
             buttons: PenButtons::default(),
             hover: false,
@@ -1231,6 +1245,12 @@ impl App {
         }
         if op == "esc" {
             self.clear_selection();
+            self.render();
+            return;
+        }
+        // `lose-gpu` - renderer jak po utracie urzadzenia (sciezka odbudowy).
+        if op == "lose-gpu" {
+            self.renderer.simulate_loss();
             self.render();
             return;
         }
@@ -3289,9 +3309,11 @@ impl App {
                 SyncEvent::LoggedOut => {
                     self.sync.last = "signed out".to_string();
                     self.renderer.clear_avatar();
+                    self.avatar_px = None;
                 }
                 SyncEvent::Avatar(img) => {
                     let _ = self.renderer.set_avatar(img.w, img.h, &img.bgra);
+                    self.avatar_px = Some((img.w, img.h, img.bgra.clone()));
                 }
                 SyncEvent::Deferred { until } => {
                     self.sync.last =
@@ -5702,9 +5724,12 @@ impl App {
                 PresentMode::Immediate
             },
         );
-        if let Err(e) = presented {
+        if let Err(e) = &presented {
             eprintln!("present: {e}");
         }
+        // Utrata GPU (przepiecie monitorow, odpiecie stacji): bez tego okno
+        // zostawalo puste - sama ramka i pulpit pod spodem - az do restartu.
+        let gpu_lost = (presented.is_err() || !self.renderer.healthy()) && !self.recovering;
         if !self.first_frame_logged {
             self.first_frame_logged = true;
             eprintln!(
@@ -5727,6 +5752,53 @@ impl App {
             self.status = format!("hotkey -> frame: {ms:.1} ms");
             eprintln!("hotkey -> frame: {ms:.1} ms");
         }
+        if gpu_lost {
+            self.recover_renderer("present failed or no back buffer");
+        }
+    }
+
+    /// Renderer od nowa po utracie GPU albo bufora okna (`Renderer::healthy`).
+    /// Udane: awatar wraca z pamieci, uklad i cala klatka od nowa (kafelki
+    /// PDF i miniatury dociagna sie same). Nieudane: proba za `GPU_RETRY_MS`.
+    /// Kazde zdarzenie idzie do `partner.log` - do diagnozy przy kolejnym
+    /// zgloszeniu "puste okno".
+    fn recover_renderer(&mut self, why: &str) {
+        // Odbudowa, po ktorej renderer dalej nie dziala, nie moze krecic sie
+        // co klatke - kolejna proba dopiero z timera.
+        if self
+            .last_recover
+            .is_some_and(|t| t.elapsed().as_millis() < GPU_RETRY_MS as u128)
+        {
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_GPU_RETRY, GPU_RETRY_MS, None);
+            }
+            return;
+        }
+        self.last_recover = Some(Instant::now());
+        self.recovering = true;
+        let t0 = Instant::now();
+        match self.renderer.reset() {
+            Ok(()) => {
+                if let Some((w, h, px)) = &self.avatar_px {
+                    let _ = self.renderer.set_avatar(*w, *h, px);
+                }
+                self.partner_log(&format!(
+                    "display: renderer rebuilt in {:.0} ms ({why}), GPU: {}",
+                    t0.elapsed().as_secs_f32() * 1000.0,
+                    self.renderer.adapter_name()
+                ));
+                self.dirty = Dirty::Full;
+                self.relayout();
+                self.render();
+            }
+            Err(e) => {
+                self.partner_log(&format!("display: renderer rebuild failed ({why}): {e}"));
+                unsafe {
+                    SetTimer(Some(self.hwnd), TIMER_GPU_RETRY, GPU_RETRY_MS, None);
+                }
+            }
+        }
+        self.recovering = false;
     }
 
     fn hud_text(&self) -> String {
@@ -6438,6 +6510,14 @@ pub unsafe extern "system" fn wndproc(
                 }
                 TIMER_ANIM => app.anim_tick(),
                 TIMER_FX => app.fx_tick(),
+                TIMER_GPU_RETRY => {
+                    let _ = KillTimer(Some(hwnd), TIMER_GPU_RETRY);
+                    if app.renderer.healthy() {
+                        app.render();
+                    } else {
+                        app.recover_renderer("retry");
+                    }
+                }
                 TIMER_TOPMOST => app.topmost_tick(),
                 TIMER_FEEDBACK => app.feedback_tick(),
                 TIMER_DWM => {
