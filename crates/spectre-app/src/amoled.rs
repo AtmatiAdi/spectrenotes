@@ -271,6 +271,11 @@ impl Waves {
         layers
     }
 
+    /// Sekundy od startu ochrony - zegar dryfu tresci priorytetowej.
+    pub fn time(&self) -> f32 {
+        self.t
+    }
+
     pub fn set_brightness(&mut self, b: f32) {
         self.brightness = b.clamp(0.0, 1.0);
     }

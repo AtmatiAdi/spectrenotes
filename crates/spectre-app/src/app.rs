@@ -53,6 +53,11 @@ const PALETTE: [Rgba; 6] = [
     Rgba::rgb(195, 155, 232),
 ];
 
+/// Tusze z efektem na pasku, za kolorami palety (`spectre_core::fx`): slot
+/// `PALETTE.len() + i` to tusz `FX_INKS[i]`. Klawisze `1`..`7` ida po slotach.
+const FX_INKS: [u8; 1] = [spectre_core::fx::PRIORITY.tool];
+const SLOTS: usize = PALETTE.len() + FX_INKS.len();
+
 const WHEEL_STEP_PX: f32 = 80.0;
 const ERASER_RADIUS_PX: f32 = 14.0;
 /// Co tyle pikseli ekranu obrys zaznaczenia dostaje nowy punkt.
@@ -96,6 +101,16 @@ const THUMBS_TICK_MS: u32 = 16;
 /// klatki i tak ida z kazdym zdarzeniem rysika, a dodatkowe tylko by je opoznialy.
 const TIMER_ANIM: usize = 9;
 const ANIM_TICK_MS: u32 = 16;
+/// Klatki tuszy z efektem (`spectre_core::fx`), gdy sa na ekranie, a nie trwa
+/// ochrona (pod falami klatki daje `TIMER_WAVES`). `WM_TIMER` ma najnizszy
+/// priorytet w kolejce komunikatow, wiec probki piora zawsze ida przed klatka
+/// efektow; w trakcie kreski klatki i tak daje rysik.
+const TIMER_FX: usize = 13;
+const FX_TICK_MS: u32 = 33;
+/// Zapas wokol widoku przy wyborze kresek z efektem - poswiata siega poza kreske.
+const FX_MARGIN_PX: f32 = 40.0;
+/// Odstep dryfujacej tresci priorytetowej od krawedzi ekranu.
+const FX_DRIFT_MARGIN_PX: f32 = 60.0;
 /// Wysuwanie okna nad pasek zadan przy pelnym ekranie - mniej wiecej tyle,
 /// ile trwa chowanie paska w trybie autoukrywania.
 const SLIDE_MS: f32 = 220.0;
@@ -310,6 +325,9 @@ pub struct App {
     /// aplikacji, nie w notatce - dlatego kopiuje sie w jednej, a wkleja
     /// w drugiej.
     clipboard: Vec<StrokeData>,
+    /// Obrys, ktory nic nie zlapal (canvas): pod nim pigulka "wklej" - wklejenie
+    /// laduje w tym miejscu. Znika przy nastepnym dotknieciu i zmianie narzedzia.
+    paste_spot: Option<Bbox>,
 
     mode: Mode,
     buttons: PenButtons,
@@ -494,6 +512,11 @@ pub struct App {
     frame_max_ms: f32,
     /// Pierwsza klatka juz zalogowana (`startup:`).
     first_frame_logged: bool,
+    /// Poczatek zegara tuszy z efektem.
+    fx_epoch: Instant,
+    /// W ostatniej klatce byly widoczne kreski z efektem; `TIMER_FX` chodzi.
+    fx_visible: bool,
+    fx_timer: bool,
     /// Start do traya: zapisane polozenie okna czeka na pierwsze pokazanie.
     pending_placement: Option<window::Placement>,
 }
@@ -678,7 +701,7 @@ impl App {
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
         toolbar.visible = toolbar_pin;
-        toolbar.layout(w as f32, h as f32, ui_scale, PALETTE.len());
+        toolbar.layout(w as f32, h as f32, ui_scale, SLOTS);
         let mut menu = Menu::new();
         menu.layout(
             w as f32,
@@ -782,6 +805,7 @@ impl App {
             selection: None,
             lasso: Vec::new(),
             clipboard: Vec::new(),
+            paste_spot: None,
             mode: Mode::Idle,
             buttons: PenButtons::default(),
             hover: false,
@@ -876,6 +900,9 @@ impl App {
             frame_ms: 0.0,
             frame_max_ms: 0.0,
             first_frame_logged: false,
+            fx_epoch: Instant::now(),
+            fx_visible: false,
+            fx_timer: false,
             pending_placement: None,
         })
     }
@@ -921,8 +948,21 @@ impl App {
         }
     }
 
+    /// Tusz pióra: 0 = zwykly kolor z palety, inaczej `StrokeData::tool` tuszu z efektem.
+    fn ink_tool(&self) -> u8 {
+        self.color_idx
+            .checked_sub(PALETTE.len())
+            .and_then(|i| FX_INKS.get(i).copied())
+            .unwrap_or(0)
+    }
+
+    /// Kolor zapisywany w kresce. Tusz z efektem ma tu kolor bazowy - tak
+    /// rysuje sie mokra kreska i tak widza ja wersje bez efektow.
     fn color(&self) -> Rgba {
-        PALETTE[self.color_idx]
+        match spectre_core::fx::for_tool(self.ink_tool()) {
+            Some(ink) => ink.base,
+            None => PALETTE[self.color_idx.min(PALETTE.len() - 1)],
+        }
     }
 
     fn view_h(&self) -> f32 {
@@ -1034,6 +1074,13 @@ impl App {
                 }
                 None => self.picker.close(),
             }
+            self.render();
+            return;
+        }
+        // Pigulka akcji pod zaznaczeniem lezy na canvasie, ale jest przyciskiem:
+        // dotkniecie wykonuje akcje i nie zaczyna obrysu.
+        if let Some(a) = self.action_bar().and_then(|b| b.hit(x, y)) {
+            self.sel_action(a);
             self.render();
             return;
         }
@@ -1305,7 +1352,7 @@ impl App {
                 note: self.notes[self.note_idx].id.clone(),
                 seq: self.wet_seq,
                 data: StrokeData {
-                    tool: 0,
+                    tool: self.ink_tool(),
                     color: self.color(),
                     base_width: self.ink.base_width,
                     samples: shared,
@@ -1375,7 +1422,7 @@ impl App {
             return;
         }
         let data = StrokeData {
-            tool: 0,
+            tool: self.ink_tool(),
             color: self.color(),
             base_width: self.ink.base_width,
             samples,
@@ -1444,6 +1491,7 @@ impl App {
             }
             self.clear_selection();
         }
+        self.paste_spot = None;
         self.lasso.clear();
         self.lasso.push((cx, cy));
         self.mode = Mode::Lasso;
@@ -1488,9 +1536,27 @@ impl App {
     fn end_lasso(&mut self) {
         let poly = std::mem::take(&mut self.lasso);
         self.selection = select::from_lasso(&self.doc, &poly);
+        // Pusty obrys to miejsce: pod nim pigulka "wklej".
+        self.paste_spot = match (&self.selection, poly.len() >= 3) {
+            (None, true) => Some(poly.iter().fold(
+                Bbox {
+                    min_x: f32::INFINITY,
+                    min_y: f32::INFINITY,
+                    max_x: f32::NEG_INFINITY,
+                    max_y: f32::NEG_INFINITY,
+                },
+                |b, p| Bbox {
+                    min_x: b.min_x.min(p.0),
+                    min_y: b.min_y.min(p.1),
+                    max_x: b.max_x.max(p.0),
+                    max_y: b.max_y.max(p.1),
+                },
+            )),
+            _ => None,
+        };
         self.status = match &self.selection {
             Some(s) => format!("selection: {} strokes", s.ids.len()),
-            None => "selection: nothing fully inside the outline".to_string(),
+            None => "selection: empty spot - paste lands here".to_string(),
         };
     }
 
@@ -1552,13 +1618,18 @@ impl App {
     /// z ktorej kopiowano) i **zaznacza** wklejone: od razu mozna je przesunac,
     /// przeskalowac albo obrocic. Cale wklejenie to jedna akcja historii.
     fn paste_clipboard(&mut self) {
+        let (w, h) = self.renderer.size();
+        let (cx, cy) = self.cam.to_canvas(w as f32 * 0.5, h as f32 * 0.5);
+        self.paste_at(cx, cy);
+    }
+
+    /// Wklejenie ze srodkiem tresci w punkcie canvasu `(cx, cy)`.
+    fn paste_at(&mut self, cx: f32, cy: f32) {
         if self.clipboard.is_empty() {
             self.status = "paste: clipboard empty".to_string();
             return;
         }
         self.clear_selection();
-        let (w, h) = self.renderer.size();
-        let (cx, cy) = self.cam.to_canvas(w as f32 * 0.5, h as f32 * 0.5);
         let data: Vec<StrokeData> = self
             .clipboard
             .iter()
@@ -1595,9 +1666,60 @@ impl App {
         self.select_tool = select;
     }
 
+    /// Pigulka akcji: pod zaznaczeniem kopiuj i wytnij, pod pustym obrysem
+    /// wklej. W trakcie gestu (obrys, przesuwanie) jej nie ma.
+    fn action_bar(&self) -> Option<select::ActionBar> {
+        if matches!(self.mode, Mode::Lasso | Mode::Transform) || self.menu.open {
+            return None;
+        }
+        let (w, h) = self.renderer.size();
+        let view = (w as f32, h as f32);
+        let k = self.toolbar.scale();
+        if let Some(sel) = &self.selection {
+            return Some(select::ActionBar::place(
+                &[select::SelAction::Copy, select::SelAction::Cut],
+                sel.screen_rect(&self.cam),
+                select::Selection::above_extra(k),
+                view,
+                k,
+            ));
+        }
+        let spot = self.paste_spot?;
+        let (x0, y0) = self.cam.to_screen(spot.min_x, spot.min_y);
+        let (x1, y1) = self.cam.to_screen(spot.max_x, spot.max_y);
+        Some(select::ActionBar::place(
+            &[select::SelAction::Paste],
+            (x0, y0, x1, y1),
+            0.0,
+            view,
+            k,
+        ))
+    }
+
+    fn sel_action(&mut self, a: select::SelAction) {
+        match a {
+            select::SelAction::Copy => self.copy_selection(),
+            select::SelAction::Cut => {
+                self.copy_selection();
+                if let Some(sel) = self.selection.take() {
+                    let ops = self.doc.erase_strokes(&sel.ids);
+                    self.persist(&ops);
+                    self.dirty = self.dirty.add_region(sel.content_bbox());
+                    self.status = format!("cut {} strokes", sel.ids.len());
+                }
+            }
+            select::SelAction::Paste => {
+                if let Some(b) = self.paste_spot {
+                    self.paste_at((b.min_x + b.max_x) * 0.5, (b.min_y + b.max_y) * 0.5);
+                }
+            }
+        }
+    }
+
     /// Koniec zaznaczania: ramka znika, tresc zostaje tam, gdzie jest.
     fn clear_selection(&mut self) -> bool {
         self.lasso.clear();
+        self.paste_spot = None;
         let Some(sel) = self.selection.take() else {
             return false;
         };
@@ -1762,6 +1884,8 @@ impl App {
     fn ui_state(&self) -> UiState<'_> {
         UiState {
             palette: &PALETTE,
+            fx_tools: &FX_INKS,
+            fx_t: self.fx_time(),
             color_idx: self.color_idx,
             eraser: self.eraser_tool,
             select: self.select_tool,
@@ -1912,6 +2036,47 @@ impl App {
             }
         }
         // Ostatnia klatka (bez paska) tez stad; w trakcie rysowania klatki daje rysik.
+        if self.mode != Mode::Draw {
+            self.render();
+        }
+    }
+
+    /// Czas tuszy z efektem w sekundach. Zawijany co 10 000 s: aplikacja zyje
+    /// tygodniami, a f32 po tylu sekundach gubilby setne - raz na prawie trzy
+    /// godziny iskry i tecza przeskocza w inne miejsce, i tyle.
+    fn fx_time(&self) -> f32 {
+        (self.fx_epoch.elapsed().as_secs_f64() % 10_000.0) as f32
+    }
+
+    /// Po kazdej klatce: timer efektow chodzi tylko, gdy kreski z efektem sa
+    /// na ekranie, okno jest widoczne i nie trwa ochrona (wtedy klatki daja fale).
+    fn update_fx_timer(&mut self) {
+        let want = self.fx_visible
+            && self.waves.is_none()
+            && self.waves_leaving.is_none()
+            && !self.hidden
+            && unsafe { !IsIconic(self.hwnd).as_bool() };
+        if want != self.fx_timer {
+            self.fx_timer = want;
+            unsafe {
+                if want {
+                    SetTimer(Some(self.hwnd), TIMER_FX, FX_TICK_MS, None);
+                } else {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_FX);
+                }
+            }
+        }
+    }
+
+    fn fx_tick(&mut self) {
+        // Schowane albo zminimalizowane: `render` nic nie rysuje, wiec timer
+        // gasimy tu, zamiast budzic proces co 33 ms w tle.
+        if self.hidden || unsafe { IsIconic(self.hwnd).as_bool() } {
+            self.fx_visible = false;
+            self.update_fx_timer();
+            return;
+        }
+        // W trakcie kreski klatki daje rysik - dodatkowa tylko by go opoznila.
         if self.mode != Mode::Draw {
             self.render();
         }
@@ -2467,7 +2632,7 @@ impl App {
         let ui_scale = window::dpi_scale(self.hwnd);
         self.renderer.set_ui_scale(ui_scale);
         self.toolbar
-            .layout(w as f32, h as f32, ui_scale, PALETTE.len());
+            .layout(w as f32, h as f32, ui_scale, SLOTS);
         self.menu.layout(
             w as f32,
             h as f32,
@@ -2495,7 +2660,7 @@ impl App {
 
     fn end_drag_bar(&mut self) {
         let (x, y) = self.last_screen;
-        if self.toolbar.drop_at(x, y, PALETTE.len()) {
+        if self.toolbar.drop_at(x, y, SLOTS) {
             self.config.set("dock", self.toolbar.dock.name());
             self.config.save();
             // Panel menu omija pasek, wiec musi poznac nowa krawedz.
@@ -5256,6 +5421,14 @@ impl App {
             } else if let Some(sel) = &self.selection {
                 sel.build(&self.cam, k, &mut prims);
             }
+            if let Some(bar) = self.action_bar() {
+                let can_paste = !self.clipboard.is_empty();
+                bar.build(
+                    k,
+                    |a| a != select::SelAction::Paste || can_paste,
+                    &mut prims,
+                );
+            }
         }
         let mut st = self.ui_state();
         st.title = &title;
@@ -5359,6 +5532,63 @@ impl App {
             self.feedback.build(&mut prims);
         }
 
+        // Tusze z efektem (`spectre_core::fx`): warstwa sucha ich nie ma, klatka
+        // rysuje widoczne co raz. Pod ochrona AMOLED tresc priorytetowa wisi nad
+        // falami i dryfuje (zegar fal), a przy wyjsciu wraca na miejsce razem
+        // z bladnieciem maski (`leave_gain`).
+        let fx_t = self.fx_time();
+        let protect = match (&self.waves, &self.waves_leaving) {
+            (Some(wv), _) => Some((wv.time(), 1.0)),
+            (None, Some((wv, since))) => Some((
+                wv.time(),
+                crate::amoled::leave_gain(since.elapsed().as_secs_f32()),
+            )),
+            (None, None) => None,
+        };
+        let (vw, vh) = self.renderer.size();
+        let fx_view = self
+            .cam
+            .visible(vw as f32, vh as f32)
+            .expand(FX_MARGIN_PX / self.cam.zoom);
+        let fx_strokes: Vec<(StrokeId, &StrokeData)> = self
+            .doc
+            .visible_in(fx_view)
+            .filter(|(_, d, _)| spectre_core::fx::for_tool(d.tool).is_some())
+            .map(|(id, d, _)| (id, d))
+            .collect();
+        self.fx_visible = !fx_strokes.is_empty();
+        let fx_drift = match protect {
+            Some((t, keep)) => {
+                let content = fx_strokes
+                    .iter()
+                    .filter(|(_, d)| spectre_core::fx::for_tool(d.tool).is_some_and(|i| i.priority))
+                    .map(|(_, d)| {
+                        let b = Bbox::of(d);
+                        let (x0, y0) = self.cam.to_screen(b.min_x, b.min_y);
+                        let (x1, y1) = self.cam.to_screen(b.max_x, b.max_y);
+                        Bbox {
+                            min_x: x0,
+                            min_y: y0,
+                            max_x: x1,
+                            max_y: y1,
+                        }
+                    })
+                    .reduce(|a, b| Bbox {
+                        min_x: a.min_x.min(b.min_x),
+                        min_y: a.min_y.min(b.min_y),
+                        max_x: a.max_x.max(b.max_x),
+                        max_y: a.max_y.max(b.max_y),
+                    });
+                content.map_or((0.0, 0.0), |c| {
+                    let (dx, dy) =
+                        spectre_core::fx::drift(t, c, (vw as f32, vh as f32), FX_DRIFT_MARGIN_PX);
+                    (dx * keep, dy * keep)
+                })
+            }
+            None => (0.0, 0.0),
+        };
+
+        let color = self.color();
         // Fale (Z7): krok symulacji o czas od poprzedniej klatki, tylko gdy trwaja.
         let dim = match (self.waves.as_mut(), self.waves_leaving.as_mut()) {
             (Some(wv), _) => {
@@ -5376,7 +5606,6 @@ impl App {
             (None, None) => None,
         };
         let tail = std::mem::take(&mut self.tail_buf);
-        let color = PALETTE[self.color_idx];
         // Uniesiona tresc zaznaczenia: warstwa sucha jej teraz nie ma, klatka
         // dorysowuje ja z gotowych obrysow w transformacji gestu.
         let lift = match (&self.selection, self.mode) {
@@ -5399,6 +5628,13 @@ impl App {
                 marks: &marks,
                 ui: &prims,
                 dim,
+                fx: (!fx_strokes.is_empty()).then_some(spectre_render::FxLayer {
+                    strokes: &fx_strokes,
+                    ink: &self.ink,
+                    t: fx_t,
+                    drift: fx_drift,
+                    above_dim: protect.is_some(),
+                }),
             },
             if self.vsync {
                 PresentMode::VSync
@@ -5424,6 +5660,7 @@ impl App {
         self.tail_buf = tail;
         self.ui_prims = prims;
         self.wet_tails = wet_tails;
+        self.update_fx_timer();
         self.frame_ms = t0.elapsed().as_secs_f32() * 1000.0;
         self.frame_max_ms = self.frame_max_ms.max(self.frame_ms) * 0.98;
 
@@ -5450,7 +5687,7 @@ impl App {
         format!(
             "SpectreNotes   note {}/{}   strokes: {}   {}   zoom {:.0}%\n\
              tool: {}   width: {:.1} px   scroll: {:.0},{:.0}   waves: {}   frame: {:.2} ms (max {:.1})   GPU: {}\n\
-             [1-6] color  [E] eraser  [S] select  [Ctrl+C/V] copy/paste  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top\n\
+             [1-7] color (7 = priority ink)  [E] eraser  [S] select  [Ctrl+C/V] copy/paste  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top\n\
              [barrel button]/[wheel] scroll  [Ctrl+wheel] zoom  [PgUp/PgDn] notes  [Ctrl+N] new  [Win+Shift+N] show/hide\n\
              [F11] fullscreen  [H] hud  [V] vsync  [T] scrolling: {}  [Esc] hide  [Ctrl+Q] quit\n\
              git: {}
@@ -5914,7 +6151,7 @@ pub unsafe extern "system" fn wndproc(
                     app.toggle_forced_waves();
                     return LRESULT(0);
                 }
-                0x31..=0x36 => {
+                0x31..=0x39 if ((vk.0 - 0x31) as usize) < SLOTS => {
                     app.color_idx = (vk.0 - 0x31) as usize;
                     app.eraser_tool = false;
                 }
@@ -6126,6 +6363,7 @@ pub unsafe extern "system" fn wndproc(
                     }
                 }
                 TIMER_ANIM => app.anim_tick(),
+                TIMER_FX => app.fx_tick(),
                 TIMER_TOPMOST => app.topmost_tick(),
                 TIMER_FEEDBACK => app.feedback_tick(),
                 TIMER_DWM => {

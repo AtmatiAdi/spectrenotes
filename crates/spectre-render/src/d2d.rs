@@ -1,24 +1,29 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
+use spectre_core::fx::{self, InkFx, Spark};
 use spectre_core::{Bbox, Camera, Document, StrokeId};
 use spectre_ink::{InkConfig, Segment};
 use spectre_proto::Rgba;
 use windows::core::{Interface, Result, HSTRING};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
-    D2D_RECT_F, D2D_SIZE_U,
+    D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_COMPOSITE_MODE_PLUS,
+    D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1, ID2D1Brush, ID2D1DeviceContext,
-    ID2D1DeviceContext1, ID2D1Factory1, ID2D1GeometryRealization, ID2D1PathGeometry1,
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_BRUSH_PROPERTIES1,
+    CLSID_D2D1GaussianBlur, CLSID_D2D1Opacity, D2D1CreateFactory, ID2D1Bitmap1, ID2D1BitmapBrush1,
+    ID2D1Brush, ID2D1DeviceContext, ID2D1DeviceContext1, ID2D1Effect, ID2D1Factory1,
+    ID2D1GeometryRealization, ID2D1LinearGradientBrush, ID2D1PathGeometry1, ID2D1RenderTarget,
+    ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_BRUSH_PROPERTIES1,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_INTERPOLATION_MODE_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_PRIMITIVE_BLEND_MIN,
-    D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_WRAP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_GAMMA_2_2, D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, D2D1_INTERPOLATION_MODE_CUBIC,
+    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
+    D2D1_OPACITY_PROP_OPACITY, D2D1_PRIMITIVE_BLEND_ADD, D2D1_PRIMITIVE_BLEND_MIN,
+    D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT, D2D1_ROUNDED_RECT,
+    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
@@ -109,6 +114,14 @@ pub enum UiPrim {
         y: f32,
         radius: f32,
         color: Rgba,
+    },
+    /// Probka tuszu z efektem (`spectre_core::fx`): kolo pedzlem tuszu w chwili `t`.
+    InkSwatch {
+        x: f32,
+        y: f32,
+        radius: f32,
+        tool: u8,
+        t: f32,
     },
     /// Odcinek o dowolnym kacie - ramka zaznaczenia i obrys lassa nie sa
     /// prostokatami wyrownanymi do osi.
@@ -303,6 +316,23 @@ pub struct Overlay<'a> {
     pub ui: &'a [UiPrim],
     /// Fale lokalnego przyciemnienia (Z7, po bezczynnosci), na samym wierzchu.
     pub dim: Option<&'a DimMask>,
+    /// Kreski tuszy z efektem (`spectre_core::fx`) - warstwa sucha ich nie ma.
+    pub fx: Option<FxLayer<'a>>,
+}
+
+/// Tusze z efektem w tej klatce: kreski rysowane co klatke, poza warstwa
+/// sucha (ta je pomija), z kolorem z funkcji tuszu, poswiata i iskrami.
+#[derive(Clone, Copy)]
+pub struct FxLayer<'a> {
+    /// Widoczne kreski z efektem (reszta i tak nie trafi na ekran).
+    pub strokes: &'a [(StrokeId, &'a spectre_proto::StrokeData)],
+    pub ink: &'a InkConfig,
+    /// Czas efektow w sekundach (dowolny poczatek - liczy sie ciaglosc).
+    pub t: f32,
+    /// Przesuniecie tresci priorytetowej w pikselach ekranu (dryf pod ochrona).
+    pub drift: (f32, f32),
+    /// Ochrona AMOLED trwa (albo gasnie): tresc priorytetowa idzie nad fale.
+    pub above_dim: bool,
 }
 
 /// Maska przyciemnienia (Z7): krycie czerni 0..255 w siatce co `DIM_STEP` px
@@ -389,6 +419,16 @@ pub struct Renderer {
     tiles: HashMap<TileKey, TileBmp>,
     tile_bytes: usize,
     tile_clock: u64,
+
+    /// Tusze z efektem (`FxLayer`): bitmapa okna, na ktora ida ich kreski (wejscie
+    /// poswiaty), gradient per tusz, efekty rozmycia i krycia, pedzel iskier.
+    fx_bmp: Option<(ID2D1Bitmap1, u32, u32)>,
+    fx_grad: HashMap<u8, ID2D1LinearGradientBrush>,
+    fx_effects: Option<(ID2D1Effect, ID2D1Effect)>,
+    spark: ID2D1SolidColorBrush,
+    spark_buf: Vec<Spark>,
+    /// Czas efektow ostatniej klatki - uniesione zaznaczenie mieni sie z reszta.
+    fx_t: f32,
 }
 
 struct TileBmp {
@@ -559,6 +599,15 @@ impl Renderer {
             let hud_fg = solid(&ctx, 0.45, 0.62, 0.55, 0.9)?;
             let hud_bg = solid(&ctx, 0.0, 0.0, 0.0, 0.55)?;
             let cursor_brush = solid(&ctx, 0.6, 0.6, 0.6, 0.8)?;
+            let ctx_spark = ctx.CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                },
+                None,
+            )?;
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let fonts = TextFormats::new(&dwrite, 1.0)?;
@@ -601,6 +650,12 @@ impl Renderer {
                 tiles: HashMap::new(),
                 tile_bytes: 0,
                 tile_clock: 0,
+                fx_bmp: None,
+                fx_grad: HashMap::new(),
+                fx_effects: None,
+                spark: ctx_spark,
+                spark_buf: Vec::new(),
+                fx_t: 0.0,
             };
             r.create_size_dependent()?;
             Ok(r)
@@ -1071,6 +1126,10 @@ impl Renderer {
             if self.hidden.contains(&id) {
                 continue;
             }
+            // Tusz z efektem rysuje kazda klatka (`draw_fx`), nie warstwa sucha.
+            if fx::for_tool(data.tool).is_some() {
+                continue;
+            }
             let brush = match self.brush(data.color) {
                 Ok(b) => b,
                 Err(e) => {
@@ -1288,6 +1347,15 @@ impl Renderer {
                 Default::default(),
                 Default::default(),
             );
+            // Tusze z efektem nad warstwa sucha. Pod ochrona priorytetowe ida
+            // dopiero nad fale (nizej), z dryfem; pozostale gasna z notatka.
+            if let Some(fxl) = &overlay.fx {
+                self.fx_t = fxl.t;
+                self.draw_fx(&back, fxl, cam, false, (0.0, 0.0))?;
+                if !fxl.above_dim {
+                    self.draw_fx(&back, fxl, cam, true, (0.0, 0.0))?;
+                }
+            }
             if let Some(lift) = overlay.lift {
                 self.draw_lift(&lift, cam)?;
             }
@@ -1318,6 +1386,9 @@ impl Renderer {
             // Fale przyciemnienia (Z7) - na wszystkim, lacznie z UI.
             if let Some(m) = overlay.dim {
                 self.draw_dim(m)?;
+            }
+            if let Some(fxl) = overlay.fx.as_ref().filter(|f| f.above_dim) {
+                self.draw_fx(&back, fxl, cam, true, fxl.drift)?;
             }
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
@@ -1357,7 +1428,11 @@ impl Renderer {
         self.ctx.SetTransform(&m);
         let mut res = Ok(());
         for (id, data) in lift.strokes {
-            let brush = match self.brush(data.color) {
+            let brush = match fx::for_tool(data.tool) {
+                Some(ink) => self.fx_brush(ink, self.fx_t).map(|b| b.into()),
+                None => self.brush(data.color),
+            };
+            let brush = match brush {
                 Ok(b) => b,
                 Err(e) => {
                     res = Err(e);
@@ -1371,6 +1446,278 @@ impl Renderer {
         }
         self.ctx.SetTransform(&Matrix3x2::identity());
         res
+    }
+
+    /// Pedzel tuszu z efektem w chwili `t`: gradient jednego okresu funkcji
+    /// koloru (`InkFx::stops`), zawijany, przesuniety na `gradient_line(t)`.
+    /// Punkty sa w jednostkach canvasu - pedzel zyje w transformacji kamery,
+    /// wiec tecza jest przypieta do tresci i plynie po niej.
+    unsafe fn fx_brush(&mut self, ink: &InkFx, t: f32) -> Result<ID2D1LinearGradientBrush> {
+        let brush = match self.fx_grad.get(&ink.tool) {
+            Some(b) => b.clone(),
+            None => {
+                let stops: Vec<D2D1_GRADIENT_STOP> = ink
+                    .stops()
+                    .into_iter()
+                    .map(|(p, c)| D2D1_GRADIENT_STOP {
+                        position: p,
+                        color: D2D1_COLOR_F {
+                            r: c.r as f32 / 255.0,
+                            g: c.g as f32 / 255.0,
+                            b: c.b as f32 / 255.0,
+                            a: c.a as f32 / 255.0,
+                        },
+                    })
+                    .collect();
+                let rt: &ID2D1RenderTarget = &self.ctx;
+                let coll =
+                    rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_WRAP)?;
+                let b = self.ctx.CreateLinearGradientBrush(
+                    &D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES::default(),
+                    None,
+                    &coll,
+                )?;
+                self.fx_grad.insert(ink.tool, b.clone());
+                b
+            }
+        };
+        let (a, e) = ink.gradient_line(t);
+        brush.SetStartPoint(Vector2 { X: a.0, Y: a.1 });
+        brush.SetEndPoint(Vector2 { X: e.0, Y: e.1 });
+        brush.SetTransform(&Matrix3x2::identity());
+        Ok(brush)
+    }
+
+    /// Kreski z efektem, w dwoch przebiegach na klatke: `priority` wybiera
+    /// tusze priorytetowe albo pozostale, `offset` to przesuniecie w pikselach
+    /// ekranu (dryf pod ochrona). Kolejnosc:
+    /// 1. kreski pedzlem tuszu na przezroczysta bitmape okna (tylko w prostokacie
+    ///    tresci z zapasem na poswiate),
+    /// 2. poswiata: ta bitmapa rozmyta (Gauss) i dodana addytywnie - na czarnym
+    ///    tle swieci jak neon,
+    /// 3. ostra kreska z bitmapy na wierzch,
+    /// 4. iskry: krzyzyki z jasnym srodkiem, tez addytywnie.
+    ///
+    /// Koszt jest proporcjonalny do prostokata tresci, nie okna: rozmycie
+    /// liczy sie tylko dla obszaru, ktory jest rysowany (`imagerectangle`).
+    unsafe fn draw_fx(
+        &mut self,
+        back: &ID2D1Bitmap1,
+        layer: &FxLayer,
+        cam: &Camera,
+        priority: bool,
+        offset: (f32, f32),
+    ) -> Result<()> {
+        let (w, h) = self.size;
+        let mut area: Option<(f32, f32, f32, f32)> = None;
+        let mut pad = 2.0f32;
+        let mut glow: Option<(f32, f32)> = None;
+        for (id, data) in layer.strokes {
+            let Some(ink) = fx::for_tool(data.tool) else {
+                continue;
+            };
+            if ink.priority != priority || self.hidden.contains(id) {
+                continue;
+            }
+            let b = Bbox::of(data);
+            let (x0, y0) = cam.to_screen(b.min_x, b.min_y);
+            let (x1, y1) = cam.to_screen(b.max_x, b.max_y);
+            let r = (x0 + offset.0, y0 + offset.1, x1 + offset.0, y1 + offset.1);
+            area = Some(match area {
+                None => r,
+                Some(a) => (a.0.min(r.0), a.1.min(r.1), a.2.max(r.2), a.3.max(r.3)),
+            });
+            // Jedno rozmycie na przebieg: najmocniejsza poswiata z obecnych tuszy.
+            if let Some(g) = ink.glow {
+                let (rad, s) = g.at(layer.t);
+                glow = Some(glow.map_or((rad, s), |(r0, s0)| (r0.max(rad), s0.max(s))));
+                pad = pad.max(rad * 3.0);
+            }
+            if let Some(sp) = ink.sparkle {
+                pad = pad.max(sp.size * 2.0);
+            }
+        }
+        let Some(a) = area else {
+            return Ok(());
+        };
+        let clip = D2D_RECT_F {
+            left: (a.0 - pad).floor().max(0.0),
+            top: (a.1 - pad).floor().max(0.0),
+            right: (a.2 + pad).ceil().min(w as f32),
+            bottom: (a.3 + pad).ceil().min(h as f32),
+        };
+        if clip.right <= clip.left || clip.bottom <= clip.top {
+            return Ok(());
+        }
+        if !matches!(&self.fx_bmp, Some((_, bw, bh)) if *bw == w && *bh == h) {
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                ..Default::default()
+            };
+            let bmp = self.ctx.CreateBitmap(
+                D2D_SIZE_U {
+                    width: w,
+                    height: h,
+                },
+                None,
+                0,
+                &props,
+            )?;
+            self.fx_bmp = Some((bmp, w, h));
+        }
+        let Some((bmp, _, _)) = self.fx_bmp.clone() else {
+            return Ok(());
+        };
+
+        // 1. Kreski na bitmape efektow.
+        self.ctx.SetTarget(&bmp);
+        self.ctx
+            .PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        self.ctx.Clear(Some(&D2D1_COLOR_F::default()));
+        let mut m = Self::cam_matrix(cam);
+        m.M31 += offset.0;
+        m.M32 += offset.1;
+        self.ctx.SetTransform(&m);
+        let mut res = Ok(());
+        for (id, data) in layer.strokes {
+            let Some(ink) = fx::for_tool(data.tool) else {
+                continue;
+            };
+            if ink.priority != priority || self.hidden.contains(id) {
+                continue;
+            }
+            let brush = match self.fx_brush(ink, layer.t) {
+                Ok(b) => b,
+                Err(e) => {
+                    res = Err(e);
+                    break;
+                }
+            };
+            if let Err(e) = self.draw_stroke(*id, data, layer.ink, cam.zoom, &brush.into()) {
+                res = Err(e);
+                break;
+            }
+        }
+        self.ctx.SetTransform(&Matrix3x2::identity());
+        self.ctx.PopAxisAlignedClip();
+        self.ctx.SetTarget(back);
+        res?;
+
+        // 2. Poswiata.
+        if let Some((radius, strength)) = glow {
+            if self.fx_effects.is_none() {
+                let blur = self.ctx.CreateEffect(&CLSID_D2D1GaussianBlur)?;
+                let opacity = self.ctx.CreateEffect(&CLSID_D2D1Opacity)?;
+                self.fx_effects = Some((blur, opacity));
+            }
+            if let Some((blur, opacity)) = &self.fx_effects {
+                blur.SetInput(0, &bmp, false);
+                blur.SetValue(
+                    D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0 as u32,
+                    D2D1_PROPERTY_TYPE_FLOAT,
+                    &radius.to_le_bytes(),
+                )?;
+                opacity.SetInput(0, &blur.GetOutput()?, false);
+                opacity.SetValue(
+                    D2D1_OPACITY_PROP_OPACITY.0 as u32,
+                    D2D1_PROPERTY_TYPE_FLOAT,
+                    &strength.clamp(0.0, 1.0).to_le_bytes(),
+                )?;
+                let out = opacity.GetOutput()?;
+                let at = Vector2 {
+                    X: clip.left,
+                    Y: clip.top,
+                };
+                self.ctx.DrawImage(
+                    &out,
+                    Some(&at),
+                    Some(&clip),
+                    D2D1_INTERPOLATION_MODE_LINEAR,
+                    D2D1_COMPOSITE_MODE_PLUS,
+                );
+            }
+        }
+
+        // 3. Ostra kreska.
+        let at = Vector2 {
+            X: clip.left,
+            Y: clip.top,
+        };
+        self.ctx.DrawImage(
+            &bmp,
+            Some(&at),
+            Some(&clip),
+            D2D1_INTERPOLATION_MODE_LINEAR,
+            D2D1_COMPOSITE_MODE_SOURCE_OVER,
+        );
+
+        // 4. Iskry.
+        let mut sparks = std::mem::take(&mut self.spark_buf);
+        sparks.clear();
+        for (id, data) in layer.strokes {
+            let Some(ink) = fx::for_tool(data.tool) else {
+                continue;
+            };
+            if ink.priority != priority || self.hidden.contains(id) {
+                continue;
+            }
+            let seed = id.author.0 ^ id.seq.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            ink.sparks(seed, data, layer.t, &mut sparks);
+        }
+        if !sparks.is_empty() {
+            self.ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_ADD);
+            for s in &sparks {
+                let (x, y) = cam.to_screen(s.x, s.y);
+                let (x, y) = (x + offset.0, y + offset.1);
+                let c = fx::hsv(s.hue, 0.35, 1.0);
+                let col = |k: f32| D2D1_COLOR_F {
+                    r: c.r as f32 / 255.0 * k,
+                    g: c.g as f32 / 255.0 * k,
+                    b: c.b as f32 / 255.0 * k,
+                    a: k,
+                };
+                let p = Vector2 { X: x, Y: y };
+                // Promienie krzyzyka i miekka aureola, potem jasny srodek.
+                self.spark.SetColor(&col(0.55 * s.alpha));
+                for (rx, ry) in [(s.size * 1.8, s.size * 0.12), (s.size * 0.12, s.size * 1.8)] {
+                    self.ctx.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: p,
+                            radiusX: rx,
+                            radiusY: ry,
+                        },
+                        &self.spark,
+                    );
+                }
+                self.spark.SetColor(&col(0.25 * s.alpha));
+                self.ctx.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: p,
+                        radiusX: s.size * 0.9,
+                        radiusY: s.size * 0.9,
+                    },
+                    &self.spark,
+                );
+                self.spark.SetColor(&col(s.alpha));
+                self.ctx.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: p,
+                        radiusX: s.size * 0.32,
+                        radiusY: s.size * 0.32,
+                    },
+                    &self.spark,
+                );
+            }
+            self.ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
+        }
+        self.spark_buf = sparks;
+        Ok(())
     }
 
     /// Maska przyciemnienia: przeslanie do bitmapy (BGRA premultiplied, czern
@@ -1503,6 +1850,36 @@ impl Renderer {
                     color,
                 } => {
                     let brush = self.brush(*color)?;
+                    let e = D2D1_ELLIPSE {
+                        point: Vector2 { X: *x, Y: *y },
+                        radiusX: *radius,
+                        radiusY: *radius,
+                    };
+                    self.ctx.FillEllipse(&e, &brush);
+                }
+                UiPrim::InkSwatch {
+                    x,
+                    y,
+                    radius,
+                    tool,
+                    t,
+                } => {
+                    let Some(ink) = fx::for_tool(*tool) else {
+                        continue;
+                    };
+                    let brush = self.fx_brush(ink, *t)?;
+                    // Okres gradientu (jednostki canvasu) sciagniety do ~1,5 srednicy
+                    // probki - inaczej w kolku zmiescilby sie ledwie jeden kolor.
+                    let ((x0, y0), (x1, y1)) = ink.gradient_line(*t);
+                    let k = 3.0 * radius / (x1 - x0).hypot(y1 - y0).max(1e-3);
+                    brush.SetTransform(&Matrix3x2 {
+                        M11: k,
+                        M12: 0.0,
+                        M21: 0.0,
+                        M22: k,
+                        M31: x - radius,
+                        M32: y - radius,
+                    });
                     let e = D2D1_ELLIPSE {
                         point: Vector2 { X: *x, Y: *y },
                         radiusX: *radius,

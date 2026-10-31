@@ -16,7 +16,8 @@ mod thumb;
 pub mod tiles;
 
 pub use d2d::{
-    Device, DimMask, Lift, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail, DIM_STEP,
+    Device, DimMask, FxLayer, Lift, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail,
+    DIM_STEP,
 };
 pub use tess::stroke_segments;
 pub use thumb::ThumbRenderer;

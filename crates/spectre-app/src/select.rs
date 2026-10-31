@@ -16,7 +16,7 @@
 use spectre_core::{Bbox, Camera, Document, StrokeData, StrokeId};
 use spectre_render::UiPrim;
 
-use crate::ui::{px, ACCENT, BG};
+use crate::ui::{icon_copy, icon_cut, icon_paste, px, ACCENT, BG, FG, FG_DIM};
 
 /// Promien uchwytu w pikselach logicznych.
 const HANDLE_R: f32 = 7.0;
@@ -396,6 +396,119 @@ impl Selection {
     }
 }
 
+/// Akcja z pigulki pod zaznaczeniem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelAction {
+    Copy,
+    Cut,
+    /// Wklejenie w miejscu pustego obrysu.
+    Paste,
+}
+
+/// Bok przycisku akcji i odstep pigulki od ramki, w pikselach logicznych.
+const ACT_ITEM: f32 = 44.0;
+const ACT_GAP: f32 = 14.0;
+const ACT_PAD: f32 = 4.0;
+
+/// Pigulka z ikonami akcji (piksele ekranu): tlo i przyciski.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionBar {
+    pub bg: (f32, f32, f32, f32),
+    pub items: Vec<(SelAction, (f32, f32, f32, f32))>,
+}
+
+impl ActionBar {
+    /// Pigulka pod prostokatem `area` (piksele ekranu), wysrodkowana; gdy pod
+    /// spodem brakuje miejsca - nad nim, ponad uchwytem obrotu (`above_extra`).
+    /// Zawsze w calosci w oknie `view`.
+    pub fn place(
+        actions: &[SelAction],
+        area: (f32, f32, f32, f32),
+        above_extra: f32,
+        view: (f32, f32),
+        scale: f32,
+    ) -> ActionBar {
+        let item = px(ACT_ITEM, scale);
+        let pad = px(ACT_PAD, scale);
+        let gap = px(ACT_GAP, scale);
+        let w = item * actions.len() as f32 + 2.0 * pad;
+        let h = item + 2.0 * pad;
+        let (x0, y0, x1, y1) = area;
+        let x = ((x0 + x1) * 0.5 - w * 0.5).clamp(pad, (view.0 - w - pad).max(pad));
+        let below = y1 + gap;
+        let y = if below + h <= view.1 - pad {
+            below
+        } else {
+            (y0 - gap - above_extra - h).max(pad)
+        };
+        ActionBar {
+            bg: (x, y, w, h),
+            items: actions
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (*a, (x + pad + i as f32 * item, y + pad, item, item)))
+                .collect(),
+        }
+    }
+
+    pub fn hit(&self, sx: f32, sy: f32) -> Option<SelAction> {
+        self.items.iter().find_map(|(a, (x, y, w, h))| {
+            (sx >= *x && sx < x + w && sy >= *y && sy < y + h).then_some(*a)
+        })
+    }
+
+    /// `enabled` mowi, czy akcja cos zrobi (wklejenie przy pustym schowku nie).
+    pub fn build(&self, scale: f32, enabled: impl Fn(SelAction) -> bool, out: &mut Vec<UiPrim>) {
+        let (x, y, w, h) = self.bg;
+        out.push(UiPrim::Rect {
+            x,
+            y,
+            w,
+            h,
+            color: BG,
+            r: h * 0.5,
+        });
+        out.push(UiPrim::Outline {
+            x,
+            y,
+            w,
+            h,
+            color: ACCENT,
+            width: px(1.2, scale),
+            r: h * 0.5,
+        });
+        for (a, (ix, iy, iw, ih)) in &self.items {
+            let (cx, cy) = (ix + iw * 0.5, iy + ih * 0.5);
+            let fg = if enabled(*a) { FG } else { FG_DIM };
+            match a {
+                SelAction::Copy => icon_copy(cx, cy, scale, fg, out),
+                SelAction::Cut => icon_cut(cx, cy, scale, fg, out),
+                SelAction::Paste => icon_paste(cx, cy, scale, fg, out),
+            }
+        }
+    }
+}
+
+impl Selection {
+    /// Prostokat ramki na ekranie (obrocona ramka - jej obwiednia).
+    pub fn screen_rect(&self, cam: &Camera) -> (f32, f32, f32, f32) {
+        let s = self.frame.corners().map(|c| cam.to_screen(c.0, c.1));
+        let xs = s.iter().map(|p| p.0);
+        let ys = s.iter().map(|p| p.1);
+        (
+            xs.clone().fold(f32::INFINITY, f32::min),
+            ys.clone().fold(f32::INFINITY, f32::min),
+            xs.fold(f32::NEG_INFINITY, f32::max),
+            ys.fold(f32::NEG_INFINITY, f32::max),
+        )
+    }
+
+    /// Ile nad ramka zajmuje uchwyt obrotu (pigulka nad ramka idzie wyzej).
+    pub fn above_extra(scale: f32) -> f32 {
+        px(ROT_ARM + HANDLE_R * 2.0, scale)
+    }
+}
+
 /// Rog `i` idzie za rysikiem, przeciwlegly stoi w miejscu. Skala jest
 /// proporcjonalna: pismo scisniete w jednej osi wyglada zle, a grubosc
 /// kreski nie mialaby wtedy jednej skali.
@@ -699,6 +812,36 @@ mod tests {
         let (x, y) = xf.apply(cx + 10.0, cy);
         assert!((x - cx).abs() < 1e-2 && (y - (cy + 10.0)).abs() < 1e-2);
         assert!((xf.scale_factor() - 1.0).abs() < 1e-3);
+    }
+
+    /// Pigulka akcji: pod ramka, a gdy pod spodem brak miejsca - nad nia;
+    /// zawsze w oknie, przyciski trafiaja w swoje akcje.
+    #[test]
+    fn pigulka_pod_ramka_albo_nad_nia() {
+        let acts = [SelAction::Copy, SelAction::Cut];
+        let bar = ActionBar::place(
+            &acts,
+            (400.0, 300.0, 800.0, 450.0),
+            40.0,
+            (1800.0, 1200.0),
+            1.0,
+        );
+        let (x, y, w, h) = bar.bg;
+        assert!(y > 450.0 && x + w * 0.5 > 599.0 && x + w * 0.5 < 601.0);
+        let (_, (cx, cy, cw, ch)) = bar.items[1];
+        assert_eq!(bar.hit(cx + cw * 0.5, cy + ch * 0.5), Some(SelAction::Cut));
+        assert_eq!(bar.hit(10.0, 10.0), None);
+        // Ramka przy dolnej krawedzi okna: pigulka nad nia i nad uchwytem obrotu.
+        let low = ActionBar::place(
+            &acts,
+            (1500.0, 1000.0, 1790.0, 1190.0),
+            40.0,
+            (1800.0, 1200.0),
+            1.0,
+        );
+        assert!(low.bg.1 + low.bg.3 <= 1000.0 - 40.0);
+        assert!(low.bg.0 + low.bg.2 <= 1800.0, "w oknie takze w poziomie");
+        let _ = h;
     }
 
     /// Zaznaczenie z gotowych kresek (wklejenie): ramka obejmuje ich obwiednie.

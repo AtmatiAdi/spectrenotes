@@ -13,6 +13,7 @@
 
 pub mod camera;
 pub mod document;
+pub mod fx;
 pub mod hittest;
 
 pub use camera::Camera;

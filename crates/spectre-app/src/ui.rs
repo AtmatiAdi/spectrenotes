@@ -190,6 +190,10 @@ pub struct UiState<'a> {
     pub menu_open: bool,
     /// Ochrona AMOLED czuwa (okno tam, gdzie ma chronic): ikonka przed tytulem.
     pub protected: bool,
+    /// Tusze z efektem za kolorami palety (slot `palette.len() + i`) i czas
+    /// ich animacji - probka na pasku mieni sie jak sam tusz.
+    pub fx_tools: &'a [u8],
+    pub fx_t: f32,
 }
 
 struct Item {
@@ -1057,12 +1061,29 @@ impl Toolbar {
                         });
                     }
                 }
-                Action::Pen => out.push(UiPrim::Circle {
-                    x: r.cx(),
-                    y: r.cy(),
-                    radius: 4.0 * k + s.width * 0.6 * k,
-                    color: s.palette[s.color_idx],
-                }),
+                Action::Pen => {
+                    let radius = 4.0 * k + s.width * 0.6 * k;
+                    match s.palette.get(s.color_idx) {
+                        Some(&color) => out.push(UiPrim::Circle {
+                            x: r.cx(),
+                            y: r.cy(),
+                            radius,
+                            color,
+                        }),
+                        // Tusz z efektem: kropka mieni sie jak tusz.
+                        None => out.push(UiPrim::InkSwatch {
+                            x: r.cx(),
+                            y: r.cy(),
+                            radius,
+                            tool: s
+                                .fx_tools
+                                .get(s.color_idx - s.palette.len())
+                                .copied()
+                                .unwrap_or(0),
+                            t: s.fx_t,
+                        }),
+                    }
+                }
                 Action::Eraser => out.push(UiPrim::Outline {
                     x: r.cx() - 11.0 * k,
                     y: r.cy() - 8.0 * k,
@@ -1107,65 +1128,27 @@ impl Toolbar {
                         }
                     }
                 }
-                Action::Copy => {
-                    // Dwie kartki jedna na drugiej: tylnej widac tylko gorna
-                    // i prawa krawedz, wiec nic nie trzeba zaslaniac tlem
-                    // (tlo elementu zmienia sie przy podswietleniu).
-                    let (cx, cy) = (r.cx(), r.cy());
-                    out.push(UiPrim::Rect {
-                        x: cx - 3.0 * k,
-                        y: cy - 10.0 * k,
-                        w: 12.0 * k,
-                        h: 1.5 * k,
-                        color: fg,
-                        r: 0.75 * k,
-                    });
-                    out.push(UiPrim::Rect {
-                        x: cx + 7.5 * k,
-                        y: cy - 10.0 * k,
-                        w: 1.5 * k,
-                        h: 12.0 * k,
-                        color: fg,
-                        r: 0.75 * k,
-                    });
-                    out.push(UiPrim::Outline {
-                        x: cx - 9.0 * k,
-                        y: cy - 5.0 * k,
-                        w: 15.0 * k,
-                        h: 15.0 * k,
-                        color: fg,
-                        width: 1.5 * k,
-                        r: 2.0 * k,
-                    });
-                }
-                Action::Paste => {
-                    // Podkladka: obrys kartki z klipsem u gory.
-                    let (cx, cy) = (r.cx(), r.cy());
-                    out.push(UiPrim::Outline {
-                        x: cx - 8.0 * k,
-                        y: cy - 7.0 * k,
-                        w: 16.0 * k,
-                        h: 17.0 * k,
-                        color: fg,
-                        width: 1.5 * k,
-                        r: 2.0 * k,
-                    });
-                    out.push(UiPrim::Rect {
-                        x: cx - 4.5 * k,
-                        y: cy - 10.5 * k,
-                        w: 9.0 * k,
-                        h: 6.0 * k,
-                        color: fg,
-                        r: 1.5 * k,
-                    });
-                }
+                Action::Copy => icon_copy(r.cx(), r.cy(), k, fg, out),
+                Action::Paste => icon_paste(r.cx(), r.cy(), k, fg, out),
                 Action::Color(i) => {
-                    out.push(UiPrim::Circle {
-                        x: r.cx(),
-                        y: r.cy(),
-                        radius: 9.0 * k,
-                        color: s.palette[i],
-                    });
+                    match s.palette.get(i) {
+                        Some(&color) => out.push(UiPrim::Circle {
+                            x: r.cx(),
+                            y: r.cy(),
+                            radius: 9.0 * k,
+                            color,
+                        }),
+                        None => {
+                            let tool = s.fx_tools.get(i - s.palette.len()).copied().unwrap_or(0);
+                            out.push(UiPrim::InkSwatch {
+                                x: r.cx(),
+                                y: r.cy(),
+                                radius: 9.0 * k,
+                                tool,
+                                t: s.fx_t,
+                            });
+                        }
+                    }
                     if i == s.color_idx {
                         out.push(UiPrim::Outline {
                             x: r.cx() - 13.0 * k,
@@ -1347,6 +1330,81 @@ fn grip_dots(g: Rect, color: Rgba, k: f32, out: &mut Vec<UiPrim>) {
     }
 }
 
+/// Kopiuj: dwie kartki jedna na drugiej. Tylnej widac tylko gorna i prawa
+/// krawedz, wiec nic nie trzeba zaslaniac tlem (tlo elementu zmienia sie
+/// przy podswietleniu). Wspolne dla paska i akcji pod zaznaczeniem.
+pub(crate) fn icon_copy(cx: f32, cy: f32, k: f32, fg: Rgba, out: &mut Vec<UiPrim>) {
+    out.push(UiPrim::Rect {
+        x: cx - 3.0 * k,
+        y: cy - 10.0 * k,
+        w: 12.0 * k,
+        h: 1.5 * k,
+        color: fg,
+        r: 0.75 * k,
+    });
+    out.push(UiPrim::Rect {
+        x: cx + 7.5 * k,
+        y: cy - 10.0 * k,
+        w: 1.5 * k,
+        h: 12.0 * k,
+        color: fg,
+        r: 0.75 * k,
+    });
+    out.push(UiPrim::Outline {
+        x: cx - 9.0 * k,
+        y: cy - 5.0 * k,
+        w: 15.0 * k,
+        h: 15.0 * k,
+        color: fg,
+        width: 1.5 * k,
+        r: 2.0 * k,
+    });
+}
+
+/// Wklej: podkladka - obrys kartki z klipsem u gory.
+pub(crate) fn icon_paste(cx: f32, cy: f32, k: f32, fg: Rgba, out: &mut Vec<UiPrim>) {
+    out.push(UiPrim::Outline {
+        x: cx - 8.0 * k,
+        y: cy - 7.0 * k,
+        w: 16.0 * k,
+        h: 17.0 * k,
+        color: fg,
+        width: 1.5 * k,
+        r: 2.0 * k,
+    });
+    out.push(UiPrim::Rect {
+        x: cx - 4.5 * k,
+        y: cy - 10.5 * k,
+        w: 9.0 * k,
+        h: 6.0 * k,
+        color: fg,
+        r: 1.5 * k,
+    });
+}
+
+/// Wytnij: nozyczki - dwa ostrza skrzyzowane nad dwoma uchwytami.
+pub(crate) fn icon_cut(cx: f32, cy: f32, k: f32, fg: Rgba, out: &mut Vec<UiPrim>) {
+    for side in [-1.0f32, 1.0] {
+        out.push(UiPrim::Outline {
+            x: cx + side * 5.0 * k - 3.5 * k,
+            y: cy + 6.0 * k - 3.5 * k,
+            w: 7.0 * k,
+            h: 7.0 * k,
+            color: fg,
+            width: 1.5 * k,
+            r: 3.5 * k,
+        });
+        out.push(UiPrim::Line {
+            x0: cx + side * 3.0 * k,
+            y0: cy + 3.0 * k,
+            x1: cx - side * 5.0 * k,
+            y1: cy - 11.0 * k,
+            color: fg,
+            width: 1.5 * k,
+        });
+    }
+}
+
 /// Przesuwa gotowe prymitywy o `(dx, dy)` i mnozy ich krycie przez `alpha`
 /// (0..1). Tak animuje sie chowanie: uklad liczy pasek raz, w miejscu
 /// spoczynku, a klatka przesuwa go i blednie juz po fakcie - bez drugiego
@@ -1380,6 +1438,7 @@ fn shift_fade(prims: &mut [UiPrim], dx: f32, dy: f32, alpha: f32) {
                 fade(color);
             }
             UiPrim::Thumb { x, y, .. }
+            | UiPrim::InkSwatch { x, y, .. }
             | UiPrim::Avatar { x, y, .. }
             | UiPrim::Clip { x, y, .. } => {
                 *x += dx;
@@ -1421,6 +1480,8 @@ mod tests {
             fullscreen: false,
             menu_open: false,
             protected: false,
+            fx_tools: &[],
+            fx_t: 0.0,
         };
         let mut shown = Vec::new();
         t.build(&st, &mut shown);

@@ -248,6 +248,36 @@ przełączenie notatki i space'u). Wklejona treść ląduje na środku widoku i 
 **zaznaczona** — można ją chwycić i odstawić tam, gdzie ma być. Całe wklejenie to jedna
 akcja historii (`Document::add_strokes`), więc jedno `Ctrl+Z` je zdejmuje.
 
+**Akcje pod zaznaczeniem** (`select::ActionBar`): pod ramką zaznaczenia (albo nad nią,
+ponad uchwytem obrotu, gdy pod spodem brak miejsca) stoi pigułka z ikonami **kopiuj**
+i **wytnij** (kopiuje i wymazuje — jedna akcja historii). Obrys, który niczego nie
+złapał, zostawia pod sobą pigułkę **wklej**: wklejenie ląduje w miejscu obrysu
+(środkiem treści na środku obrysu), przy pustym schowku ikona jest przygaszona.
+Dotknięcie pigułki nie zaczyna nowego obrysu; znika przy następnym dotknięciu canvasu,
+zmianie narzędzia i w trakcie gestu.
+
+**Tusze z efektem** (`spectre_core::fx`, siódmy slot palety — tęczowa kropka — albo
+`7`): **tusz priorytetowy** do rzeczy ważnych mieni się tęczą płynącą wzdłuż kreski,
+ma pulsującą poświatę i migoczące iskry. Pod ochroną AMOLED nie gaśnie z notatką —
+**wisi nad falami** i powoli **dryfuje po ekranie** (krzywa Lissajous o okresach 137
+i 89 s, z marginesem od krawędzi), więc żaden piksel nie świeci nim długo; po
+dotknięciu wraca na swoje miejsce razem z rozjaśnianiem notatki.
+- Tusz jest **opisem, nie kodem** (`InkFx`): funkcja koloru (`ColorFn`), poświata
+  (`Glow`: promień, siła, puls), iskry (`Sparkle`: gęstość, rozmiar, tempo) i flaga
+  `priority`. Renderer zna tylko te klocki, więc nowy tusz — także przyszłe tusze
+  użytkownika — to nowy zestaw liczb w `fx::INKS`. Wszystko jest bezstanowe:
+  wygląd w chwili `t` wynika z samego `t` i kreski.
+- Rodzaj tuszu siedzi w polu `StrokeData::tool` (było w formacie od początku, stare
+  wersje go nie czytają) — starsze wersje, miniatury i PDF pokazują kreskę w kolorze
+  bazowym tuszu. Mokra kreska też rysuje się kolorem bazowym; „ożywa" po oderwaniu.
+- Warstwa sucha takie kreski pomija; każda klatka rysuje widoczne: pędzel gradientowy
+  w transformacji kamery (tęcza przypięta do treści), bitmapa → rozmycie Gaussa →
+  dodane addytywnie (poświata), ostra kreska, iskry addytywnie. Koszt rośnie z
+  prostokątem treści, nie z oknem. Gdy tusz jest na ekranie, klatki idą co 33 ms
+  (`TIMER_FX`, `WM_TIMER` ma najniższy priorytet — pióro zawsze pierwsze; w trakcie
+  kreski klatki daje rysik); bez niego proces śpi jak dotąd. Zmierzone (31 X 2026,
+  Arc, okno 1800×1200): klatka 1,7 ms, ~6% jednego rdzenia przy animacji vs 0,2% bez.
+
 **Widok zablokowany / odblokowany** (kłódka widoku na pasku, `view_lock` w config):
 zablokowany — przewijanie w bok (przycisk boczny) tylko w granicach kolumny notatki
 (2880 jednostek, szerokość panelu), a gdy cała kolumna mieści się w oknie, jest
@@ -477,7 +507,7 @@ druga instancja z innym `COMPUTERNAME` i `APPDATA` oraz własnym katalogiem spac
 | **przycisk gumki (trzymany)** | gumka kresek — usuwa całe kreski, które dotknie |
 | **przycisk boczny (trzymany)** | przewijanie (w poziomie tylko przy odblokowanym widoku) |
 | kółko myszy, `Home` | przewijanie, powrót na górę |
-| `1`–`6` | kolor (paleta pod AMOLED) |
+| `1`–`7` | kolor (paleta pod AMOLED); `7` = tusz priorytetowy |
 | `E` | gumka z klawiatury |
 | `[` `]` | grubość (co 0,1 px) |
 | `Ctrl+Z` / `Ctrl+Y` | cofnij / ponów (cofnięcie wymazania odtwarza kreskę) |
