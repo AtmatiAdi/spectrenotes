@@ -333,6 +333,9 @@ pub struct FxLayer<'a> {
     pub drift: (f32, f32),
     /// Ochrona AMOLED trwa (albo gasnie): tresc priorytetowa idzie nad fale.
     pub above_dim: bool,
+    /// Wlasna kreska w trakcie rysowania tuszem z efektem: odcinki (jak `tail`
+    /// w `present`, ktory jej wtedy nie rysuje) i probki (obwiednia, iskry).
+    pub wet: Option<(&'a [Segment], &'a spectre_proto::StrokeData)>,
 }
 
 /// Maska przyciemnienia (Z7): krycie czerni 0..255 w siatce co `DIM_STEP` px
@@ -1362,7 +1365,10 @@ impl Renderer {
             for (t, b) in overlay.tails.iter().zip(&tail_brushes) {
                 self.draw_segments(&t.segs, b, cam)?;
             }
-            self.draw_segments(tail, &brush, cam)?;
+            // Mokra kreska tuszem z efektem idzie w przebiegu efektow (wyzej).
+            if overlay.fx.as_ref().is_none_or(|f| f.wet.is_none()) {
+                self.draw_segments(tail, &brush, cam)?;
+            }
             for &(x, y) in overlay.marks {
                 let e = D2D1_ELLIPSE {
                     point: Vector2 { X: x, Y: y },
@@ -1512,11 +1518,23 @@ impl Renderer {
         let mut area: Option<(f32, f32, f32, f32)> = None;
         let mut pad = 2.0f32;
         let mut glow: Option<(f32, f32)> = None;
-        for (id, data) in layer.strokes {
+        // Kreski dokumentu i mokra kreska (bez id: nie ma jej jeszcze w dokumencie).
+        let items: Vec<(Option<StrokeId>, &spectre_proto::StrokeData)> = layer
+            .strokes
+            .iter()
+            .map(|(id, d)| (Some(*id), *d))
+            .chain(
+                layer
+                    .wet
+                    .filter(|(_, d)| !d.samples.is_empty())
+                    .map(|(_, d)| (None, d)),
+            )
+            .collect();
+        for &(id, data) in &items {
             let Some(ink) = fx::for_tool(data.tool) else {
                 continue;
             };
-            if ink.priority != priority || self.hidden.contains(id) {
+            if ink.priority != priority || id.is_some_and(|i| self.hidden.contains(&i)) {
                 continue;
             }
             let b = Bbox::of(data);
@@ -1585,11 +1603,11 @@ impl Renderer {
         m.M32 += offset.1;
         self.ctx.SetTransform(&m);
         let mut res = Ok(());
-        for (id, data) in layer.strokes {
+        for &(id, data) in &items {
             let Some(ink) = fx::for_tool(data.tool) else {
                 continue;
             };
-            if ink.priority != priority || self.hidden.contains(id) {
+            if ink.priority != priority || id.is_some_and(|i| self.hidden.contains(&i)) {
                 continue;
             }
             let brush = match self.fx_brush(ink, layer.t) {
@@ -1599,7 +1617,17 @@ impl Renderer {
                     break;
                 }
             };
-            if let Err(e) = self.draw_stroke(*id, data, layer.ink, cam.zoom, &brush.into()) {
+            let drawn = match (id, layer.wet) {
+                (Some(id), _) => self.draw_stroke(id, data, layer.ink, cam.zoom, &brush.into()),
+                // Mokra kreska: ta sama wstega co `tail` w `present`, pedzlem tuszu.
+                (None, Some((segs, _))) => {
+                    geometry::build(&self.factory2d, segs, cam.zoom).map(|geo| {
+                        self.ctx.FillGeometry(&geo, &brush, None);
+                    })
+                }
+                (None, None) => Ok(()),
+            };
+            if let Err(e) = drawn {
                 res = Err(e);
                 break;
             }
@@ -1660,14 +1688,16 @@ impl Renderer {
         // 4. Iskry.
         let mut sparks = std::mem::take(&mut self.spark_buf);
         sparks.clear();
-        for (id, data) in layer.strokes {
+        for &(id, data) in &items {
             let Some(ink) = fx::for_tool(data.tool) else {
                 continue;
             };
-            if ink.priority != priority || self.hidden.contains(id) {
+            if ink.priority != priority || id.is_some_and(|i| self.hidden.contains(&i)) {
                 continue;
             }
-            let seed = id.author.0 ^ id.seq.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let seed = id.map_or(0x5eed, |id| {
+                id.author.0 ^ id.seq.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            });
             ink.sparks(seed, data, layer.t, &mut sparks);
         }
         if !sparks.is_empty() {

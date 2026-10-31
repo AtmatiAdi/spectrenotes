@@ -5309,7 +5309,10 @@ impl App {
         if self.mode == Mode::Draw {
             self.stroke.commit(&mut self.commit_buf);
             self.wet_pending.extend_from_slice(&self.commit_buf);
-            if self.wet_pending.len() >= WET_BURN_SEGS {
+            // Tusz z efektem nie wypala sie wcale: cala mokra kreska jedzie co
+            // klatke w przebiegu efektow (`FxLayer::wet`) i mieni sie od pierwszej
+            // probki - kolor bazowy w warstwie suchej zakrylby to pod spodem.
+            if self.wet_pending.len() >= WET_BURN_SEGS && self.ink_tool() == 0 {
                 let _ = self
                     .renderer
                     .commit(&self.wet_pending, self.color(), &self.cam);
@@ -5589,6 +5592,13 @@ impl App {
         };
 
         let color = self.color();
+        // Wlasna kreska tuszem z efektem mieni sie juz w trakcie pisania.
+        let fx_wet_data = (self.mode == Mode::Draw && self.ink_tool() != 0).then(|| StrokeData {
+            tool: self.ink_tool(),
+            color,
+            base_width: self.ink.base_width,
+            samples: self.stroke.samples().to_vec(),
+        });
         // Fale (Z7): krok symulacji o czas od poprzedniej klatki, tylko gdy trwaja.
         let dim = match (self.waves.as_mut(), self.waves_leaving.as_mut()) {
             (Some(wv), _) => {
@@ -5628,13 +5638,16 @@ impl App {
                 marks: &marks,
                 ui: &prims,
                 dim,
-                fx: (!fx_strokes.is_empty()).then_some(spectre_render::FxLayer {
-                    strokes: &fx_strokes,
-                    ink: &self.ink,
-                    t: fx_t,
-                    drift: fx_drift,
-                    above_dim: protect.is_some(),
-                }),
+                fx: (!fx_strokes.is_empty() || fx_wet_data.is_some()).then_some(
+                    spectre_render::FxLayer {
+                        strokes: &fx_strokes,
+                        ink: &self.ink,
+                        t: fx_t,
+                        drift: fx_drift,
+                        above_dim: protect.is_some(),
+                        wet: fx_wet_data.as_ref().map(|d| (&tail[..], d)),
+                    },
+                ),
             },
             if self.vsync {
                 PresentMode::VSync

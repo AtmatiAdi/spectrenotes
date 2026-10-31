@@ -269,7 +269,9 @@ dotknięciu wraca na swoje miejsce razem z rozjaśnianiem notatki.
   wygląd w chwili `t` wynika z samego `t` i kreski.
 - Rodzaj tuszu siedzi w polu `StrokeData::tool` (było w formacie od początku, stare
   wersje go nie czytają) — starsze wersje, miniatury i PDF pokazują kreskę w kolorze
-  bazowym tuszu. Mokra kreska też rysuje się kolorem bazowym; „ożywa" po oderwaniu.
+  bazowym tuszu. Mokra kreska mieni się już w trakcie pisania: nie wypala się do
+  warstwy suchej, tylko co klatkę jedzie w przebiegu efektów (`FxLayer::wet`) — koszt
+  klatki pióra rośnie z 1,6 do 2,9 ms (kreska 1200 px, 31 X 2026), tylko dla tego tuszu.
 - Warstwa sucha takie kreski pomija; każda klatka rysuje widoczne: pędzel gradientowy
   w transformacji kamery (tęcza przypięta do treści), bitmapa → rozmycie Gaussa →
   dodane addytywnie (poświata), ostra kreska, iskry addytywnie. Koszt rośnie z
