@@ -63,15 +63,32 @@ struct Entry {
 
 /// Jedna akcja uzytkownika w sensie undo. Grupa, bo jedno pociagniecie gumka
 /// potrafi wymazac wiele kresek i cofa sie je razem.
+///
+/// Same identyfikatory, bez danych kresek: dokument trzyma dane takze kresek
+/// wymazanych (nagrobek je tylko ukrywa), wiec cofniecie wymazania bierze je
+/// stamtad. Dzieki temu historia jest mala i da sie ja zapisac na dysku
+/// (`history_bytes`) - cofanie dziala takze po ponownym uruchomieniu.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Action {
     Added(Vec<StrokeId>),
-    Erased(Vec<(StrokeId, StrokeData)>),
+    Erased(Vec<StrokeId>),
     /// Podmiana: stare kreski wymazane, nowe (przeksztalcone) dodane. Dla
     /// uzytkownika to jeden ruch zaznaczenia, wiec cofa sie w calosci.
     Replaced {
-        erased: Vec<(StrokeId, StrokeData)>,
+        erased: Vec<StrokeId>,
         added: Vec<StrokeId>,
     },
+}
+
+/// Tyle akcji trzyma historia; starsze odpadaja. Akcja to kilkanascie bajtow
+/// na kreske, wiec nawet pelna historia to pojedyncze megabajty.
+pub const HISTORY_MAX: usize = 100_000;
+
+/// Historia cofania wyjeta z dokumentu (`take_history`) - do przeniesienia
+/// na nowo wczytany dokument tej samej notatki.
+pub struct History {
+    undo: Vec<Action>,
+    redo: Vec<Action>,
 }
 
 pub struct Document {
@@ -98,6 +115,9 @@ pub struct Document {
 
     undo: Vec<Action>,
     redo: Vec<Action>,
+    /// Grupa wymazania otwarta: kolejne `erase_strokes_continuing` dopisuja sie
+    /// do niej. Zamyka ja kazda inna akcja i `close_group` (poczatek gestu gumki).
+    erase_open: bool,
 }
 
 impl Document {
@@ -115,6 +135,7 @@ impl Document {
             applied: HashSet::new(),
             undo: Vec::new(),
             redo: Vec::new(),
+            erase_open: false,
         }
     }
 
@@ -198,8 +219,7 @@ impl Document {
     /// Nowa kreska. Zwrocona operacja idzie do pliku i do peerow.
     pub fn add_stroke(&mut self, data: StrokeData) -> Op {
         let id = self.fresh_id();
-        self.redo.clear();
-        self.undo.push(Action::Added(vec![id]));
+        self.push_action(Action::Added(vec![id]));
         self.local_op(OpKind::StrokeAdd { id, data })
     }
 
@@ -217,8 +237,7 @@ impl Document {
             }));
         }
         if !ids.is_empty() {
-            self.redo.clear();
-            self.undo.push(Action::Added(ids.clone()));
+            self.push_action(Action::Added(ids.clone()));
         }
         (ops, ids)
     }
@@ -239,21 +258,24 @@ impl Document {
         let mut ops = Vec::new();
         let mut group = Vec::new();
         for id in ids {
-            if self.erased.contains(id) {
+            if self.erased.contains(id) || !self.strokes.contains_key(id) {
                 continue;
             }
-            let Some(e) = self.strokes.get(id) else {
-                continue;
-            };
-            group.push((*id, e.data.clone()));
+            group.push(*id);
             ops.push(self.local_op(OpKind::StrokeErase { id: *id }));
         }
         if !group.is_empty() {
-            self.redo.clear();
             match self.undo.last_mut() {
-                Some(Action::Erased(prev)) if continue_group => prev.extend(group),
-                _ => self.undo.push(Action::Erased(group)),
+                // Dopisanie tylko w obrebie tego samego gestu gumki. Wczesniej
+                // wystarczalo, ze ostatnia akcja byla wymazaniem - dwa osobne
+                // pociagniecia gumka cofaly sie razem jednym `Ctrl+Z`.
+                Some(Action::Erased(prev)) if continue_group && self.erase_open => {
+                    self.redo.clear();
+                    prev.extend(group);
+                }
+                _ => self.push_action(Action::Erased(group)),
             }
+            self.erase_open = continue_group;
         }
         ops
     }
@@ -274,13 +296,10 @@ impl Document {
         let mut erased = Vec::new();
         let mut added = Vec::new();
         for (old, new) in ids.iter().zip(data) {
-            let Some(e) = self.strokes.get(old) else {
-                continue;
-            };
-            if self.erased.contains(old) {
+            if !self.strokes.contains_key(old) || self.erased.contains(old) {
                 continue;
             }
-            erased.push((*old, e.data.clone()));
+            erased.push(*old);
             ops.push(self.local_op(OpKind::StrokeErase { id: *old }));
             let id = self.fresh_id();
             added.push(id);
@@ -290,8 +309,7 @@ impl Document {
             }));
         }
         if !added.is_empty() {
-            self.redo.clear();
-            self.undo.push(Action::Replaced {
+            self.push_action(Action::Replaced {
                 erased,
                 added: added.clone(),
             });
@@ -323,6 +341,7 @@ impl Document {
     /// Cofniecie wymazania to **nowa** kreska z nowym id - nagrobek jest
     /// nieodwracalny, bo tylko wtedy CRDT pozostaje zbiorem rosnacym (ADR 0004).
     pub fn undo(&mut self) -> Vec<Op> {
+        self.erase_open = false;
         let Some(action) = self.undo.pop() else {
             return Vec::new();
         };
@@ -332,6 +351,7 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> Vec<Op> {
+        self.erase_open = false;
         let Some(action) = self.redo.pop() else {
             return Vec::new();
         };
@@ -340,98 +360,158 @@ impl Document {
         ops
     }
 
+    /// Nowa akcja uzytkownika: konczy grupe gumki, kasuje redo, a historia
+    /// dluzsza niz `HISTORY_MAX` traci najstarsze wpisy.
+    fn push_action(&mut self, action: Action) {
+        self.erase_open = false;
+        self.redo.clear();
+        self.undo.push(action);
+        if self.undo.len() > HISTORY_MAX + HISTORY_MAX / 10 {
+            let cut = self.undo.len() - HISTORY_MAX;
+            self.undo.drain(..cut);
+        }
+    }
+
+    /// Poczatek nowego gestu gumki: nastepne wymazanie zaczyna nowa akcje.
+    pub fn close_group(&mut self) {
+        self.erase_open = false;
+    }
+
+    /// Zywe kreski z listy - wymazywane przy odwracaniu dodania.
+    fn erase_live(&mut self, ids: Vec<StrokeId>, ops: &mut Vec<Op>) -> Vec<StrokeId> {
+        let mut done = Vec::new();
+        for id in ids {
+            if self.strokes.contains_key(&id) && !self.erased.contains(&id) {
+                done.push(id);
+                ops.push(self.local_op(OpKind::StrokeErase { id }));
+            }
+        }
+        done
+    }
+
+    /// Kreski z listy odrodzone pod nowymi id (dane z dokumentu - nagrobek ich
+    /// nie usuwa). Nieznane (np. historia z innej wersji pliku) sa pomijane.
+    fn revive(&mut self, ids: Vec<StrokeId>, ops: &mut Vec<Op>) -> Vec<StrokeId> {
+        let mut done = Vec::new();
+        for old in ids {
+            let Some(data) = self.strokes.get(&old).map(|e| e.data.clone()) else {
+                continue;
+            };
+            let id = self.fresh_id();
+            done.push(id);
+            ops.push(self.local_op(OpKind::StrokeAdd { id, data }));
+            // Kreska odrodzila sie pod nowym id. Starsze wpisy historii
+            // (np. jej pierwotne dodanie) musza od teraz wskazywac na nowe,
+            // inaczej kolejne undo trafialoby w nagrobek i nic nie robilo.
+            self.remap(old, id);
+        }
+        done
+    }
+
     fn invert(&mut self, action: Action) -> (Vec<Op>, Action) {
-        match action {
-            Action::Added(ids) => {
-                let mut group = Vec::new();
-                let mut ops = Vec::new();
-                for id in ids {
-                    if let Some(e) = self.strokes.get(&id) {
-                        if !self.erased.contains(&id) {
-                            group.push((id, e.data.clone()));
-                            ops.push(self.local_op(OpKind::StrokeErase { id }));
-                        }
-                    }
-                }
-                (ops, Action::Erased(group))
-            }
-            Action::Erased(list) => {
-                let mut ids = Vec::new();
-                let mut ops = Vec::new();
-                for (old, data) in list {
-                    let id = self.fresh_id();
-                    ids.push(id);
-                    ops.push(self.local_op(OpKind::StrokeAdd { id, data }));
-                    // Kreska odrodzila sie pod nowym id. Starsze wpisy historii
-                    // (np. jej pierwotne dodanie) musza od teraz wskazywac na nowe,
-                    // inaczej kolejne undo trafialoby w nagrobek i nic nie robilo.
-                    self.remap(old, id);
-                }
-                (ops, Action::Added(ids))
-            }
+        let mut ops = Vec::new();
+        let inverse = match action {
+            Action::Added(ids) => Action::Erased(self.erase_live(ids, &mut ops)),
+            Action::Erased(ids) => Action::Added(self.revive(ids, &mut ops)),
             // Cofniecie podmiany: nowe kreski znikaja, stare wracaja (pod
             // nowymi id). Odwrotnoscia jest ta sama akcja z zamieniona
             // kolejnoscia, wiec redo odtwarza ruch zaznaczenia.
             Action::Replaced { erased, added } => {
-                let mut ops = Vec::new();
-                let mut now_erased = Vec::new();
-                for id in added {
-                    if let Some(e) = self.strokes.get(&id) {
-                        if !self.erased.contains(&id) {
-                            now_erased.push((id, e.data.clone()));
-                            ops.push(self.local_op(OpKind::StrokeErase { id }));
-                        }
-                    }
+                let now_erased = self.erase_live(added, &mut ops);
+                let now_added = self.revive(erased, &mut ops);
+                Action::Replaced {
+                    erased: now_erased,
+                    added: now_added,
                 }
-                let mut now_added = Vec::new();
-                for (old, data) in erased {
-                    let id = self.fresh_id();
-                    now_added.push(id);
-                    ops.push(self.local_op(OpKind::StrokeAdd { id, data }));
-                    self.remap(old, id);
-                }
-                (
-                    ops,
-                    Action::Replaced {
-                        erased: now_erased,
-                        added: now_added,
-                    },
-                )
             }
-        }
+        };
+        (ops, inverse)
     }
 
     fn remap(&mut self, old: StrokeId, new: StrokeId) {
         for action in self.undo.iter_mut().chain(self.redo.iter_mut()) {
-            match action {
-                Action::Added(ids) => {
-                    for id in ids.iter_mut() {
-                        if *id == old {
-                            *id = new;
-                        }
-                    }
-                }
-                Action::Erased(list) => {
-                    for (id, _) in list.iter_mut() {
-                        if *id == old {
-                            *id = new;
-                        }
-                    }
-                }
-                Action::Replaced { erased, added } => {
-                    for (id, _) in erased.iter_mut() {
-                        if *id == old {
-                            *id = new;
-                        }
-                    }
-                    for id in added.iter_mut() {
-                        if *id == old {
-                            *id = new;
-                        }
+            let lists: [&mut Vec<StrokeId>; 2] = match action {
+                Action::Added(ids) | Action::Erased(ids) => [ids, &mut Vec::new()],
+                Action::Replaced { erased, added } => [erased, added],
+            };
+            for list in lists {
+                for id in list.iter_mut() {
+                    if *id == old {
+                        *id = new;
                     }
                 }
             }
         }
+    }
+
+    /// Historia wyjeta z dokumentu - po ponownym wczytaniu tej samej notatki
+    /// (merge z gita) wraca przez `set_history`, zamiast przepadac.
+    pub fn take_history(&mut self) -> History {
+        self.erase_open = false;
+        History {
+            undo: std::mem::take(&mut self.undo),
+            redo: std::mem::take(&mut self.redo),
+        }
+    }
+
+    pub fn set_history(&mut self, h: History) {
+        self.erase_open = false;
+        self.undo = h.undo;
+        self.redo = h.redo;
+    }
+
+    /// Historia cofania jako bajty - do pliku lokalnego (nie do gita: to stan
+    /// tego urzadzenia, nie notatki). Wpisy to same identyfikatory kresek.
+    pub fn history_bytes(&self) -> Vec<u8> {
+        use spectre_proto::varint::put_u64;
+        let mut out = Vec::with_capacity(16 + self.undo.len() * 12);
+        out.extend_from_slice(HISTORY_MAGIC);
+        let mut last_author = None;
+        for stack in [&self.undo, &self.redo] {
+            put_u64(&mut out, stack.len() as u64);
+            for a in stack {
+                let (tag, lists): (u8, [&[StrokeId]; 2]) = match a {
+                    Action::Added(ids) => (1, [ids, &[]]),
+                    Action::Erased(ids) => (2, [ids, &[]]),
+                    Action::Replaced { erased, added } => (3, [erased, added]),
+                };
+                out.push(tag);
+                for list in &lists[..if tag == 3 { 2 } else { 1 }] {
+                    put_u64(&mut out, list.len() as u64);
+                    for id in *list {
+                        // Autor zwykle ten sam co wyzej: 0 = "jak poprzednio",
+                        // 1 + skrot = inny (skrot ma 8 bajtow, varint nawet 10).
+                        if last_author == Some(id.author) {
+                            out.push(0);
+                        } else {
+                            out.push(1);
+                            out.extend_from_slice(&id.author.0.to_le_bytes());
+                            last_author = Some(id.author);
+                        }
+                        put_u64(&mut out, id.seq);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Odczyt `history_bytes`. Uszkodzony albo obcy plik = pusta historia
+    /// (cofanie zaczyna sie od zera, notatka jest nietknieta). Wpisy o kreskach,
+    /// ktorych dokument nie zna, przy cofaniu sa po prostu pomijane.
+    pub fn load_history(&mut self, bytes: &[u8]) -> bool {
+        match decode_history(bytes) {
+            Some((undo, redo)) => {
+                self.set_history(History { undo, redo });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Dlugosci stosow cofania i ponawiania (HUD, testy).
+    pub fn history_len(&self) -> (usize, usize) {
+        (self.undo.len(), self.redo.len())
     }
 
     pub fn get(&self, id: StrokeId) -> Option<&StrokeData> {
@@ -518,6 +598,63 @@ impl Document {
         }
         self.content.set(None);
     }
+}
+
+/// Naglowek pliku historii (`Document::history_bytes`), wersja 1.
+const HISTORY_MAGIC: &[u8; 4] = b"SNH1";
+
+/// Odwrotnosc `history_bytes`; `None` przy jakiejkolwiek niezgodnosci.
+fn decode_history(bytes: &[u8]) -> Option<(Vec<Action>, Vec<Action>)> {
+    let rest = bytes.strip_prefix(HISTORY_MAGIC)?;
+    let mut r = spectre_proto::varint::Reader::new(rest);
+    let mut author = None;
+    let mut stacks = [Vec::new(), Vec::new()];
+    for stack in &mut stacks {
+        let n = r.usize().ok()?;
+        // Rozmiar z pliku nie moze zarezerwowac wiecej niz plik pomiesci.
+        stack.reserve(n.min(r.remaining()));
+        for _ in 0..n {
+            let tag = r.u8().ok()?;
+            let mut lists = [Vec::new(), Vec::new()];
+            let count = match tag {
+                1 | 2 => 1,
+                3 => 2,
+                _ => return None,
+            };
+            for list in lists.iter_mut().take(count) {
+                let len = r.usize().ok()?;
+                if len > r.remaining() {
+                    return None;
+                }
+                for _ in 0..len {
+                    match r.u8().ok()? {
+                        0 => {}
+                        1 => author = Some(AuthorId(r.u64_le().ok()?)),
+                        _ => return None,
+                    }
+                    let seq = r.u64().ok()?;
+                    list.push(StrokeId {
+                        author: author?,
+                        seq,
+                    });
+                }
+            }
+            let [a, b] = lists;
+            stack.push(match tag {
+                1 => Action::Added(a),
+                2 => Action::Erased(a),
+                _ => Action::Replaced {
+                    erased: a,
+                    added: b,
+                },
+            });
+        }
+    }
+    if !r.is_empty() {
+        return None;
+    }
+    let [undo, redo] = stacks;
+    Some((undo, redo))
 }
 
 /// Wysokosc pasa indeksu w jednostkach canvasu (ok. 1/3 ekranu przy zoomie 1).
@@ -659,6 +796,102 @@ mod tests {
         d.undo();
         assert_eq!(d.live_count(), 0);
         assert!(d.undo().is_empty());
+    }
+
+    fn add_id(d: &mut Document, n: usize, seed: f32) -> StrokeId {
+        match d.add_stroke(stroke(n, seed)).kind {
+            OpKind::StrokeAdd { id, .. } => id,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Jeden gest gumki (wiele paczek probek) to jedna akcja; dwa gesty pod
+    /// rzad - dwie. Wczesniej drugi doklejal sie do pierwszego i `Ctrl+Z`
+    /// przywracal oba naraz.
+    #[test]
+    fn osobne_gesty_gumki_cofaja_sie_osobno() {
+        let mut d = Document::new(AuthorId(1));
+        let ids: Vec<StrokeId> = (0..4).map(|i| add_id(&mut d, 3, i as f32)).collect();
+        // Gest 1: dwie paczki probek.
+        d.close_group();
+        d.erase_strokes_continuing(&[ids[0]]);
+        d.erase_strokes_continuing(&[ids[1]]);
+        // Gest 2.
+        d.close_group();
+        d.erase_strokes_continuing(&[ids[2]]);
+        assert_eq!(d.live_count(), 1);
+        d.undo();
+        assert_eq!(d.live_count(), 2, "cofa tylko drugi gest");
+        d.undo();
+        assert_eq!(d.live_count(), 4, "pierwszy gest w calosci");
+        // Wymazanie po cofnieciu tez zaczyna nowa akcje.
+        d.erase_strokes_continuing(&[ids[3]]);
+        d.undo();
+        assert_eq!(d.live_count(), 4);
+    }
+
+    /// Historia przezywa "restart": dokument wczytany od nowa z tych samych
+    /// operacji plus historia z bajtow cofa i ponawia dokladnie tak samo,
+    /// lacznie z cofnieciem wymazania (dane kreski z nagrobka).
+    #[test]
+    fn historia_przezywa_ponowne_wczytanie() {
+        let mut d = Document::new(AuthorId(1));
+        let a = add_id(&mut d, 3, 1.0);
+        let b = add_id(&mut d, 4, 2.0);
+        let _ = add_id(&mut d, 5, 3.0);
+        let mut ops: Vec<Op> = Vec::new();
+        // Odtworzenie op-logu: dokument od nowa i te same operacje.
+        let replay = |d: &Document| {
+            let mut all: Vec<Op> = Vec::new();
+            for (id, e) in &d.strokes {
+                all.push(Op {
+                    author: id.author,
+                    lamport: e.key.0,
+                    kind: OpKind::StrokeAdd {
+                        id: *id,
+                        data: e.data.clone(),
+                    },
+                });
+            }
+            all
+        };
+        ops.extend(d.erase_strokes(&[a]));
+        ops.extend(d.replace_strokes(&[b], &[stroke(4, 9.0)]).0);
+        d.undo(); // cofa podmiane
+        assert_eq!(d.history_len(), (3 + 1, 1));
+        let bytes = d.history_bytes();
+
+        // "Restart": nowy dokument z kreskami (takze wymazanymi) i nagrobkami.
+        let mut d2 = Document::new(AuthorId(1));
+        for op in replay(&d) {
+            d2.apply(&op);
+        }
+        for id in &d.erased {
+            d2.apply(&Op {
+                author: AuthorId(1),
+                lamport: 10_000 + id.seq,
+                kind: OpKind::StrokeErase { id: *id },
+            });
+        }
+        assert_eq!(d2.live_count(), d.live_count());
+        assert!(d2.load_history(&bytes));
+        assert_eq!(d2.history_len(), d.history_len());
+        // Te same kroki daja ten sam stan w obu.
+        for step in 0..6 {
+            let (x, y) = if step == 0 {
+                (d.redo(), d2.redo())
+            } else {
+                (d.undo(), d2.undo())
+            };
+            assert_eq!(x.len(), y.len(), "krok {step}");
+            assert_eq!(d.live_count(), d2.live_count(), "krok {step}");
+        }
+        assert_eq!(d2.live_count(), 0, "cofniete do pustej notatki");
+        // Uszkodzony plik: brak historii, dokument nietkniety.
+        let mut d3 = Document::new(AuthorId(1));
+        assert!(!d3.load_history(&bytes[..bytes.len() - 1]));
+        assert!(!d3.load_history(b"XXXX"));
+        assert!(!d3.can_undo());
     }
 
     /// Przesuniecie zaznaczenia: podmiana kresek to jedna akcja historii -

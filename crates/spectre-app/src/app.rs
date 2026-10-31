@@ -328,6 +328,9 @@ pub struct App {
     /// Obrys, ktory nic nie zlapal (canvas): pod nim pigulka "wklej" - wklejenie
     /// laduje w tym miejscu. Znika przy nastepnym dotknieciu i zmianie narzedzia.
     paste_spot: Option<Bbox>,
+    /// Historia cofania biezacej notatki zmienila sie od ostatniego zapisu
+    /// (`save_history`, razem z fsync op-logu).
+    history_dirty: bool,
 
     mode: Mode,
     buttons: PenButtons,
@@ -642,7 +645,8 @@ impl App {
             .or_else(|| notes.iter().rposition(|e| e.space != LAN_SLOT))
             .unwrap_or(0);
         let cur = &spaces[notes[note_idx].space].space;
-        let (store, doc) = open_note(cur, &notes[note_idx].id, &author)?;
+        let (store, mut doc) = open_note(cur, &notes[note_idx].id, &author)?;
+        load_history(&data_dir, &cur.note_dir(&notes[note_idx].id), &mut doc);
         refresh_entry(cur, &mut notes[note_idx], &doc);
         eprintln!(
             "startup: note opened ({} strokes) {:.0} ms",
@@ -806,6 +810,7 @@ impl App {
             lasso: Vec::new(),
             clipboard: Vec::new(),
             paste_spot: None,
+            history_dirty: false,
             mode: Mode::Idle,
             buttons: PenButtons::default(),
             hover: false,
@@ -1435,6 +1440,9 @@ impl App {
 
     fn begin_erase(&mut self, batch: &PenBatch) {
         self.mode = Mode::Erase;
+        // Nowy gest gumki = nowa akcja historii (paczki probek tego gestu
+        // dopisuja sie do niej, poprzedni gest juz nie).
+        self.doc.close_group();
         self.last_erase_canvas = None;
         self.erase_with(batch);
     }
@@ -2980,7 +2988,11 @@ impl App {
         match open_note(&self.spaces[target].space, &id, &self.author) {
             Ok((store, doc)) => {
                 self.store = store;
+                // Historia idzie z notatka; plik pod nowa sciezka przy zapisie.
+                let hist = self.doc.take_history();
                 self.doc = doc;
+                self.doc.set_history(hist);
+                self.history_dirty = true;
             }
             Err(e) => self.status = format!("reopening note: {e}"),
         }
@@ -3005,6 +3017,8 @@ impl App {
                 self.status = format!("write: {e}");
             }
         }
+        // Kazda lokalna operacja to zmiana historii cofania - zapis przy fsync.
+        self.history_dirty = true;
         // Do systemu od razu (przezyje crash aplikacji); fsync po ciszy
         // (przezyje utrate zasilania).
         if self.store.flush().is_ok() && !ops.is_empty() {
@@ -3024,10 +3038,35 @@ impl App {
         }
     }
 
+    /// Plik historii cofania biezacej notatki (`history_path`).
+    fn history_file(&self) -> PathBuf {
+        let id = &self.notes[self.note_idx].id;
+        history_path(&self.data_dir, &self.note_space(self.note_idx).note_dir(id))
+    }
+
+    /// Historia cofania na dysk, gdy sie zmienila. Plik tymczasowy i podmiana:
+    /// urwany zapis nie zostawia polowy historii.
+    fn save_history(&mut self) {
+        if !self.history_dirty {
+            return;
+        }
+        self.history_dirty = false;
+        let path = self.history_file();
+        let bytes = self.doc.history_bytes();
+        let tmp = path.with_extension("tmp");
+        let res = std::fs::create_dir_all(path.parent().unwrap_or(&self.data_dir))
+            .and_then(|_| std::fs::write(&tmp, &bytes))
+            .and_then(|_| std::fs::rename(&tmp, &path));
+        if let Err(e) = res {
+            self.status = format!("history: {e}");
+        }
+    }
+
     fn sync_now(&mut self) {
         if let Err(e) = self.store.sync() {
             self.status = format!("fsync: {e}");
         }
+        self.save_history();
     }
 
     fn undo(&mut self) {
@@ -3088,6 +3127,8 @@ impl App {
                 self.renderer.clear_geometry();
                 self.doc = doc;
                 self.note_idx = idx;
+                let note_dir = self.note_space(idx).note_dir(&self.notes[idx].id);
+                load_history(&self.data_dir, &note_dir, &mut self.doc);
                 self.remote_wet.clear();
                 self.peer_cursors.clear();
                 self.cam = Camera::default();
@@ -3114,8 +3155,8 @@ impl App {
     }
 
     /// Biezaca notatka po merge'u: ktos inny do niej dopisal. Op-log tego autora
-    /// merge nie dotyka, wiec ponowne otwarcie jest bezpieczne; tracimy tylko
-    /// stos undo. W trakcie kreski czekamy na jej koniec.
+    /// merge nie dotyka, wiec ponowne otwarcie jest bezpieczne; historia
+    /// cofania przechodzi na nowo wczytany dokument. W trakcie kreski czekamy na jej koniec.
     fn reload_current(&mut self) {
         if self.mode != Mode::Idle {
             self.reload_pending = true;
@@ -3132,7 +3173,11 @@ impl App {
             Ok((store, doc)) => {
                 self.store = store;
                 self.renderer.clear_geometry();
+                // Ta sama notatka, nowe operacje od innych - historia zostaje
+                // (wczesniej ginela przy kazdym merge'u z gita).
+                let hist = self.doc.take_history();
                 self.doc = doc;
+                self.doc.set_history(hist);
                 self.remote_wet.clear();
                 self.dirty = Dirty::Full;
                 self.sync_entry();
@@ -5777,6 +5822,22 @@ impl App {
             s.push_str(&self.sync.last);
         }
         s
+    }
+}
+
+/// Plik historii cofania notatki: lokalny, w katalogu danych aplikacji, poza
+/// space'em - do gita idzie op-log (stan notatki), a historia to stan tego
+/// urzadzenia. Klucz to skrot sciezki notatki (te same id w roznych space'ach).
+fn history_path(data_dir: &Path, note_dir: &Path) -> PathBuf {
+    let key = AuthorId::from_name(&note_dir.to_string_lossy()).0;
+    data_dir.join("history").join(format!("{key:016x}.hist"))
+}
+
+/// Historia cofania z dysku do swiezo wczytanej notatki. Brak pliku albo plik
+/// uszkodzony = pusta historia; notatka sama w sobie jest nietknieta.
+fn load_history(data_dir: &Path, note_dir: &Path, doc: &mut Document) {
+    if let Ok(bytes) = std::fs::read(history_path(data_dir, note_dir)) {
+        doc.load_history(&bytes);
     }
 }
 

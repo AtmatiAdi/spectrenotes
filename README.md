@@ -248,6 +248,16 @@ przełączenie notatki i space'u). Wklejona treść ląduje na środku widoku i 
 **zaznaczona** — można ją chwycić i odstawić tam, gdzie ma być. Całe wklejenie to jedna
 akcja historii (`Document::add_strokes`), więc jedno `Ctrl+Z` je zdejmuje.
 
+**Historia cofania** to pojedyncze czynności: kreska, jedno pociągnięcie gumką (wiele
+kresek naraz, ale tylko w obrębie tego gestu — `Document::close_group` na jego starcie;
+wcześniej kolejne pociągnięcia doklejały się do poprzedniego i `Ctrl+Z` cofał je razem),
+ruch zaznaczenia, wklejenie, wycięcie. Trzyma do 100 000 akcji (`HISTORY_MAX`) i
+**przeżywa zamknięcie aplikacji**: wpisy to same identyfikatory kresek (dane wymazanych
+zostają w op-logu jako nagrobki), zapisywane do `%APPDATA%SpectreNoteshistory<skrót
+ścieżki notatki>.hist` razem z fsync op-logu (400 ms ciszy, zmiana notatki, wyjście).
+Plik jest **lokalny** — nie trafia do gita ani do LAN; do chmury idą jak dotąd
+większe migawki op-logu. Przeładowanie notatki po merge'u z gita historii już nie gubi.
+
 **Akcje pod zaznaczeniem** (`select::ActionBar`): pod ramką zaznaczenia (albo nad nią,
 ponad uchwytem obrotu, gdy pod spodem brak miejsca) stoi pigułka z ikonami **kopiuj**
 i **wytnij** (kopiuje i wymazuje — jedna akcja historii). Obrys, który niczego nie
