@@ -1549,7 +1549,8 @@ impl Renderer {
             if let Some(g) = ink.glow {
                 let (rad, s) = g.at(layer.t);
                 glow = Some(glow.map_or((rad, s), |(r0, s0)| (r0.max(rad), s0.max(s))));
-                pad = pad.max(rad * 3.0);
+                // 4 sigma: ogon rozmycia ponizej jednego poziomu jasnosci.
+                pad = pad.max(rad * 4.0);
             }
             if let Some(sp) = ink.sparkle {
                 pad = pad.max(sp.size * 2.0);
@@ -1593,11 +1594,14 @@ impl Renderer {
             return Ok(());
         };
 
-        // 1. Kreski na bitmape efektow.
+        // 1. Kreski na bitmape efektow. Czyszczona w calosci, nie tylko w `clip`:
+        // rozmycie czyta piksele takze poza nim, a tam zostawaly kreski
+        // z poprzednich klatek (przewijanie, dryf, przesuwane zaznaczenie) -
+        // poswiata wciagala je i urywala sie na krawedzi prostokata jak cien.
         self.ctx.SetTarget(&bmp);
+        self.ctx.Clear(Some(&D2D1_COLOR_F::default()));
         self.ctx
             .PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        self.ctx.Clear(Some(&D2D1_COLOR_F::default()));
         let mut m = Self::cam_matrix(cam);
         m.M31 += offset.0;
         m.M32 += offset.1;
