@@ -601,6 +601,20 @@ wtedy **bez zabierania pierwszego planu** (`SWP_NOACTIVATE`) — aplikacja, w
 której się pracuje, zostaje aktywna. Bez tego ustawienia chronimy ekran, na
 którym użytkownik właśnie pracuje, i każde wejście odsuwa fale.
 
+### Kalibracja pióra (#23, #24)
+
+Settings → Pen → *Calibration*: 9 krzyży w siatce 3×3 (przesunięcie, skala i skos
+digitizera względem panelu), potem 4 dotknięcia środka z rysikiem pochylonym w lewo,
+w prawo, do siebie i od siebie (paralaksa: cewka jest nad czubkiem, więc pochylony
+rysik jest widziany przesunięty o `h·tan(kąt)`). Dopasowanie najmniejszych kwadratów
+(`spectre_shell_win::pencal`), osobno dla osi: `x' = a·x + b·y + c + k·tan(tilt_x)`,
+w ułamkach zakresu digitizera — niezależnie od obrotu ekranu i położenia okna. Wynik
+z granicami sensowności (skala ±5 %, przesunięcie ±5 %, …); poza nimi „Retry”. Ekran
+pokazuje średnią poprawkę i błąd po niej w pikselach; *Done* zapisuje `pen_cal` w
+configu, *Reset to default* wraca do tożsamości. Na czas pomiaru poprawka jest
+wyłączona. Wejście testowe przechodzi przez tę samą poprawkę (`tx…`/`ty…` = nachylenie,
+`menu calibrate-pen` otwiera ekran).
+
 ### Utrata GPU (puste okno po przepięciu monitorów)
 
 Przepięcie monitorów, odpięcie stacji albo reset sterownika potrafi zabrać

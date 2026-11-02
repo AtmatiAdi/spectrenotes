@@ -294,6 +294,11 @@ fn mark_fullscreen(hwnd: HWND, on: bool) {
     }
 }
 
+/// Caly prostokat monitora okna (pusty, gdy system go nie poda).
+pub fn monitor_rect(hwnd: HWND) -> RECT {
+    monitor_rects(hwnd).map(|(m, _)| m).unwrap_or_default()
+}
+
 /// Monitor okna: caly prostokat i obszar roboczy (bez paska zadan).
 fn monitor_rects(hwnd: HWND) -> Option<(RECT, RECT)> {
     unsafe {

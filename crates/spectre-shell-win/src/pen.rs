@@ -11,6 +11,8 @@
 use std::collections::HashMap;
 
 use spectre_proto::Sample;
+
+use crate::pencal::PenCal;
 use windows::Win32::Foundation::{HANDLE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::Pointer::{
@@ -36,6 +38,11 @@ pub struct PenDecoder {
     qpc_freq: f64,
     /// Bufor na historie, zeby nie alokowac na kazdy komunikat.
     scratch: Vec<POINTER_PEN_INFO>,
+    /// Kalibracja (`pencal`): poprawka w znormalizowanych wspolrzednych digitizera.
+    cal: PenCal,
+    /// Prostokat ekranu, na ktory digitizer jest zmapowany (ostatnie pioro) -
+    /// uklad odniesienia kalibracji.
+    frame: Option<RECT>,
 }
 
 /// Stan przyciskow rysika.
@@ -73,6 +80,8 @@ impl PenDecoder {
             rects: HashMap::new(),
             qpc_freq: qpc_freq as f64,
             scratch: Vec::with_capacity(64),
+            cal: PenCal::IDENTITY,
+            frame: None,
         }
     }
 
@@ -174,6 +183,16 @@ impl PenDecoder {
 
     fn make_sample(&mut self, info: &POINTER_PEN_INFO, origin: (f32, f32)) -> Option<Sample> {
         let pi = &info.pointerInfo;
+        let tilt_x = if (info.penMask & PEN_MASK_TILT_X) != 0 {
+            info.tiltX as f32
+        } else {
+            0.0
+        };
+        let tilt_y = if (info.penMask & PEN_MASK_TILT_Y) != 0 {
+            info.tiltY as f32
+        } else {
+            0.0
+        };
 
         let (x, y) = match self.device_rects(pi.sourceDevice) {
             // Sciezka wlasciwa: subpikselowe wspolrzedne z zakresu digitizera.
@@ -185,6 +204,10 @@ impl PenDecoder {
                 }
                 let fx = (pi.ptHimetricLocationRaw.x - r.device.left) as f32 / dw;
                 let fy = (pi.ptHimetricLocationRaw.y - r.device.top) as f32 / dh;
+                // Kalibracja w ulamkach zakresu digitizera - niezalezna od obrotu
+                // ekranu i polozenia okna (issues #23, #24).
+                let (fx, fy) = self.cal.apply(fx, fy, tilt_x, tilt_y);
+                self.frame = Some(r.display);
                 let sx = r.display.left as f32 + fx * (r.display.right - r.display.left) as f32;
                 let sy = r.display.top as f32 + fy * (r.display.bottom - r.display.top) as f32;
                 (sx, sy)
@@ -202,17 +225,6 @@ impl PenDecoder {
             // Mysz i piora bez czujnika nacisku - stala wartosc, zeby kreska istniala.
             0.5
         };
-        let tilt_x = if (info.penMask & PEN_MASK_TILT_X) != 0 {
-            info.tiltX as f32
-        } else {
-            0.0
-        };
-        let tilt_y = if (info.penMask & PEN_MASK_TILT_Y) != 0 {
-            info.tiltY as f32
-        } else {
-            0.0
-        };
-
         // PerformanceCount to znacznik QPC nadany przez stos wejscia, wiec mierzy
         // moment probkowania, a nie moment odebrania komunikatu. To jedyny sposob,
         // zeby policzyc prawdziwa czestotliwosc piora.
@@ -257,6 +269,50 @@ impl PenDecoder {
     /// byc wtedy aktualne.
     pub fn invalidate(&mut self) {
         self.rects.clear();
+    }
+
+    pub fn set_calibration(&mut self, cal: PenCal) {
+        self.cal = cal;
+    }
+
+    pub fn calibration(&self) -> PenCal {
+        self.cal
+    }
+
+    /// Prostokat ekranu, w ktorym zyje kalibracja: ten, na ktory digitizer jest
+    /// zmapowany, a zanim pioro sie odezwie (albo dla wejscia testowego) -
+    /// monitor okna.
+    fn frame_rect(&self, hwnd: HWND) -> RECT {
+        self.frame
+            .unwrap_or_else(|| crate::window::monitor_rect(hwnd))
+    }
+
+    /// Punkt okna (piksele klienta) w ulamkach zakresu digitizera.
+    pub fn norm_of(&self, hwnd: HWND, client: (f32, f32)) -> (f32, f32) {
+        let r = self.frame_rect(hwnd);
+        let o = client_origin(hwnd);
+        let w = (r.right - r.left).max(1) as f32;
+        let h = (r.bottom - r.top).max(1) as f32;
+        (
+            (client.0 + o.0 - r.left as f32) / w,
+            (client.1 + o.1 - r.top as f32) / h,
+        )
+    }
+
+    /// Ta sama poprawka, ktora dekoder naklada na prawdziwe pioro, dla probki
+    /// podanej w pikselach okna (wejscie testowe udaje surowy digitizer).
+    pub fn calibrate_client(&self, hwnd: HWND, x: f32, y: f32, tilt: (f32, f32)) -> (f32, f32) {
+        if self.cal.is_identity() {
+            return (x, y);
+        }
+        let (nx, ny) = self.norm_of(hwnd, (x, y));
+        let (cx, cy) = self.cal.apply(nx, ny, tilt.0, tilt.1);
+        let r = self.frame_rect(hwnd);
+        let o = client_origin(hwnd);
+        (
+            r.left as f32 + cx * (r.right - r.left) as f32 - o.0,
+            r.top as f32 + cy * (r.bottom - r.top) as f32 - o.1,
+        )
     }
 }
 

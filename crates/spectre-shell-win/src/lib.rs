@@ -15,6 +15,7 @@ pub mod install;
 pub mod instance;
 pub mod pdfdoc;
 pub mod pen;
+pub mod pencal;
 pub mod secret;
 pub mod shield;
 pub mod sysinfo;

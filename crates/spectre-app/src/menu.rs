@@ -129,6 +129,8 @@ pub enum Setting {
     PenMinPressure,
     /// Grubosc przy najlzejszym dotknieciu, procent grubosci piora (issue #5).
     PenMinWidth,
+    /// Ekran kalibracji piora (issues #23, #24).
+    PenCalibration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +243,8 @@ pub struct MenuState<'a> {
     /// dotknieciu w procentach grubosci piora.
     pub pen_min_pressure_pct: u32,
     pub pen_min_width_pct: u32,
+    /// Pioro ma kalibracje inna niz domyslna.
+    pub pen_calibrated: bool,
     /// Ostatnia udana wymiana z GitHubem (fetch/push), ostatni zapis na dysk
     /// i ostatnia wymiana operacji z peerem w LAN. Naglowek pokazuje jedna
     /// z nich (najmocniejsza dostepna) z licznikiem tykajacym co sekunde,
@@ -1272,6 +1276,16 @@ impl Menu {
                         Setting::PenMinWidth,
                         "Width at lightest touch",
                         format!("{} %", s.pen_min_width_pct),
+                    ),
+                    (
+                        Setting::PenCalibration,
+                        "Calibration (tap to calibrate)",
+                        if s.pen_calibrated {
+                            "custom"
+                        } else {
+                            "default"
+                        }
+                        .to_string(),
                     ),
                 ],
             ),

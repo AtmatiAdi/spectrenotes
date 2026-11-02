@@ -335,6 +335,8 @@ pub struct App {
     /// Historia cofania biezacej notatki zmienila sie od ostatniego zapisu
     /// (`save_history`, razem z fsync op-logu).
     history_dirty: bool,
+    /// Ekran kalibracji piora (issues #23, #24); `None` = zamkniety.
+    calib: Option<crate::calib::Calibration>,
     /// Awatar z GitHuba w pamieci - po odbudowie renderera (utrata GPU) wraca bez
     /// ponownego pobierania.
     avatar_px: Option<(u32, u32, Vec<u8>)>,
@@ -811,7 +813,16 @@ impl App {
             doc,
             cam,
             renderer,
-            pen: PenDecoder::new(window::qpc_freq()),
+            pen: {
+                let mut p = PenDecoder::new(window::qpc_freq());
+                if let Some(c) = config
+                    .get("pen_cal")
+                    .and_then(spectre_shell_win::pencal::PenCal::parse)
+                {
+                    p.set_calibration(c);
+                }
+                p
+            },
             ink,
             stroke: StrokeBuilder::new(ink),
             color_idx: 0,
@@ -822,6 +833,7 @@ impl App {
             clipboard: Vec::new(),
             paste_spot: None,
             history_dirty: false,
+            calib: None,
             avatar_px: None,
             recovering: false,
             last_recover: None,
@@ -1063,10 +1075,89 @@ impl App {
         }
     }
 
+    // ----- kalibracja piora (calib.rs) -------------------------------------
+
+    /// Ekran kalibracji: menu i zaznaczenie znikaja, poprawka w dekoderze na
+    /// czas pomiaru wylaczona (surowe trafienia).
+    fn open_calibration(&mut self) {
+        if self.menu.open {
+            self.toggle_menu();
+        }
+        self.clear_selection();
+        let prev = self.pen.calibration();
+        self.pen
+            .set_calibration(spectre_shell_win::pencal::PenCal::IDENTITY);
+        self.calib = Some(crate::calib::Calibration::new(prev));
+    }
+
+    /// `save`: nowa poprawka do dekodera i konfiguracji; inaczej wraca stara.
+    fn close_calibration(&mut self, save: bool) {
+        let Some(c) = self.calib.take() else {
+            return;
+        };
+        match (save, c.result) {
+            (true, Some(Ok(o))) => {
+                self.pen.set_calibration(o.cal);
+                self.config.set("pen_cal", o.cal.to_config());
+                self.config.save();
+                self.status = format!(
+                    "pen calibrated: correction {:.1} px, error {:.1} px",
+                    o.shift_px, o.rms_px
+                );
+            }
+            _ => self.pen.set_calibration(c.prev),
+        }
+    }
+
+    fn calib_tap(&mut self, batch: &PenBatch) {
+        let (x, y) = self.last_screen;
+        let Some(c) = self.calib.as_mut() else {
+            return;
+        };
+        if let Some(h) = c.hit(x, y) {
+            match h {
+                crate::calib::Hit::Cancel => self.close_calibration(false),
+                crate::calib::Hit::Done => self.close_calibration(true),
+                crate::calib::Hit::Retry => c.retry(),
+                crate::calib::Hit::Reset => {
+                    self.calib = None;
+                    self.pen
+                        .set_calibration(spectre_shell_win::pencal::PenCal::IDENTITY);
+                    self.config.set("pen_cal", String::new());
+                    self.config.save();
+                    self.status = "pen calibration reset to default".to_string();
+                }
+            }
+            return;
+        }
+        if c.finished() {
+            return;
+        }
+        let (w, h) = self.renderer.size();
+        let target = c.target((w as f32, h as f32));
+        let tilt = batch
+            .samples
+            .last()
+            .map_or((0.0, 0.0), |s| (s.tilt_x, s.tilt_y));
+        let raw = self.pen.norm_of(self.hwnd, (x, y));
+        let tgt = self.pen.norm_of(self.hwnd, target);
+        // Pikseli ekranu na jednostke zakresu digitizera (dla wyniku w px).
+        let o = self.pen.norm_of(self.hwnd, (0.0, 0.0));
+        let e = self.pen.norm_of(self.hwnd, (100.0, 100.0));
+        let ppu = (100.0 / (e.0 - o.0).max(1e-6), 100.0 / (e.1 - o.1).max(1e-6));
+        c.tap(raw, tilt, tgt, ppu);
+    }
+
     /// Kontakt piora (`WM_POINTERDOWN` po `read`): co jest pod czubkiem -
     /// element okna, menu, pasek albo canvas.
     fn pointer_down(&mut self, batch: &PenBatch) {
         let (x, y) = self.last_screen;
+        // Kalibracja piora zajmuje caly ekran: przyciski albo dotkniecie celu.
+        if self.calib.is_some() {
+            self.calib_tap(batch);
+            self.render();
+            return;
+        }
         // Okno feedbacku jest modalne: dotkniecie poza nim zamyka je (chyba ze
         // trwa wysylka), w srodku - trafia do jego przyciskow.
         if self.feedback.open {
@@ -1260,6 +1351,7 @@ impl App {
             match it.next() {
                 Some("import-pdf") => self.menu_tap(MenuHit::ImportPdf),
                 Some("export-pdf") => self.menu_tap(MenuHit::ExportPdf),
+                Some("calibrate-pen") => self.open_calibration(),
                 _ => {}
             }
             self.render();
@@ -1288,6 +1380,7 @@ impl App {
         };
         let mut buttons = self.buttons;
         let mut pressure = 0.5;
+        let mut tilt = (0.0f32, 0.0f32);
         if op == "down" {
             buttons = PenButtons::default();
         }
@@ -1296,19 +1389,26 @@ impl App {
                 "barrel" if op == "down" => buttons.barrel = true,
                 "eraser" if op == "down" => buttons.eraser = true,
                 t => {
-                    if let Some(p) = t.strip_prefix('p').and_then(|s| s.parse::<f32>().ok()) {
+                    let num = |pre: &str| t.strip_prefix(pre).and_then(|s| s.parse::<f32>().ok());
+                    if let Some(v) = num("tx") {
+                        tilt.0 = v;
+                    } else if let Some(v) = num("ty") {
+                        tilt.1 = v;
+                    } else if let Some(p) = num("p") {
                         pressure = p;
                     }
                 }
             }
         }
+        // Wejscie testowe udaje surowy digitizer: ta sama kalibracja co pioro.
+        let pos = self.pen.calibrate_client(self.hwnd, pos.0, pos.1, tilt);
         let batch = PenBatch {
             samples: vec![Sample {
                 x: pos.0,
                 y: pos.1,
                 pressure,
-                tilt_x: 0.0,
-                tilt_y: 0.0,
+                tilt_x: tilt.0,
+                tilt_y: tilt.1,
                 t_us: self.started.elapsed().as_micros() as u64,
             }],
             buttons,
@@ -2450,6 +2550,7 @@ impl App {
                 self.config.set("pen_min_pressure", format!("{next}"));
                 self.config.save();
             }
+            Setting::PenCalibration => self.open_calibration(),
             Setting::PenMinWidth => {
                 // Cykl: 5 % -> 12 % -> 20 % -> 30 % -> 40 % -> 50 % -> 5 %.
                 let pct = (self.ink.min_width_ratio * 100.0).round() as u32;
@@ -5574,6 +5675,7 @@ impl App {
                 pdf_crop: self.pdf_crop,
                 pen_cursor: self.pen_cursor,
                 pen_min_pressure_pct: (self.pen_min_pressure * 100.0).round() as u32,
+                pen_calibrated: !self.pen.calibration().is_identity(),
                 pen_min_width_pct: (self.ink.min_width_ratio * 100.0).round() as u32,
                 synced: self.sync.last_remote_ok,
                 saved: self.saved,
@@ -5600,6 +5702,10 @@ impl App {
         if self.feedback.open {
             self.feedback.signed_in = self.sync.login().is_some() || self.feedback_fake().is_some();
             self.feedback.build(&mut prims);
+        }
+        if let Some(c) = self.calib.as_mut() {
+            let (w, h) = self.renderer.size();
+            c.build((w as f32, h as f32), self.toolbar.scale(), &mut prims);
         }
 
         // Tusze z efektem (`spectre_core::fx`): warstwa sucha ich nie ma, klatka
@@ -6347,7 +6453,9 @@ pub unsafe extern "system" fn wndproc(
                     } else if vk == VK_F11 {
                         app.toggle_fullscreen();
                     } else if vk == VK_ESCAPE {
-                        if app.picker.open {
+                        if app.calib.is_some() {
+                            app.close_calibration(false);
+                        } else if app.picker.open {
                             app.picker.close();
                         } else if app.clear_selection() {
                             // Zaznaczenie znika, tresc zostaje - reszta Esc czeka.

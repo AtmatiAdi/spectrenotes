@@ -17,6 +17,7 @@
 mod amoled;
 mod app;
 mod bench;
+mod calib;
 mod config;
 mod deflate;
 mod feedback;
