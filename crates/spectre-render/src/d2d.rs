@@ -320,6 +320,14 @@ pub struct Overlay<'a> {
     pub fx: Option<FxLayer<'a>>,
 }
 
+/// Element przebiegu efektow: id (brak = mokra kreska), dane i opcjonalne
+/// przeksztalcenie gestu zaznaczenia (uniesiona tresc).
+type FxItem<'a> = (
+    Option<StrokeId>,
+    &'a spectre_proto::StrokeData,
+    Option<[f32; 6]>,
+);
+
 /// Tusze z efektem w tej klatce: kreski rysowane co klatke, poza warstwa
 /// sucha (ta je pomija), z kolorem z funkcji tuszu, poswiata i iskrami.
 #[derive(Clone, Copy)]
@@ -1477,9 +1485,9 @@ impl Renderer {
             // dopiero nad fale (nizej), z dryfem; pozostale gasna z notatka.
             if let Some(fxl) = &overlay.fx {
                 self.fx_t = fxl.t;
-                self.draw_fx(&back, fxl, cam, false, (0.0, 0.0))?;
+                self.draw_fx(&back, fxl, cam, false, (0.0, 0.0), overlay.lift.as_ref())?;
                 if !fxl.above_dim {
-                    self.draw_fx(&back, fxl, cam, true, (0.0, 0.0))?;
+                    self.draw_fx(&back, fxl, cam, true, (0.0, 0.0), overlay.lift.as_ref())?;
                 }
             }
             if let Some(lift) = overlay.lift {
@@ -1517,7 +1525,7 @@ impl Renderer {
                 self.draw_dim(m)?;
             }
             if let Some(fxl) = overlay.fx.as_ref().filter(|f| f.above_dim) {
-                self.draw_fx(&back, fxl, cam, true, fxl.drift)?;
+                self.draw_fx(&back, fxl, cam, true, fxl.drift, None)?;
             }
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
@@ -1557,11 +1565,12 @@ impl Renderer {
         self.ctx.SetTransform(&m);
         let mut res = Ok(());
         for (id, data) in lift.strokes {
-            let brush = match fx::for_tool(data.tool) {
-                Some(ink) => self.fx_brush(ink, self.fx_t).map(|b| b.into()),
-                None => self.brush(data.color),
-            };
-            let brush = match brush {
+            // Tusz z efektem jedzie w przebiegu efektow (`draw_fx` z `lift`) -
+            // z poswiata i iskrami, w tej samej transformacji gestu.
+            if fx::for_tool(data.tool).is_some() {
+                continue;
+            }
+            let brush = match self.brush(data.color) {
                 Ok(b) => b,
                 Err(e) => {
                     res = Err(e);
@@ -1636,34 +1645,65 @@ impl Renderer {
         cam: &Camera,
         priority: bool,
         offset: (f32, f32),
+        lift: Option<&Lift>,
     ) -> Result<()> {
         let (w, h) = self.size;
         let mut area: Option<(f32, f32, f32, f32)> = None;
         let mut pad = 2.0f32;
         let mut glow: Option<(f32, f32)> = None;
-        // Kreski dokumentu i mokra kreska (bez id: nie ma jej jeszcze w dokumencie).
-        let items: Vec<(Option<StrokeId>, &spectre_proto::StrokeData)> = layer
+        // Kreski dokumentu, mokra kreska (bez id: nie ma jej jeszcze w dokumencie)
+        // i uniesione zaznaczenie w transformacji gestu - z efektem takze w trakcie
+        // przesuwania, nie sama tecza.
+        let items: Vec<FxItem> = layer
             .strokes
             .iter()
-            .map(|(id, d)| (Some(*id), *d))
+            .map(|(id, d)| (Some(*id), *d, None))
             .chain(
                 layer
                     .wet
                     .filter(|(_, d)| !d.samples.is_empty())
-                    .map(|(_, d)| (None, d)),
+                    .map(|(_, d)| (None, d, None)),
             )
+            .chain(lift.into_iter().flat_map(|l| {
+                l.strokes
+                    .iter()
+                    .filter(|(_, d)| fx::for_tool(d.tool).is_some())
+                    .map(move |(id, d)| (Some(*id), d, Some(l.xform)))
+            }))
             .collect();
-        for &(id, data) in &items {
+        // Punkt canvasu kreski na ekranie (z gestem zaznaczenia i dryfem).
+        let to_screen = |xf: Option<[f32; 6]>, x: f32, y: f32| {
+            let (x, y) = xf.map_or((x, y), |m| {
+                (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+            });
+            let (sx, sy) = cam.to_screen(x, y);
+            (sx + offset.0, sy + offset.1)
+        };
+        for &(id, data, xf) in &items {
             let Some(ink) = fx::for_tool(data.tool) else {
                 continue;
             };
-            if ink.priority != priority || id.is_some_and(|i| self.hidden.contains(&i)) {
+            if ink.priority != priority
+                || (xf.is_none() && id.is_some_and(|i| self.hidden.contains(&i)))
+            {
                 continue;
             }
             let b = Bbox::of(data);
-            let (x0, y0) = cam.to_screen(b.min_x, b.min_y);
-            let (x1, y1) = cam.to_screen(b.max_x, b.max_y);
-            let r = (x0 + offset.0, y0 + offset.1, x1 + offset.0, y1 + offset.1);
+            let mut r = (
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            );
+            for (cx, cy) in [
+                (b.min_x, b.min_y),
+                (b.max_x, b.min_y),
+                (b.min_x, b.max_y),
+                (b.max_x, b.max_y),
+            ] {
+                let (sx, sy) = to_screen(xf, cx, cy);
+                r = (r.0.min(sx), r.1.min(sy), r.2.max(sx), r.3.max(sy));
+            }
             area = Some(match area {
                 None => r,
                 Some(a) => (a.0.min(r.0), a.1.min(r.1), a.2.max(r.2), a.3.max(r.3)),
@@ -1730,11 +1770,13 @@ impl Renderer {
         m.M32 += offset.1;
         self.ctx.SetTransform(&m);
         let mut res = Ok(());
-        for &(id, data) in &items {
+        for &(id, data, xf) in &items {
             let Some(ink) = fx::for_tool(data.tool) else {
                 continue;
             };
-            if ink.priority != priority || id.is_some_and(|i| self.hidden.contains(&i)) {
+            if ink.priority != priority
+                || (xf.is_none() && id.is_some_and(|i| self.hidden.contains(&i)))
+            {
                 continue;
             }
             let brush = match self.fx_brush(ink, layer.t) {
@@ -1745,6 +1787,23 @@ impl Renderer {
                 }
             };
             let drawn = match (id, layer.wet) {
+                (Some(id), _) if xf.is_some() => {
+                    // Uniesione: najpierw gest (canvas -> canvas), potem kamera; skala
+                    // gestu wchodzi w zoom obrysu jak w `draw_lift`.
+                    let [a, b, c, d, e, f] = xf.unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+                    self.ctx.SetTransform(&Matrix3x2 {
+                        M11: a * m.M11 + b * m.M21,
+                        M12: a * m.M12 + b * m.M22,
+                        M21: c * m.M11 + d * m.M21,
+                        M22: c * m.M12 + d * m.M22,
+                        M31: e * m.M11 + f * m.M21 + m.M31,
+                        M32: e * m.M12 + f * m.M22 + m.M32,
+                    });
+                    let zoom = cam.zoom * (a * d - b * c).abs().sqrt().max(1e-3);
+                    let r = self.draw_stroke(id, data, layer.ink, zoom, &brush.into());
+                    self.ctx.SetTransform(&m);
+                    r
+                }
                 (Some(id), _) => self.draw_stroke(id, data, layer.ink, cam.zoom, &brush.into()),
                 // Mokra kreska: ta sama wstega co `tail` w `present`, pedzlem tuszu.
                 (None, Some((segs, _))) => {
@@ -1815,17 +1874,28 @@ impl Renderer {
         // 4. Iskry.
         let mut sparks = std::mem::take(&mut self.spark_buf);
         sparks.clear();
-        for &(id, data) in &items {
+        for &(id, data, xf) in &items {
             let Some(ink) = fx::for_tool(data.tool) else {
                 continue;
             };
-            if ink.priority != priority || id.is_some_and(|i| self.hidden.contains(&i)) {
+            if ink.priority != priority
+                || (xf.is_none() && id.is_some_and(|i| self.hidden.contains(&i)))
+            {
                 continue;
             }
             let seed = id.map_or(0x5eed, |id| {
                 id.author.0 ^ id.seq.wrapping_mul(0x9e37_79b9_7f4a_7c15)
             });
+            let from = sparks.len();
             ink.sparks(seed, data, layer.t, &mut sparks);
+            if let Some(m) = xf {
+                for s in &mut sparks[from..] {
+                    (s.x, s.y) = (
+                        m[0] * s.x + m[2] * s.y + m[4],
+                        m[1] * s.x + m[3] * s.y + m[5],
+                    );
+                }
+            }
         }
         if !sparks.is_empty() {
             self.ctx.SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_ADD);
