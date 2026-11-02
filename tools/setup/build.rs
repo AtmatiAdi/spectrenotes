@@ -10,5 +10,6 @@ fn main() {
     res.set_icon(icon);
     res.set("ProductName", "SpectreNotes");
     res.set("FileDescription", "SpectreNotes Setup");
-    res.compile().expect("Win32 resources (rc.exe from the Windows SDK)");
+    res.compile()
+        .expect("Win32 resources (rc.exe from the Windows SDK)");
 }

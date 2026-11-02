@@ -16,7 +16,9 @@ pub fn os_version() -> String {
     let product = reg_sz("ProductName").unwrap_or_else(|| "Windows".to_string());
     let release = reg_sz("DisplayVersion").unwrap_or_default();
     let build = reg_sz("CurrentBuild").unwrap_or_default();
-    let ubr = reg_dword("UBR").map(|u| format!(".{u}")).unwrap_or_default();
+    let ubr = reg_dword("UBR")
+        .map(|u| format!(".{u}"))
+        .unwrap_or_default();
     // Windows 11 nadal przedstawia sie w rejestrze jako "Windows 10 ..." -
     // rozstrzyga numer kompilacji.
     let product = match build.parse::<u32>() {

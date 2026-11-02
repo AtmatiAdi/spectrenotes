@@ -616,7 +616,13 @@ pub struct Issue {
 
 /// Otwiera issue w `owner/repo` (publiczne repo wydan - kazdy zalogowany
 /// moze). Zwraca numer i `html_url`.
-pub fn create_issue(token: &str, owner: &str, repo: &str, title: &str, body: &str) -> Result<Issue> {
+pub fn create_issue(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    title: &str,
+    body: &str,
+) -> Result<Issue> {
     let payload = format!(
         "{{\"title\":{},\"body\":{}}}",
         json_quote(title),
@@ -712,9 +718,8 @@ pub fn upload_file(
     )
     .map_err(map_http)?;
     check_status(&r, "contents")?;
-    json_str(&r.body, "download_url").ok_or_else(|| {
-        GitError::Other("contents: response without download_url".to_string())
-    })
+    json_str(&r.body, "download_url")
+        .ok_or_else(|| GitError::Other("contents: response without download_url".to_string()))
 }
 
 /// Napis jako literal JSON (z cudzyslowami).

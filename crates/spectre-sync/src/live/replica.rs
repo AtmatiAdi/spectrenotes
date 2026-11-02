@@ -151,12 +151,7 @@ impl Replica {
     }
 
     fn space_for(&self, note: &str) -> &Space {
-        let idx = self
-            .where_is
-            .get(note)
-            .copied()
-            .or(self.lan)
-            .unwrap_or(0);
+        let idx = self.where_is.get(note).copied().or(self.lan).unwrap_or(0);
         &self.slots[idx].space
     }
 
@@ -307,7 +302,11 @@ impl Replica {
 
     /// Rekordy `.ops` autora w notatce o lamporcie > `after`, z dysku.
     pub fn records_after(&self, note: &str, author_dir: &str, after: u64) -> io::Result<Vec<u8>> {
-        let dir = self.space_for(note).note_dir(note).join("ops").join(author_dir);
+        let dir = self
+            .space_for(note)
+            .note_dir(note)
+            .join("ops")
+            .join(author_dir);
         let ops = read_author_ops(&dir)?;
         Ok(encode_records(ops.iter().filter(|o| o.lamport > after)))
     }
@@ -354,7 +353,11 @@ impl Replica {
             return Ok((Vec::new(), new_note));
         }
 
-        let dir = self.space_for(note).note_dir(note).join("ops").join(author_dir);
+        let dir = self
+            .space_for(note)
+            .note_dir(note)
+            .join("ops")
+            .join(author_dir);
         std::fs::create_dir_all(&dir)?;
         let path = self.via_path(&dir)?;
         {
@@ -507,7 +510,9 @@ mod tests {
         else {
             panic!()
         };
-        let (fresh, new_note) = b.store_remote(n, author_dir, *author, records, None).unwrap();
+        let (fresh, new_note) = b
+            .store_remote(n, author_dir, *author, records, None)
+            .unwrap();
         assert!(new_note);
         assert_eq!(fresh.len(), 2);
         assert_eq!(b.last(&note, &adi.dir_name()), 2);
@@ -521,7 +526,9 @@ mod tests {
 
         // Powtorka tych samych rekordow = nic nowego, plik nie rosnie.
         let len = via.metadata().unwrap().len();
-        let (again, _) = b.store_remote(n, author_dir, *author, records, None).unwrap();
+        let (again, _) = b
+            .store_remote(n, author_dir, *author, records, None)
+            .unwrap();
         assert!(again.is_empty());
         assert_eq!(via.metadata().unwrap().len(), len);
 

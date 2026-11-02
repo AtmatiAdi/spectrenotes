@@ -34,7 +34,9 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, IDXGIDevice, IDXGIFactory6, DXGI_CREATE_FACTORY_FLAGS};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory2, IDXGIDevice, IDXGIFactory6, DXGI_CREATE_FACTORY_FLAGS,
+};
 use windows_numerics::Matrix3x2;
 
 use crate::d2d::{pick_low_power_adapter, BG_COLOR};
@@ -92,17 +94,20 @@ impl ThumbRenderer {
 
     /// Miniatura `w` x `h` z kresek notatki (w kolejnosci rysowania): BGRA,
     /// wiersz po wierszu, bez wyrownania.
-    pub fn render(&mut self, strokes: &[StrokeData], ink: &InkConfig, w: u32, h: u32) -> Result<Vec<u8>> {
+    pub fn render(
+        &mut self,
+        strokes: &[StrokeData],
+        ink: &InkConfig,
+        w: u32,
+        h: u32,
+    ) -> Result<Vec<u8>> {
         let zoom = w as f32 / COLUMN_W;
-        let content = strokes
-            .iter()
-            .map(Bbox::of)
-            .reduce(|a, b| Bbox {
-                min_x: a.min_x.min(b.min_x),
-                min_y: a.min_y.min(b.min_y),
-                max_x: a.max_x.max(b.max_x),
-                max_y: a.max_y.max(b.max_y),
-            });
+        let content = strokes.iter().map(Bbox::of).reduce(|a, b| Bbox {
+            min_x: a.min_x.min(b.min_x),
+            min_y: a.min_y.min(b.min_y),
+            max_x: a.max_x.max(b.max_x),
+            max_y: a.max_y.max(b.max_y),
+        });
         let margin = TOP_MARGIN_PX / zoom;
         let top = content.map_or(0.0, |b| (b.min_y - margin).max(0.0));
         let cam = Camera {
@@ -117,7 +122,9 @@ impl ThumbRenderer {
                 width: w.max(1),
                 height: h.max(1),
             };
-            let target = self.ctx.CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_TARGET))?;
+            let target =
+                self.ctx
+                    .CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_TARGET))?;
             self.ctx.SetTarget(&target);
             self.ctx.BeginDraw();
             self.ctx.Clear(Some(&BG_COLOR));
@@ -210,7 +217,9 @@ impl ThumbRenderer {
     }
 }
 
-fn props(options: windows::Win32::Graphics::Direct2D::D2D1_BITMAP_OPTIONS) -> D2D1_BITMAP_PROPERTIES1 {
+fn props(
+    options: windows::Win32::Graphics::Direct2D::D2D1_BITMAP_OPTIONS,
+) -> D2D1_BITMAP_PROPERTIES1 {
     D2D1_BITMAP_PROPERTIES1 {
         pixelFormat: D2D1_PIXEL_FORMAT {
             format: DXGI_FORMAT_B8G8R8A8_UNORM,

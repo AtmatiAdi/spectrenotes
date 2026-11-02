@@ -19,8 +19,8 @@ use windows::Win32::Graphics::Imaging::{
     IWICImagingFactory, WICBitmapEncoderNoCache,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET,
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, STATFLAG_NONAME,
+    STATSTG, STREAM_SEEK_SET,
 };
 use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
@@ -118,7 +118,11 @@ pub fn encode_png(w: u32, h: u32, bgra: &[u8]) -> Result<Vec<u8>> {
         let mut out = vec![0u8; size];
         let mut read = 0u32;
         stream
-            .Read(out.as_mut_ptr() as *mut c_void, size as u32, Some(&mut read))
+            .Read(
+                out.as_mut_ptr() as *mut c_void,
+                size as u32,
+                Some(&mut read),
+            )
             .ok()?;
         out.truncate(read as usize);
         Ok(out)

@@ -2790,8 +2790,7 @@ impl App {
         let (w, h) = self.slide_view.unwrap_or_else(|| self.renderer.size());
         let ui_scale = window::dpi_scale(self.hwnd);
         self.renderer.set_ui_scale(ui_scale);
-        self.toolbar
-            .layout(w as f32, h as f32, ui_scale, SLOTS);
+        self.toolbar.layout(w as f32, h as f32, ui_scale, SLOTS);
         self.menu.layout(
             w as f32,
             h as f32,
@@ -4373,7 +4372,11 @@ impl App {
         }
         if list_changed {
             self.reload_entries();
-            if self.lan_show.as_ref().is_some_and(|n| self.lan_open.contains_key(n)) {
+            if self
+                .lan_show
+                .as_ref()
+                .is_some_and(|n| self.lan_open.contains_key(n))
+            {
                 self.show_lan_note();
             }
             self.arm_thumbs(true);
@@ -4697,7 +4700,11 @@ impl App {
         let back = self
             .config
             .get("last_note")
-            .and_then(|id| self.notes.iter().position(|e| e.space != LAN_SLOT && e.id == id))
+            .and_then(|id| {
+                self.notes
+                    .iter()
+                    .position(|e| e.space != LAN_SLOT && e.id == id)
+            })
             .or_else(|| self.notes.iter().rposition(|e| e.space != LAN_SLOT));
         if let Some(i) = back {
             self.switch_note(i);

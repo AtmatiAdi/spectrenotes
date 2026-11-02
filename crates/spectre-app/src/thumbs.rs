@@ -34,7 +34,11 @@ pub fn fingerprint(note_dir: &Path) -> u64 {
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |d| d.as_millis() as u64);
-            entries.push((chunk.path().to_string_lossy().into_owned(), meta.len(), mtime));
+            entries.push((
+                chunk.path().to_string_lossy().into_owned(),
+                meta.len(),
+                mtime,
+            ));
         }
     }
     // Kolejnosc z `read_dir` nie jest gwarantowana - sortujemy, zeby odcisk
@@ -264,7 +268,12 @@ fn run(
             break;
         }
         unsafe {
-            let _ = PostMessageW(Some(HWND(hwnd_raw as *mut _)), WM_THUMBS, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(
+                Some(HWND(hwnd_raw as *mut _)),
+                WM_THUMBS,
+                WPARAM(0),
+                LPARAM(0),
+            );
         }
     }
 }

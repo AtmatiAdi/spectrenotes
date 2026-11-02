@@ -641,8 +641,16 @@ mod tests {
             fs::read(root_b.join("notes/N1/ops/test@a/000001.ops")).unwrap(),
             b"A1A2"
         );
-        assert_eq!(fs::read(&own).unwrap(), b"B1B2B3", "wlasny dopis po commicie");
-        assert_eq!(fs::read(&via).unwrap(), b"V1V2", "via-* dopisany po commicie");
+        assert_eq!(
+            fs::read(&own).unwrap(),
+            b"B1B2B3",
+            "wlasny dopis po commicie"
+        );
+        assert_eq!(
+            fs::read(&via).unwrap(),
+            b"V1V2",
+            "via-* dopisany po commicie"
+        );
         // Nastepny cykl zabiera dopisy normalnie.
         b.sync("b: trzeci").unwrap();
         let tree = b.head_commit().unwrap().tree().unwrap();
@@ -665,7 +673,11 @@ mod tests {
         fs::remove_dir_all(root_a.join("notes/N2")).unwrap();
         a.sync("a: bez N2").unwrap();
         let r = b.sync("b: po usunieciu N2").unwrap();
-        assert!(r.merged.iter().any(|f| f.starts_with("notes/N2/")), "{:?}", r.merged);
+        assert!(
+            r.merged.iter().any(|f| f.starts_with("notes/N2/")),
+            "{:?}",
+            r.merged
+        );
         assert!(!root_b.join("notes/N2/ops/test@a/000001.ops").exists());
 
         let _ = fs::remove_dir_all(&base);

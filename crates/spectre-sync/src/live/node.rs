@@ -1056,9 +1056,9 @@ impl State {
                     &records,
                     hint.as_deref(),
                 ) {
-                        Ok(r) => r,
-                        Err(e) => return self.emit(Event::Error(format!("live: write: {e}"))),
-                    };
+                    Ok(r) => r,
+                    Err(e) => return self.emit(Event::Error(format!("live: write: {e}"))),
+                };
                 let last = self.replica.last(&note, &author_dir);
                 let key = (note.clone(), author_dir.clone());
                 if let Some(c) = self.conns.get_mut(&id) {

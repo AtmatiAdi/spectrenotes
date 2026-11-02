@@ -440,7 +440,15 @@ pub fn remove_firewall_rule() {
 /// uzytkownika w oknie zapory) - wtedy nie ma po co pytac o UAC.
 fn has_firewall_rule(exe: &Path) -> bool {
     let out = std::process::Command::new("netsh")
-        .args(["advfirewall", "firewall", "show", "rule", "name=all", "dir=in", "verbose"])
+        .args([
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
+            "name=all",
+            "dir=in",
+            "verbose",
+        ])
         .output();
     let Ok(out) = out else {
         return false;

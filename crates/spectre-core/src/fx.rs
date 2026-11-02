@@ -258,8 +258,16 @@ pub fn drift(t: f32, content: Bbox, view: (f32, f32), margin: f32) -> (f32, f32)
         at - start * (1.0 - k)
     };
     (
-        axis(margin - content.min_x, view.0 - margin - content.max_x, DRIFT_PERIOD_X),
-        axis(margin - content.min_y, view.1 - margin - content.max_y, DRIFT_PERIOD_Y),
+        axis(
+            margin - content.min_x,
+            view.0 - margin - content.max_x,
+            DRIFT_PERIOD_X,
+        ),
+        axis(
+            margin - content.min_y,
+            view.1 - margin - content.max_y,
+            DRIFT_PERIOD_Y,
+        ),
     )
 }
 

@@ -13,9 +13,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetSystemMetrics, LoadIconW,
-    SetForegroundWindow, SM_CXSMICON,
-    TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP,
+    SetForegroundWindow, TrackPopupMenu, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, SM_CXSMICON,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP,
 };
 
 /// Komunikat, ktory tray wysyla do okna (LOWORD(lparam) = zdarzenie myszy).

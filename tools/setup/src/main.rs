@@ -212,7 +212,8 @@ fn create_window() -> Result<HWND> {
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
             lpszClassName: PCWSTR(class.as_ptr()),
-            hIcon: spectre_shell_win::window::app_icon(0).unwrap_or(LoadIconW(None, IDI_APPLICATION)?),
+            hIcon: spectre_shell_win::window::app_icon(0)
+                .unwrap_or(LoadIconW(None, IDI_APPLICATION)?),
             ..Default::default()
         };
         RegisterClassExW(&wc);

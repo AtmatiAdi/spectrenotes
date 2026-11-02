@@ -43,7 +43,11 @@ pub fn space_tag(dir: &Path) -> u64 {
 pub fn mark(hwnd: HWND, tag: u64) {
     let name = wide(PROP);
     unsafe {
-        let _ = SetPropW(hwnd, PCWSTR(name.as_ptr()), Some(HANDLE(tag as usize as *mut _)));
+        let _ = SetPropW(
+            hwnd,
+            PCWSTR(name.as_ptr()),
+            Some(HANDLE(tag as usize as *mut _)),
+        );
     }
 }
 

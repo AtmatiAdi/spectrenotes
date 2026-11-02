@@ -840,7 +840,10 @@ impl Menu {
             let thumb = (o.state == OfferState::Open).then(|| thumb_key(&o.note));
             let c = Card {
                 hit: MenuHit::Offer(shown[slot]),
-                active: s.notes.get(s.note_idx).is_some_and(|n| n.space == LAN_SLOT && n.id == o.note),
+                active: s
+                    .notes
+                    .get(s.note_idx)
+                    .is_some_and(|n| n.space == LAN_SLOT && n.id == o.note),
                 thumb,
                 title,
                 sub: &sub,
@@ -1010,7 +1013,11 @@ impl Menu {
             Some(false) => "Share on LAN: on, no password".to_string(),
             Some(true) => "Share on LAN: on, password set".to_string(),
         };
-        let hit = if foreign { MenuHit::LanClose } else { MenuHit::ShareToggle };
+        let hit = if foreign {
+            MenuHit::LanClose
+        } else {
+            MenuHit::ShareToggle
+        };
         y += self.action_row(list, y, hit, &label, FG, out);
         if s.share.is_some() && !foreign {
             if let Some(buf) = self.share_edit.clone() {
