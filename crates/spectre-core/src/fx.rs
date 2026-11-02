@@ -229,34 +229,41 @@ pub struct Spark {
 /// (prostokat w pikselach ekranu) zostaje w oknie `view` z marginesem.
 ///
 /// Krzywa Lissajous o niewspolmiernych okresach - droga sie nie powtarza,
-/// wiec zaden piksel panelu nie swieci tym samym dlugo. Na starcie przesuniecie
-/// rosnie od zera (`DRIFT_IN_S`), wiec tresc odplywa ze swojego miejsca
-/// plynnie, a nie przeskakuje. Gdy tresc jest szersza (wyzsza) niz okno,
-/// w tej osi stoi wysrodkowana.
+/// wiec zaden piksel panelu nie swieci tym samym dlugo. Krzywa zaczyna sie
+/// w fazie, w ktorej przesuniecie jest zerowe (tresc na swoim miejscu),
+/// a jej zegar rusza od zerowej predkosci i rozpedza sie przez `DRIFT_IN_S` -
+/// tresc odplywa plynnie, bez szarpniecia w strone odleglego punktu krzywej.
+/// Gdy miejsca nie da sie trafic (tresc blizej krawedzi niz margines), reszta
+/// odleglosci wsuwa sie lagodnie przez ten sam czas. Gdy tresc jest szersza
+/// (wyzsza) niz okno, w tej osi stoi wysrodkowana.
 pub fn drift(t: f32, content: Bbox, view: (f32, f32), margin: f32) -> (f32, f32) {
     use std::f32::consts::TAU;
-    let axis = |lo: f32, hi: f32, phase: f32| {
-        if hi <= lo {
-            0.5 * (lo + hi)
-        } else {
-            lo + (hi - lo) * (0.5 + 0.5 * phase.sin())
-        }
+    let t = t.max(0.0);
+    // Zegar krzywej: predkosc rosnie liniowo od zera do 1 w `DRIFT_IN_S`.
+    let s = if t < DRIFT_IN_S {
+        t * t / (2.0 * DRIFT_IN_S)
+    } else {
+        t - 0.5 * DRIFT_IN_S
     };
-    let x = axis(
-        margin - content.min_x,
-        view.0 - margin - content.max_x,
-        TAU * t / DRIFT_PERIOD_X + 1.3,
-    );
-    let y = axis(
-        margin - content.min_y,
-        view.1 - margin - content.max_y,
-        TAU * t / DRIFT_PERIOD_Y + 4.1,
-    );
     let k = smoothstep(t / DRIFT_IN_S);
-    (x * k, y * k)
+    let axis = |lo: f32, hi: f32, period: f32| {
+        if hi <= lo {
+            return 0.5 * (lo + hi) * k;
+        }
+        let u = (-lo / (hi - lo)).clamp(0.0, 1.0);
+        let phase0 = (2.0 * u - 1.0).asin();
+        let at = lo + (hi - lo) * (0.5 + 0.5 * (phase0 + TAU * s / period).sin());
+        // Przy u w 0..1 `start` to 0, inaczej mala reszta do krawedzi pasma.
+        let start = lo + (hi - lo) * u;
+        at - start * (1.0 - k)
+    };
+    (
+        axis(margin - content.min_x, view.0 - margin - content.max_x, DRIFT_PERIOD_X),
+        axis(margin - content.min_y, view.1 - margin - content.max_y, DRIFT_PERIOD_Y),
+    )
 }
 
-/// Okresy dryfu w sekundach (niewspolmierne) i czas odplyniecia z miejsca.
+/// Okresy dryfu w sekundach (niewspolmierne) i czas rozpedu z miejsca.
 const DRIFT_PERIOD_X: f32 = 137.0;
 const DRIFT_PERIOD_Y: f32 = 89.0;
 const DRIFT_IN_S: f32 = 6.0;
@@ -398,6 +405,29 @@ mod tests {
         let a = drift(100.0, wide, view, 40.0).0;
         let b = drift(130.0, wide, view, 40.0).0;
         assert!((a - b).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dryf_rusza_bez_szarpniecia() {
+        let content = Bbox {
+            min_x: 900.0,
+            min_y: 500.0,
+            max_x: 1500.0,
+            max_y: 800.0,
+        };
+        let view = (2880.0, 1800.0);
+        let dt = 0.1;
+        let speed = |t: f32| {
+            let (ax, ay) = drift(t, content, view, 60.0);
+            let (bx, by) = drift(t + dt, content, view, 60.0);
+            (bx - ax).hypot(by - ay) / dt
+        };
+        let top = (0..3000).map(|i| speed(i as f32 * dt)).fold(0.0, f32::max);
+        // Na starcie predkosc bliska zera i nigdzie wieksza niz w wedrowce.
+        assert!(speed(0.0) < 1.0);
+        for i in 0..100 {
+            assert!(speed(i as f32 * dt) <= top + 1e-2);
+        }
     }
 
     #[test]
