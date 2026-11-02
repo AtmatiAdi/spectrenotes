@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
+use spectre_core::background::{Background, Prim as BgPrim};
 use spectre_core::fx::{self, InkFx, Spark};
 use spectre_core::{Bbox, Camera, Document, StrokeId};
 use spectre_ink::{InkConfig, Segment};
@@ -438,6 +439,10 @@ pub struct Renderer {
     tile_bytes: usize,
     tile_clock: u64,
 
+    /// Tlo biezacej notatki (metadana `bg`) i bufor jego elementow.
+    background: Option<Background>,
+    bg_buf: Vec<BgPrim>,
+
     /// Tusze z efektem (`FxLayer`): bitmapa okna, na ktora ida ich kreski (wejscie
     /// poswiaty), gradient per tusz, efekty rozmycia i krycia, pedzel iskier.
     fx_bmp: Option<(ID2D1Bitmap1, u32, u32)>,
@@ -670,6 +675,8 @@ impl Renderer {
                 tiles: HashMap::new(),
                 tile_bytes: 0,
                 tile_clock: 0,
+                background: None,
+                bg_buf: Vec::new(),
                 fx_bmp: None,
                 fx_grad: HashMap::new(),
                 fx_effects: None,
@@ -1201,7 +1208,11 @@ impl Renderer {
         rect: Bbox,
     ) -> Result<()> {
         self.ctx.SetTransform(&Self::cam_matrix(cam));
-        let mut res = self.draw_pages(cam, rect);
+        // Tlo notatki pod stronami i kreskami (`spectre_core::background`).
+        let mut res = self.draw_background(cam, rect);
+        if res.is_ok() {
+            res = self.draw_pages(cam, rect);
+        }
         for (id, data, _) in doc.visible_in(rect) {
             if res.is_err() {
                 break;
@@ -1227,6 +1238,51 @@ impl Renderer {
         }
         self.ctx.SetTransform(&Matrix3x2::identity());
         res
+    }
+
+    /// Tlo notatki; zmiana wymaga przebudowy warstwy suchej (robi ja aplikacja).
+    pub fn set_background(&mut self, bg: Option<Background>) {
+        self.background = bg;
+    }
+
+    /// Tlo w prostokacie `rect` (canvas), w transformacji kamery ustawionej przez
+    /// `draw_document`. Linie i kropki w jednostkach canvasu - skaluja sie
+    /// z zoomem jak kreski - ale nie ciensze niz ~0,6 px na ekranie, inaczej po
+    /// oddaleniu znikalyby nierowno. Rozstaw ponizej 3 px ekranu to juz szum -
+    /// wtedy nic.
+    unsafe fn draw_background(&mut self, cam: &Camera, rect: Bbox) -> Result<()> {
+        let Some(bg) = self.background else {
+            return Ok(());
+        };
+        if bg.spacing * cam.zoom < 3.0 {
+            return Ok(());
+        }
+        let brush = self.brush(bg.color)?;
+        let mut prims = std::mem::take(&mut self.bg_buf);
+        prims.clear();
+        bg.prims(rect, &mut prims);
+        let w = bg.width.max(0.6 / cam.zoom);
+        for p in &prims {
+            match *p {
+                BgPrim::Line { x0, y0, x1, y1 } => self.ctx.DrawLine(
+                    Vector2 { X: x0, Y: y0 },
+                    Vector2 { X: x1, Y: y1 },
+                    &brush,
+                    w,
+                    None,
+                ),
+                BgPrim::Dot { x, y } => self.ctx.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: Vector2 { X: x, Y: y },
+                        radiusX: w,
+                        radiusY: w,
+                    },
+                    &brush,
+                ),
+            }
+        }
+        self.bg_buf = prims;
+        Ok(())
     }
 
     /// Warstwa sucha jest w kamerze `cam` (zoom i X; `with_y` - takze Y).

@@ -131,6 +131,13 @@ pub enum Setting {
     PenMinWidth,
     /// Ekran kalibracji piora (issues #23, #24).
     PenCalibration,
+    /// Tlo biezacej notatki (`spectre_core::background`): wzor, rozstaw,
+    /// grubosc, kolor, zasieg.
+    BgPattern,
+    BgSpacing,
+    BgWidth,
+    BgColor,
+    BgExtent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +252,8 @@ pub struct MenuState<'a> {
     pub pen_min_width_pct: u32,
     /// Pioro ma kalibracje inna niz domyslna.
     pub pen_calibrated: bool,
+    /// Tlo biezacej notatki (wzor `None` = bez tla, parametry zostaja).
+    pub note_bg: spectre_core::background::Background,
     /// Ostatnia udana wymiana z GitHubem (fetch/push), ostatni zapis na dysk
     /// i ostatnia wymiana operacji z peerem w LAN. Naglowek pokazuje jedna
     /// z nich (najmocniejsza dostepna) z licznikiem tykajacym co sekunde,
@@ -1266,7 +1275,31 @@ impl Menu {
         y += 10.0 * k;
         // Grupy wedlug funkcji - kazde nowe ustawienie ma tu swoje miejsce,
         // zamiast ladowac na koncu jednej dlugiej listy.
-        let groups: [(&str, Vec<SettingRow>); 8] = [
+        let bg = &s.note_bg;
+        let groups: [(&str, Vec<SettingRow>); 9] = [
+            (
+                "This note: background",
+                vec![
+                    (Setting::BgPattern, "Pattern", bg.pattern.name().to_string()),
+                    (Setting::BgSpacing, "Spacing", format!("{} px", bg.spacing)),
+                    (Setting::BgWidth, "Line width", format!("{} px", bg.width)),
+                    (
+                        Setting::BgColor,
+                        "Color",
+                        spectre_core::background::color_name(bg.color),
+                    ),
+                    (
+                        Setting::BgExtent,
+                        "Reach",
+                        if bg.infinite {
+                            "infinite sideways"
+                        } else {
+                            "note column"
+                        }
+                        .to_string(),
+                    ),
+                ],
+            ),
             (
                 "Pen",
                 vec![

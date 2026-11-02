@@ -601,6 +601,20 @@ wtedy **bez zabierania pierwszego planu** (`SWP_NOACTIVATE`) — aplikacja, w
 której się pracuje, zostaje aktywna. Bez tego ustawienia chronimy ekran, na
 którym użytkownik właśnie pracuje, i każde wejście odsuwa fale.
 
+### Tło notatki (linie, kratka, kropki, heksy)
+
+Settings → *This note: background*: wzór (brak / linie / kratka / kropki / heksy),
+rozstaw (20–100 px), grubość linii (0,5–4 px; dla kropek promień), kolor (sześć
+przygaszonych barw — tło świeci w całym oknie, AMOLED) i zasięg: tylko kolumna
+notatki albo bez końca w lewo i w prawo. W pionie od góry notatki bez końca w dół.
+Tło jest **cechą notatki** — metadana `bg` w op-logu (`grid;40;1;303030;col`), więc
+idzie z notatką przez gita i LAN; wyłączone pamięta parametry. Geometria w
+`spectre_core::background` (tylko to, co przecina rysowany prostokąt; za gęsto po
+oddaleniu — nic), rysowane w warstwie suchej pod stronami PDF i kreskami, w jednostkach
+canvasu (skaluje się z zoomem, nie cieniej niż ~0,6 px). `--bench`: tło dokłada do
+przebudowy 0–1 ms (kropki najwięcej). Miniatury i eksport PDF są na razie bez tła.
+Wejście testowe: `bg <metadana>`.
+
 ### Kalibracja pióra (#23, #24)
 
 Settings → Pen → *Calibration*: 9 krzyży w siatce 3×3 (przesunięcie, skala i skos

@@ -138,6 +138,22 @@ pub fn run() -> windows::core::Result<()> {
             r.rebuild(&doc, &zcam, &ink).unwrap();
         });
 
+        // Tlo notatki (rozstaw 30 - gesto): ile dokłada do przebudowy.
+        let mut bg_line = String::new();
+        for p in spectre_core::background::Pattern::ALL {
+            r.set_background(Some(spectre_core::background::Background {
+                pattern: p,
+                spacing: 30.0,
+                infinite: true,
+                ..Default::default()
+            }));
+            let (avg, max) = time(20, || {
+                r.rebuild(&doc, &cam, &ink).unwrap();
+            });
+            bg_line += &format!(" {} {avg:.2}/{max:.2}", p.name());
+        }
+        r.set_background(None);
+
         let mut old = cam.scroll_y;
         let (scroll_avg, scroll_max) = time(300, || {
             old = cam.scroll_y;
@@ -208,6 +224,7 @@ pub fn run() -> windows::core::Result<()> {
              rebuild zimny    {rebuild_cold:7.2} ms\n\
              rebuild          {rebuild_avg:7.2} ms  (max {rebuild_max:6.2})\n\
              zoom x1,1        {zoom_avg:7.2} ms  (max {zoom_max:6.2})\n\
+             tlo (avg/max ms){bg_line}\n\
              scroll +2px      {scroll_avg:7.3} ms  (max {scroll_max:6.2})\n\
              repaint 300x120  {repaint_avg:7.3} ms  (max {repaint_max:6.2})\n\
              present immediate{present_avg:7.3} ms  (max {present_max:6.2})\n\

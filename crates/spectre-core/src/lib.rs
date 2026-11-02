@@ -11,6 +11,7 @@
 //!
 //! Testy wlasnosci w `document.rs` sa warunkiem zamkniecia Etapu 1.
 
+pub mod background;
 pub mod camera;
 pub mod document;
 pub mod fx;

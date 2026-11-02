@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use spectre_core::background::{Background, Pattern, COLORS as BG_COLORS};
 use spectre_core::hittest::stroke_hit;
 use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
@@ -348,6 +349,8 @@ pub struct App {
     /// Zoom w toku: warstwa sucha jest w starej skali, klatka ja skaluje
     /// (`settle_zoom` przebudowuje).
     zoom_settle: bool,
+    /// Metadana `bg` przekazana rendererowi (`render` porownuje z biezaca).
+    bg_applied: Option<String>,
     /// Ostatnia odbudowa renderera - nie czesciej niz raz na `GPU_RETRY_MS`.
     last_recover: Option<Instant>,
 
@@ -843,6 +846,7 @@ impl App {
             avatar_px: None,
             recovering: false,
             zoom_settle: false,
+            bg_applied: None,
             last_recover: None,
             mode: Mode::Idle,
             buttons: PenButtons::default(),
@@ -1080,6 +1084,26 @@ impl App {
         if self.reload_pending {
             self.reload_current();
         }
+    }
+
+    // ----- tlo notatki --------------------------------------------------------
+
+    /// Tlo biezacej notatki; bez metadanej - wylaczone z domyslnymi parametrami.
+    fn note_bg(&self) -> Background {
+        self.doc
+            .meta("bg")
+            .and_then(Background::from_meta)
+            .unwrap_or(Background {
+                pattern: Pattern::None,
+                ..Default::default()
+            })
+    }
+
+    /// Zmiana tla to operacja w op-logu (metadana LWW): synchronizuje sie z
+    /// notatka przez gita i LAN; renderer dostaje ja przy nastepnej klatce.
+    fn set_note_bg(&mut self, bg: Background) {
+        let op = self.doc.set_meta("bg", &bg.to_meta());
+        self.persist(&[op]);
     }
 
     // ----- kalibracja piora (calib.rs) -------------------------------------
@@ -1343,6 +1367,14 @@ impl App {
         }
         if op == "esc" {
             self.clear_selection();
+            self.render();
+            return;
+        }
+        // `bg <meta>` - tlo notatki jak z ustawien (np. `bg hex;30;1;20344f;inf`).
+        if op == "bg" {
+            if let Some(b) = it.next().and_then(Background::from_meta) {
+                self.set_note_bg(b);
+            }
             self.render();
             return;
         }
@@ -2581,6 +2613,35 @@ impl App {
                 self.config.save();
             }
             Setting::PenCalibration => self.open_calibration(),
+            Setting::BgPattern => {
+                let mut bg = self.note_bg();
+                bg.pattern = cycle(&Pattern::CYCLE, bg.pattern);
+                self.set_note_bg(bg);
+            }
+            Setting::BgSpacing => {
+                let mut bg = self.note_bg();
+                bg.spacing = cycle_up(
+                    &[20.0, 25.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0],
+                    bg.spacing,
+                );
+                self.set_note_bg(bg);
+            }
+            Setting::BgWidth => {
+                let mut bg = self.note_bg();
+                bg.width = cycle_up(&[0.5, 1.0, 1.5, 2.0, 3.0, 4.0], bg.width);
+                self.set_note_bg(bg);
+            }
+            Setting::BgColor => {
+                let mut bg = self.note_bg();
+                let colors: Vec<Rgba> = BG_COLORS.iter().map(|(_, c)| *c).collect();
+                bg.color = cycle(&colors, bg.color);
+                self.set_note_bg(bg);
+            }
+            Setting::BgExtent => {
+                let mut bg = self.note_bg();
+                bg.infinite = !bg.infinite;
+                self.set_note_bg(bg);
+            }
             Setting::PenMinWidth => {
                 // Cykl: 5 % -> 12 % -> 20 % -> 30 % -> 40 % -> 50 % -> 5 %.
                 let pct = (self.ink.min_width_ratio * 100.0).round() as u32;
@@ -5486,6 +5547,14 @@ impl App {
         }
         let t0 = Instant::now();
         self.sync_pdf();
+        // Tlo notatki (metadana `bg`): z otwarcia, przelaczenia, merge'a, LAN
+        // albo z ustawien - jedno porownanie napisu na klatke, przebudowa przy zmianie.
+        if self.doc.meta("bg") != self.bg_applied.as_deref() {
+            self.bg_applied = self.doc.meta("bg").map(str::to_string);
+            self.renderer
+                .set_background(self.bg_applied.as_deref().and_then(Background::from_meta));
+            self.dirty = Dirty::Full;
+        }
         // Podglad zoomu trwa tylko, dopoki nic innego nie zmienia warstwy suchej
         // i nic nie rysuje - kreska wypalana do warstwy w starej skali
         // rozjechalaby sie z reszta.
@@ -5719,6 +5788,7 @@ impl App {
                 pen_cursor: self.pen_cursor,
                 pen_min_pressure_pct: (self.pen_min_pressure * 100.0).round() as u32,
                 pen_calibrated: !self.pen.calibration().is_identity(),
+                note_bg: self.note_bg(),
                 pen_min_width_pct: (self.ink.min_width_ratio * 100.0).round() as u32,
                 synced: self.sync.last_remote_ok,
                 saved: self.saved,
@@ -6051,6 +6121,23 @@ impl App {
 /// urzadzenia. Klucz to skrot sciezki notatki (te same id w roznych space'ach).
 /// `ZOOM_SETTLE_MS`; testy GUI (z `SPECTRENOTES_TEST_INPUT`) moga go wydluzyc
 /// zmienna `SPECTRENOTES_ZOOM_SETTLE_MS`, zeby sfotografowac sam podglad.
+/// Nastepna wartosc z listy po `cur` (zawija; spoza listy - pierwsza).
+fn cycle<T: Copy + PartialEq>(list: &[T], cur: T) -> T {
+    let i = list
+        .iter()
+        .position(|v| *v == cur)
+        .map_or(0, |i| (i + 1) % list.len());
+    list[i]
+}
+
+/// Pierwsza wartosc wieksza niz `cur`, po ostatniej - pierwsza.
+fn cycle_up(list: &[f32], cur: f32) -> f32 {
+    list.iter()
+        .copied()
+        .find(|v| *v > cur + 1e-3)
+        .unwrap_or(list[0])
+}
+
 fn zoom_settle_ms() -> u32 {
     std::env::var_os("SPECTRENOTES_TEST_INPUT")
         .and_then(|_| std::env::var("SPECTRENOTES_ZOOM_SETTLE_MS").ok())
