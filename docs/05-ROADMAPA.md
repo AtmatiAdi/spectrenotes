@@ -56,9 +56,13 @@ Decyzja pochodna: renderer produkcyjny to Direct2D (ADR 0005), nie wgpu.
       uproszczeniem 0,15 px. Koszt: rebuild 456 widocznych cienkich kresek 9,5 → 46 ms
       (tylko zoom/resize); scroll 0,8 ms, repaint 1,5 ms bez zmian. Bench ma przypadek
       „grubość 1.2" i czyści cache między przypadkami (wcześniej mierzył stary cache)
-- [ ] Zoom bez pełnego rebuildu co ząbek kółka: podgląd skalowaniem warstwy suchej,
+- [x] Zoom bez pełnego rebuildu co ząbek kółka: podgląd skalowaniem warstwy suchej,
       rebuild po ustaniu gestu — zdejmie z zoomu zarówno 46 ms cienkich, jak i zimne
-      budowanie obrysów (0,7 s na gęstej stronie przy każdym kroku 1,5×)
+      budowanie obrysów (0,7 s na gęstej stronie przy każdym kroku 1,5×). **Zrobione
+      2 XI 2026**: renderer zna kamerę warstwy (`dry_view`) i w innej rysuje ją
+      przeskalowaną; przebudowa 150 ms po ostatnim ząbku (`ZOOM_SETTLE_MS`) albo od razu
+      przy rysowaniu / innej zmianie warstwy. `--bench`: ząbek był 5–25 ms (max 150 ms
+      przy 470 widocznych kreskach), podgląd ~2 ms niezależnie od treści.
 - [~] Cache kafli — niepotrzebny: po realizacjach geometrii i indeksie pasów
       przewijanie przyrostowe mieści się w budżecie z dużym zapasem
 - [x] Ochrona AMOLED po bezczynności: **fale lokalnego przyciemnienia** (`amoled.rs`) —
@@ -355,8 +359,8 @@ zanim zamkniemy kształt menu; każda z tych rzeczy dokłada własne wejścia do
       assetu przez LAN, test przeciągania pliku prawdziwą myszą.
 - [ ] **Snapshoty i przycinanie HEAD** (Etap 3/5) razem z przycinaniem `via-*` (Etap 6)
       — jeden mechanizm: stan HEAD do pliku, stare `.ops` do usunięcia w gicie.
-- [ ] **Zoom bez pełnego rebuildu** (Etap 2): podgląd skalowaniem warstwy suchej,
-      rebuild po ustaniu gestu.
+- [x] **Zoom bez pełnego rebuildu** (Etap 2): podgląd skalowaniem warstwy suchej,
+      rebuild po ustaniu gestu (2 XI 2026).
 - [ ] **LAN do końca** (Etap 6/6¾): live dla notatek ze space'ów współdzielonych,
       potwierdzenie na dwóch fizycznych maszynach, GUI udostępniania (peerzy, nazwy).
 - [x] **Przycisk „Send feedback"** — pierwsza pozycja w Ustawieniach (2026-09-17):

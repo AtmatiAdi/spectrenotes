@@ -109,6 +109,9 @@ const TIMER_FX: usize = 13;
 /// Ponowna proba odbudowy renderera po utracie GPU (`recover_renderer`), gdy
 /// poprzednia sie nie udala - np. sterownik jeszcze sie przeladowuje.
 const TIMER_GPU_RETRY: usize = 14;
+/// Domkniecie zoomu kolkiem (`zoom_at`): pelna przebudowa po tylu ms ciszy.
+const TIMER_ZOOM: usize = 15;
+const ZOOM_SETTLE_MS: u32 = 150;
 const GPU_RETRY_MS: u32 = 500;
 const FX_TICK_MS: u32 = 33;
 /// Zapas wokol widoku przy wyborze kresek z efektem - poswiata siega poza kreske.
@@ -342,6 +345,9 @@ pub struct App {
     avatar_px: Option<(u32, u32, Vec<u8>)>,
     /// Trwa odbudowa renderera - `render` z jej wnetrza nie zaczyna kolejnej.
     recovering: bool,
+    /// Zoom w toku: warstwa sucha jest w starej skali, klatka ja skaluje
+    /// (`settle_zoom` przebudowuje).
+    zoom_settle: bool,
     /// Ostatnia odbudowa renderera - nie czesciej niz raz na `GPU_RETRY_MS`.
     last_recover: Option<Instant>,
 
@@ -836,6 +842,7 @@ impl App {
             calib: None,
             avatar_px: None,
             recovering: false,
+            zoom_settle: false,
             last_recover: None,
             mode: Mode::Idle,
             buttons: PenButtons::default(),
@@ -1953,6 +1960,7 @@ impl App {
         if (new_zoom - self.cam.zoom).abs() < 1e-4 {
             return;
         }
+        let before = self.dirty;
         let (cx, cy) = self.cam.to_canvas(sx, sy);
         self.cam.zoom = new_zoom;
         // Po zmianie zoomu ten sam punkt canvasu ma zostac pod kursorem
@@ -1963,7 +1971,29 @@ impl App {
         self.cam.scroll_to(scroll, bottom, h);
         let scroll_x = cx - (sx - self.cam.shift.0) / new_zoom;
         self.scroll_x_to(scroll_x);
-        self.dirty = Dirty::Full;
+        // Bez przebudowy na kazdy zabek: klatka pokazuje gotowa warstwe sucha
+        // przeskalowana (renderer zna jej kamere), pelna przebudowa dopiero po
+        // `ZOOM_SETTLE_MS` ciszy. Zmierzone (`--bench`): przebudowa na zabek to
+        // 5-25 ms, a co kilka zabkow (nowe obrysy) do 150 ms przy gestej notatce.
+        if before == Dirty::Clean {
+            self.dirty = Dirty::Clean;
+            self.zoom_settle = true;
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_ZOOM, zoom_settle_ms(), None);
+            }
+        } else {
+            self.dirty = Dirty::Full;
+        }
+    }
+
+    /// Koniec podgladu zoomu: warstwa sucha od nowa w docelowym zoomie.
+    fn settle_zoom(&mut self) {
+        if std::mem::take(&mut self.zoom_settle) {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_ZOOM);
+            }
+            self.dirty = Dirty::Full;
+        }
     }
 
     /// Przyciski lupy na pasku: zoom wokol srodka okna.
@@ -5449,6 +5479,12 @@ impl App {
         }
         let t0 = Instant::now();
         self.sync_pdf();
+        // Podglad zoomu trwa tylko, dopoki nic innego nie zmienia warstwy suchej
+        // i nic nie rysuje - kreska wypalana do warstwy w starej skali
+        // rozjechalaby sie z reszta.
+        if self.zoom_settle && (self.dirty != Dirty::Clean || self.mode != Mode::Idle) {
+            self.settle_zoom();
+        }
         // Klatka przewijania - z piora albo z kolka; decyduje o trybie prezentacji.
         let scrolling = self.mode == Mode::Pan || matches!(self.dirty, Dirty::Scrolled(_));
         match self.dirty {
@@ -6006,6 +6042,15 @@ impl App {
 /// Plik historii cofania notatki: lokalny, w katalogu danych aplikacji, poza
 /// space'em - do gita idzie op-log (stan notatki), a historia to stan tego
 /// urzadzenia. Klucz to skrot sciezki notatki (te same id w roznych space'ach).
+/// `ZOOM_SETTLE_MS`; testy GUI (z `SPECTRENOTES_TEST_INPUT`) moga go wydluzyc
+/// zmienna `SPECTRENOTES_ZOOM_SETTLE_MS`, zeby sfotografowac sam podglad.
+fn zoom_settle_ms() -> u32 {
+    std::env::var_os("SPECTRENOTES_TEST_INPUT")
+        .and_then(|_| std::env::var("SPECTRENOTES_ZOOM_SETTLE_MS").ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ZOOM_SETTLE_MS)
+}
+
 fn history_path(data_dir: &Path, note_dir: &Path) -> PathBuf {
     let key = AuthorId::from_name(&note_dir.to_string_lossy()).0;
     data_dir.join("history").join(format!("{key:016x}.hist"))
@@ -6618,6 +6663,10 @@ pub unsafe extern "system" fn wndproc(
                 }
                 TIMER_ANIM => app.anim_tick(),
                 TIMER_FX => app.fx_tick(),
+                TIMER_ZOOM => {
+                    app.settle_zoom();
+                    app.render();
+                }
                 TIMER_GPU_RETRY => {
                     let _ = KillTimer(Some(hwnd), TIMER_GPU_RETRY);
                     if app.renderer.healthy() {

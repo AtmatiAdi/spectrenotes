@@ -389,6 +389,10 @@ pub struct Renderer {
     /// Dwie bitmapy warstwy suchej: biezaca i zapasowa do przewijania przyrostowego.
     dry: [Option<ID2D1Bitmap1>; 2],
     dry_cur: usize,
+    /// Kamera (bez `shift`), w ktorej warstwa sucha jest narysowana. Klatka
+    /// w innej kamerze (zoom kolkiem, zanim aplikacja przebuduje warstwe) rysuje
+    /// ja przeskalowana i przesunieta - podglad za ulamek milisekundy.
+    dry_view: Option<Camera>,
 
     brushes: HashMap<u32, ID2D1Brush>,
     hud_fg: ID2D1Brush,
@@ -637,6 +641,7 @@ impl Renderer {
                 backbuffer: None,
                 dry: [None, None],
                 dry_cur: 0,
+                dry_view: None,
                 brushes: HashMap::new(),
                 hud_fg,
                 hud_bg,
@@ -734,6 +739,7 @@ impl Renderer {
                 *slot = Some(bmp);
             }
             self.ctx.SetTarget(None);
+            self.dry_view = None;
             Ok(())
         }
     }
@@ -1215,6 +1221,16 @@ impl Renderer {
         res
     }
 
+    /// Warstwa sucha jest w kamerze `cam` (zoom i X; `with_y` - takze Y).
+    /// Bez zapisanej kamery (swieza warstwa) - zgodna.
+    fn dry_matches(&self, cam: &Camera, with_y: bool) -> bool {
+        self.dry_view.is_none_or(|v| {
+            v.zoom == cam.zoom
+                && v.scroll_x == cam.scroll_x
+                && (!with_y || v.scroll_y == cam.scroll_y)
+        })
+    }
+
     /// Przebudowa fragmentu warstwy suchej (canvas). Po wymazaniu: czyscimy
     /// prostokat i rysujemy w nim tylko kreski, ktore go przecinaja - zamiast
     /// pelnej przebudowy, ktora przy zapisanej stronie kosztuje dziesiatki ms.
@@ -1226,6 +1242,11 @@ impl Renderer {
         rect: Bbox,
     ) -> Result<()> {
         let cam = &dry_cam(cam);
+        // Warstwa w innej skali lub w innym miejscu (podglad zoomu): prostokat
+        // dorysowany w biezacej kamerze pomieszalby skale - calosc od nowa.
+        if !self.dry_matches(cam, true) {
+            return self.rebuild(doc, cam, ink);
+        }
         let Some(dry) = self.dry[self.dry_cur].clone() else {
             return Ok(());
         };
@@ -1281,6 +1302,7 @@ impl Renderer {
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
         }
+        self.dry_view = Some(*cam);
         Ok(())
     }
 
@@ -1294,6 +1316,9 @@ impl Renderer {
         ink: &InkConfig,
     ) -> Result<()> {
         let cam = &dry_cam(cam);
+        if !self.dry_matches(cam, false) {
+            return self.rebuild(doc, cam, ink);
+        }
         let (w, h) = self.size;
         let exact = (cam.scroll_y - old_scroll) * cam.zoom;
         let dy = exact.round();
@@ -1357,6 +1382,7 @@ impl Renderer {
             res?;
         }
         self.dry_cur = 1 - self.dry_cur;
+        self.dry_view = Some(*cam);
         Ok(())
     }
 
@@ -1409,13 +1435,44 @@ impl Renderer {
                 X: cam.shift.0,
                 Y: cam.shift.1,
             };
-            self.ctx.DrawImage(
-                &dry,
-                Some(&dry_off),
-                None,
-                Default::default(),
-                Default::default(),
-            );
+            match self
+                .dry_view
+                .filter(|v| !self.dry_matches(&dry_cam(cam), true) && v.zoom > 0.0)
+            {
+                // Podglad: warstwa zbudowana w innej kamerze (zoom kolkiem w toku),
+                // przeskalowana do biezacej. Punkt canvasu `c` byl w `(c - s0) * z0`,
+                // ma byc w `(c - s1) * z1` -> skala z1/z0, przesuniecie (s0 - s1) * z1.
+                Some(v) => {
+                    // Oddalanie odslania brzegi - bufor flip ma tam smieci.
+                    self.ctx.Clear(Some(&BG_COLOR));
+                    let k = cam.zoom / v.zoom;
+                    self.ctx.SetTransform(&Matrix3x2 {
+                        M11: k,
+                        M12: 0.0,
+                        M21: 0.0,
+                        M22: k,
+                        M31: (v.scroll_x - cam.scroll_x) * cam.zoom + cam.shift.0,
+                        M32: (v.scroll_y - cam.scroll_y) * cam.zoom + cam.shift.1,
+                    });
+                    self.ctx.DrawImage(
+                        &dry,
+                        None,
+                        None,
+                        D2D1_INTERPOLATION_MODE_LINEAR,
+                        D2D1_COMPOSITE_MODE_SOURCE_OVER,
+                    );
+                    self.ctx.SetTransform(&Matrix3x2::identity());
+                }
+                None => {
+                    self.ctx.DrawImage(
+                        &dry,
+                        Some(&dry_off),
+                        None,
+                        Default::default(),
+                        Default::default(),
+                    );
+                }
+            }
             // Tusze z efektem nad warstwa sucha. Pod ochrona priorytetowe ida
             // dopiero nad fale (nizej), z dryfem; pozostale gasna z notatka.
             if let Some(fxl) = &overlay.fx {

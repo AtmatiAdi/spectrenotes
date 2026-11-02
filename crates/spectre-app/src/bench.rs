@@ -127,6 +127,17 @@ pub fn run() -> windows::core::Result<()> {
             r.rebuild(&doc, &cam, &ink).unwrap();
         });
 
+        // Zoom kolkiem: zabek = x1,1, dziesiec w glab i dziesiec z powrotem, kazdy
+        // z pelna przebudowa warstwy suchej (tak robi dzis aplikacja). Obrysy z cache
+        // starczaja do 1,5x roznicy zoomu, potem sa budowane od nowa.
+        let mut zcam = cam;
+        let mut zi = 0usize;
+        let (zoom_avg, zoom_max) = time(20, || {
+            zcam.zoom *= if zi < 10 { 1.1 } else { 1.0 / 1.1 };
+            zi += 1;
+            r.rebuild(&doc, &zcam, &ink).unwrap();
+        });
+
         let mut old = cam.scroll_y;
         let (scroll_avg, scroll_max) = time(300, || {
             old = cam.scroll_y;
@@ -196,6 +207,7 @@ pub fn run() -> windows::core::Result<()> {
             "\n{n} kresek x {len} probek, grubosc {base} (widocznych ~{}):\n\
              rebuild zimny    {rebuild_cold:7.2} ms\n\
              rebuild          {rebuild_avg:7.2} ms  (max {rebuild_max:6.2})\n\
+             zoom x1,1        {zoom_avg:7.2} ms  (max {zoom_max:6.2})\n\
              scroll +2px      {scroll_avg:7.3} ms  (max {scroll_max:6.2})\n\
              repaint 300x120  {repaint_avg:7.3} ms  (max {repaint_max:6.2})\n\
              present immediate{present_avg:7.3} ms  (max {present_max:6.2})\n\
