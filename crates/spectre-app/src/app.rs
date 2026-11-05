@@ -387,6 +387,9 @@ pub struct App {
     waves_tick: Instant,
     /// Ostatnie przestawienie timera bezczynnosci (nie robimy tego 266 razy/s).
     waves_armed: Instant,
+    /// Ostatnie wejscie nad sama notatka (pioro, mysz, klawisz) - odsuwa fale
+    /// niezaleznie od tego, co widzi system.
+    note_input: Instant,
     /// Pozycja rysika przy ostatnim uznanym wejsciu (prog ruchu dla hoveru).
     activity_pos: (f32, f32),
     /// Ustawienia z `config.txt`.
@@ -422,7 +425,8 @@ pub struct App {
     thumbs_batches: u32,
     thumbs_uploaded: u32,
     /// Kanal wejscia testowego (`test_input`) - tylko gdy proces wystartowal
-    /// ze zmienna `SPECTRENOTES_TEST_INPUT`; inaczej `WM_COPYDATA` jest ignorowane.
+    /// ze zmienna `SPECTRENOTES_TEST_INPUT`; inaczej `WM_COPYDATA` jest ignorowane,
+    /// a skroty debugowe (`debug_key`) nie dzialaja.
     test_input: bool,
     started: Instant,
     /// Ostatni zapis operacji na dysk - do licznika w menu.
@@ -431,7 +435,8 @@ pub struct App {
     menu_clock: bool,
     /// Sekundy bezczynnosci do fal; 0 = wylaczone.
     waves_idle_s: u32,
-    /// Fale wlaczone recznie (`W`): nie gasna od wejscia, tylko od `W`.
+    /// Podglad fal (`W`, tylko w trybie testowym): start bez czekania na
+    /// bezczynnosc. Gasnie od kazdego wejscia nad notatka, jak zwykla ochrona.
     waves_forced: bool,
     /// Jasnosc notatki miedzy pasami podczas fal, procent (100 = bez).
     waves_dim_pct: u32,
@@ -865,6 +870,7 @@ impl App {
             waves_leaving: None,
             waves_tick: Instant::now(),
             waves_armed: Instant::now(),
+            note_input: Instant::now(),
             activity_pos: (0.0, 0.0),
             toolbar_pin,
             scroll_mult,
@@ -5355,9 +5361,10 @@ impl App {
 
     /// Dowolne wejscie uzytkownika: fale gasna, odliczanie od nowa.
     fn activity(&mut self) {
-        if self.waves_forced {
-            return;
-        }
+        self.note_input = Instant::now();
+        // Podglad tez nalezy do uzytkownika: gdyby przezyl wejscie, notatki nie
+        // dalo sie obudzic niczym poza tym samym skrotem.
+        self.waves_forced = false;
         let had_waves = self.stop_waves();
         // Rysik daje 266 zdarzen/s - timer przestawiamy najwyzej raz na sekunde.
         if had_waves || self.waves_armed.elapsed().as_secs_f32() > 1.0 {
@@ -5379,12 +5386,13 @@ impl App {
     /// nie ma z nim nic wspolnego: praca na monitorze stacji dokujacej nie ma
     /// trzymac panelu laptopa rozswietlonego (`display::input_elsewhere`).
     /// Notatka lezy wtedy pod falami, a rysik nad nia budzi ja natychmiast,
-    /// bo `WM_POINTER` idzie wprost do okna.
+    /// bo `WM_POINTER` idzie wprost do okna - i ten sam czas odsuwa fale.
     fn protect_idle_ms(&self) -> u32 {
         protect_idle(
             window::system_idle_ms(),
             self.waves_laptop_only,
             spectre_shell_win::display::input_elsewhere(self.hwnd),
+            u32::try_from(self.note_input.elapsed().as_millis()).unwrap_or(u32::MAX),
         )
     }
 
@@ -5426,8 +5434,8 @@ impl App {
         self.render();
     }
 
-    /// `W`: fale na stale (debug/podglad) albo ich wylaczenie. Wymuszone fale
-    /// ignoruja wejscie uzytkownika - inaczej rysik w dloni gasilby je od razu.
+    /// `W` w trybie testowym: podglad fal bez czekania na bezczynnosc albo jego wylaczenie.
+    /// Gasnie tez od wejscia nad notatka (`activity`), hover dopiero po wyraznym ruchu.
     fn toggle_forced_waves(&mut self) {
         if self.waves_forced {
             self.waves_forced = false;
@@ -6210,12 +6218,28 @@ fn autostart_fix(config: Option<&str>, registry_on: bool, installed: bool) -> Au
 /// czyli stacja dokujaca - jest dla niego tym samym, co odejscie od biurka.
 /// Bez tego ustawienia chronimy ekran, na ktorym uzytkownik wlasnie pracuje,
 /// i kazde wejscie sie liczy.
-fn protect_idle(system_idle_ms: u32, laptop_only: bool, input_elsewhere: bool) -> u32 {
-    if laptop_only && input_elsewhere {
+///
+/// `note_input_ms` to czas od wejscia nad sama notatka: ono zawsze odsuwa fale,
+/// nawet gdy pierwszy plan ma gra na innym ekranie.
+fn protect_idle(
+    system_idle_ms: u32,
+    laptop_only: bool,
+    input_elsewhere: bool,
+    note_input_ms: u32,
+) -> u32 {
+    let idle = if laptop_only && input_elsewhere {
         u32::MAX
     } else {
         system_idle_ms
-    }
+    };
+    idle.min(note_input_ms)
+}
+
+/// Skroty debugowe: `W` (podglad fal), `H` (HUD), `V` (vsync), `T` (tearing).
+/// Dzialaja tylko z `SPECTRENOTES_TEST_INPUT`; w zwyklym uzyciu ta sama litera,
+/// np. z WASD w grze, jest zwyklym wejsciem. HUD, vsync i tearing sa w menu.
+fn debug_key(vk: VIRTUAL_KEY, ctrl: bool, test_input: bool) -> bool {
+    test_input && !ctrl && matches!(vk.0, 0x57 | 0x48 | 0x56 | 0x54)
 }
 
 /// Decyzja tiku ochrony AMOLED przy danej bezczynnosci (`protect_idle`):
@@ -6526,10 +6550,22 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_KEYDOWN => {
-            app.activity();
             let vk = VIRTUAL_KEY(wparam.0 as u16);
             let ctrl = ctrl_down();
+            let debug = debug_key(vk, ctrl, app.test_input);
+            // Podglad nie gasi sam siebie: `activity` wylaczyloby go przed przelaczeniem.
+            let preview = debug && vk.0 == 0x57;
+            if !preview {
+                app.activity();
+            }
             if app.edit_key(vk, ctrl) {
+                return LRESULT(0);
+            }
+            if preview {
+                // Bit 30 lParam: autopowtarzanie, przytrzymanie nie przelacza w kolko.
+                if lparam.0 & (1 << 30) == 0 {
+                    app.toggle_forced_waves();
+                }
                 return LRESULT(0);
             }
             match vk.0 {
@@ -6537,11 +6573,6 @@ pub unsafe extern "system" fn wndproc(
                 0x4D => app.toggle_menu(),
                 // 0 - dopasuj szerokosc kolumny do okna
                 0x30 => app.zoom_actual(),
-                // W - fale przyciemnienia od razu (podglad bez czekania 3 min)
-                0x57 => {
-                    app.toggle_forced_waves();
-                    return LRESULT(0);
-                }
                 0x31..=0x39 if ((vk.0 - 0x31) as usize) < SLOTS => {
                     app.color_idx = (vk.0 - 0x31) as usize;
                     app.eraser_tool = false;
@@ -6557,15 +6588,15 @@ pub unsafe extern "system" fn wndproc(
                     app.set_tool(false, s);
                 }
                 // H
-                0x48 => app.show_hud = !app.show_hud,
+                0x48 if debug => app.show_hud = !app.show_hud,
                 // Ctrl+C / Ctrl+V - zaznaczenie do schowka aplikacji i z powrotem
                 // (samo V zostaje przelacznikiem vsync).
                 0x43 if ctrl => app.copy_selection(),
                 0x56 if ctrl => app.paste_clipboard(),
                 // V
-                0x56 => app.vsync = !app.vsync,
+                0x56 if debug => app.vsync = !app.vsync,
                 // T
-                0x54 => app.pan_tearing = !app.pan_tearing,
+                0x54 if debug => app.pan_tearing = !app.pan_tearing,
                 // Z / Y
                 0x5A if ctrl => app.undo(),
                 0x59 if ctrl => app.redo(),
@@ -6971,21 +7002,60 @@ mod tests {
     fn praca_na_innym_ekranie_nie_trzyma_panelu_laptopa() {
         let want = 30_000;
         // Wejscie co chwila (bezczynnosc 0), ale gdzie indziej: czas na fale.
-        assert_eq!(protect_idle(0, true, true), u32::MAX);
-        assert_eq!(waves_delay(protect_idle(0, true, true), want, false), None);
-        // Kursor albo pierwszy plan wrocil na panel: wejscie znow sie liczy.
-        assert_eq!(protect_idle(0, true, false), 0);
+        assert_eq!(protect_idle(0, true, true, u32::MAX), u32::MAX);
         assert_eq!(
-            waves_delay(protect_idle(0, true, false), want, false),
+            waves_delay(protect_idle(0, true, true, u32::MAX), want, false),
+            None
+        );
+        // Kursor albo pierwszy plan wrocil na panel: wejscie znow sie liczy.
+        assert_eq!(protect_idle(0, true, false, u32::MAX), 0);
+        assert_eq!(
+            waves_delay(protect_idle(0, true, false, u32::MAX), want, false),
             Some(want)
         );
         // Bez "tylko ekran laptopa" chronimy ekran, na ktorym sie pracuje -
         // kazde wejscie odsuwa fale, tak jak dotad.
-        assert_eq!(protect_idle(0, false, true), 0);
+        assert_eq!(protect_idle(0, false, true, u32::MAX), 0);
         assert_eq!(
-            waves_delay(protect_idle(0, false, true), want, false),
+            waves_delay(protect_idle(0, false, true, u32::MAX), want, false),
             Some(want)
         );
+    }
+
+    /// Gra na innym ekranie ma fokus i kursor (`input_elsewhere`), a pioro pisze
+    /// po notatce: to wejscie odsuwa fale. Gdy nikt jej nie uzywa, fale startuja.
+    #[test]
+    fn wejscie_nad_notatka_odsuwa_fale_mimo_gry_obok() {
+        let want = 60_000;
+        assert_eq!(
+            waves_delay(protect_idle(0, true, true, 5_000), want, false),
+            Some(55_000)
+        );
+        assert_eq!(
+            waves_delay(protect_idle(0, true, true, want), want, false),
+            None
+        );
+        assert_eq!(
+            waves_delay(protect_idle(want, false, false, want), want, false),
+            None
+        );
+        // Wejscie gdzie indziej przy ochronie calego systemu tez sie liczy.
+        assert_eq!(
+            waves_delay(protect_idle(1_000, false, true, want), want, false),
+            Some(59_000)
+        );
+    }
+
+    /// W zwyklym uzyciu litery debugowe, np. `W` z WASD, sa zwyklym wejsciem.
+    #[test]
+    fn skroty_debugowe_tylko_w_trybie_testowym() {
+        for vk in [0x57, 0x48, 0x56, 0x54] {
+            assert!(!debug_key(VIRTUAL_KEY(vk), false, false));
+            assert!(debug_key(VIRTUAL_KEY(vk), false, true));
+            // Ctrl+V (wklej) to nie skrot debugowy.
+            assert!(!debug_key(VIRTUAL_KEY(vk), true, true));
+        }
+        assert!(!debug_key(VIRTUAL_KEY(0x45), false, true));
     }
 }
 

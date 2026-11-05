@@ -97,7 +97,7 @@ AMOLED na panel laptopa): gdy SpectreNotes jest widoczne na panelu, ma włączon
 ochronę **i jest zmaksymalizowane albo w pełnym ekranie** (domyślnie; ustawienie
 *Maximized only* wyłącza ten warunek), co 10 s prosi Spectre o wstrzymanie nakładki (dzierżawa 30 s przez komunikat
 `Spectre.ShieldHold`). Spectre po wygaśnięciu dzierżawy wraca do ochrony sam — zamknięty
-czy zawieszony SpectreNotes nigdy nie zostawia panelu bez ochrony. HUD (`H`) mówi, co
+czy zawieszony SpectreNotes nigdy nie zostawia panelu bez ochrony. HUD (menu, *Diagnostic HUD*) mówi, co
 naprawdę poszło i dlaczego (`Spectre: shield held off, last ping 3 s ago` / `not holding -
 window on \\.\DISPLAY2, not the laptop panel` / `Spectre not running`), a przejścia tego
 stanu lądują w `%APPDATA%\SpectreNotes\partner.log`; Spectre loguje każde zakrycie
@@ -526,8 +526,7 @@ druga instancja z innym `COMPUTERNAME` i `APPDATA` oraz własnym katalogiem spac
 | `M` | menu: notatki w folderach, ustawienia, konto |
 | `PgUp` / `PgDn` | poprzednia / następna notatka |
 | `Ctrl+N` | nowa notatka |
-| `F11`, `H`, `V`, `T` | pełny ekran, HUD (domyślnie wyłączony), vsync, tryb przewijania |
-| `W` | fale przyciemnienia AMOLED na stałe (podgląd/debug; ponowne `W` wyłącza). Normalnie startują same po czasie z ustawień |
+| `F11` | pełny ekran |
 | `Esc` / `Ctrl+Q` | ukryj do tray / zakończ |
 
 Przyciski rysika działają w każdym momencie: wciśnięcie w trakcie kreski kończy
@@ -578,7 +577,15 @@ Bezwzględnej latencji pen-to-photon HUD nie zmierzy — to się robi kamerą 24
 Odliczanie do fal bierze bezczynność **całego systemu** (`GetLastInputInfo`),
 nie tylko tego okna. Okno nieaktywne nie dostaje żadnych komunikatów wejścia,
 więc bez tego ochrona wchodziła (razem z pełnym ekranem) w trakcie pisania
-w innej aplikacji. `W` (wymuszony podgląd) omija sprawdzenie.
+w innej aplikacji. Wejście nad samą notatką zawsze odsuwa fale, także gdy pierwszy plan
+ma gra na innym ekranie. Pióro, mysz i każdy klawisz w notatce budzą ją zawsze: nie ma już
+trybu, który je ignoruje.
+
+**Skróty debugowe działają tylko ze zmienną `SPECTRENOTES_TEST_INPUT`.** `W` (podgląd fal
+od razu), `H` (HUD), `V` (vsync) i `T` (tearing przy przewijaniu) były gołymi literami.
+Gdy notatki miały fokus klawiatury, `W` z WASD w grze włączało fale, których pióro i mysz
+nie gasiły. Teraz w zwykłym użyciu te litery tylko budzą notatkę; HUD, vsync i tearing są
+w menu. W trybie testowym `W` przełącza podgląd, a wejście nad notatką też go gasi.
 
 Który ekran jest panelem laptopa, liczy `display::is_internal_monitor` z trzech
 przypadków, bo „nie ma aktywnego panelu wbudowanego" znaczy co innego na laptopie,

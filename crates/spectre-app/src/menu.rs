@@ -1337,10 +1337,10 @@ impl Menu {
                         "Cursor under the pen",
                         if s.pen_cursor { "crosshair" } else { "hidden" }.to_string(),
                     ),
-                    (Setting::Vsync, "VSync (V)", on_off(s.vsync).to_string()),
+                    (Setting::Vsync, "VSync", on_off(s.vsync).to_string()),
                     (
                         Setting::PanTearing,
-                        "Tearing while scrolling (T)",
+                        "Tearing while scrolling",
                         on_off(s.pan_tearing).to_string(),
                     ),
                     (
@@ -1348,11 +1348,7 @@ impl Menu {
                         "Fullscreen (F11)",
                         on_off(s.fullscreen).to_string(),
                     ),
-                    (
-                        Setting::Hud,
-                        "Diagnostic HUD (H)",
-                        on_off(s.hud).to_string(),
-                    ),
+                    (Setting::Hud, "Diagnostic HUD", on_off(s.hud).to_string()),
                 ],
             ),
             (
@@ -1392,7 +1388,7 @@ impl Menu {
                         "Maximized only",
                         on_off(s.waves_maximized_only).to_string(),
                     ),
-                    (Setting::WavesIdle, "Waves after idle (W)", waves),
+                    (Setting::WavesIdle, "Waves after idle", waves),
                     (
                         Setting::WavesDim,
                         "Note brightness during waves",
