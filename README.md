@@ -566,11 +566,26 @@ HUD pokazuje to, co realnie decyduje o odczuciu:
   faktycznie dokłada próbki ponad tę jedną z komunikatu.
 - **wejście→present** — od znacznika czasu najnowszej próbki do wywołania `Present`.
   To jest ta część łańcucha latencji, na którą mamy wpływ.
+- **próbka→okno** (`sample->window`) — od znacznika próbki do odczytu w oknie:
+  digitizer, sterownik i kolejka komunikatów. Rośnie, gdy wątek okna nie nadąża.
+- **display** — bieżące odświeżanie monitora okna. Panel 120 Hz ustawiony na 60 Hz
+  wydłuża część łańcucha poza aplikacją (DWM, skanowanie) i z odczucia tego nie widać.
 - **GPU** — musi pokazywać iGPU. Jeśli pokazuje RTX, wybór adaptera jest zepsuty
   i notatnik wybudza dedykowaną kartę.
 
 Bezwzględnej latencji pen-to-photon HUD nie zmierzy — to się robi kamerą 240 fps
 (telefon), licząc klatki między dotknięciem rysika a pojawieniem się piksela.
+
+**Klatka tylko wtedy, gdy kolejka ma na nią miejsce** (7 XI 2026). Rysik daje
+komunikat co ~4 ms, a zintegrowane GPU z pełnym oknem i DWM na 60 Hz przyjmują
+klatkę rzadziej. Rysowanie każdej mimo to zapychało kolejkę: `EndDraw`/`Present`
+stawały na 25–50 ms, a próbki czekały w kolejce komunikatów. W strumieniu 240 Hz
+w oknie testowym zator dochodził do 0,5–2,6 s. Teraz `render` pyta obiekt
+`FRAME_LATENCY_WAITABLE_OBJECT` bez czekania (`Renderer::frame_ready`). Gdy kolejka
+jest pełna, klatka jest pomijana, a stan zostaje do następnej próbki albo do
+`TIMER_PRESENT`, najwyżej 64 powtórki z rzędu. `Present` idzie z `DO_NOT_WAIT`, a
+swapchain ma 3 bufory. Po zmianie w tych samych seriach najgorszy zator wynosił
+2–9 ms w 17 z 18 strumieni; przed zmianą 54–480 ms w 8 z 18.
 
 ### Ochrona AMOLED liczy bezczynność człowieka
 

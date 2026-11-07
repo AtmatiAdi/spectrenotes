@@ -113,6 +113,13 @@ const TIMER_GPU_RETRY: usize = 14;
 /// Domkniecie zoomu kolkiem (`zoom_at`): pelna przebudowa po tylu ms ciszy.
 const TIMER_ZOOM: usize = 15;
 const ZOOM_SETTLE_MS: u32 = 150;
+/// Powtorka klatki, ktorej `Present` nie przyjal, bo kolejka byla pelna
+/// (`Renderer::present` zwraca `Ok(false)`). Zwykle i tak wczesniej przychodzi
+/// kolejna probka piora; timer domyka koniec kreski.
+const TIMER_PRESENT: usize = 16;
+const PRESENT_RETRY_MS: u32 = 4;
+/// Najwiecej powtorek z rzedu (~1 s przy tyku systemowym 15,6 ms).
+const PRESENT_RETRY_MAX: u32 = 64;
 const GPU_RETRY_MS: u32 = 500;
 const FX_TICK_MS: u32 = 33;
 /// Zapas wokol widoku przy wyborze kresek z efektem - poswiata siega poza kreske.
@@ -540,6 +547,14 @@ pub struct App {
     /// Czas ostatniej klatki (render + present), do HUD-u.
     frame_ms: f32,
     frame_max_ms: f32,
+    /// Pioro w liczbach do HUD-u: Hz, probka -> okno, wejscie -> Present.
+    pen_stats: crate::penstats::PenStats,
+    qpc_freq: i64,
+    /// Powtorki pominietej klatki z rzedu (`retry_frame`).
+    present_retries: u32,
+    /// Odswiezanie monitora okna do HUD-u, odczytywane najwyzej co 2 s.
+    refresh_hz: u32,
+    refresh_read: Option<Instant>,
     /// Pierwsza klatka juz zalogowana (`startup:`).
     first_frame_logged: bool,
     /// Poczatek zegara tuszy z efektem.
@@ -947,6 +962,11 @@ impl App {
             status: String::new(),
             frame_ms: 0.0,
             frame_max_ms: 0.0,
+            pen_stats: Default::default(),
+            qpc_freq: window::qpc_freq(),
+            present_retries: 0,
+            refresh_hz: 0,
+            refresh_read: None,
             first_frame_logged: false,
             fx_epoch: Instant::now(),
             fx_visible: false,
@@ -1028,6 +1048,11 @@ impl App {
             return None;
         }
         let batch = self.pen.decode(self.hwnd, pointer_id, with_history)?;
+        self.pen_stats.on_batch(
+            window::qpc_now_us(self.qpc_freq),
+            batch.samples.iter().map(|s| s.t_us),
+            batch.history_len,
+        );
         self.buttons = batch.buttons;
         if let Some(s) = batch.samples.last() {
             self.last_screen = (s.x, s.y);
@@ -5553,6 +5578,14 @@ impl App {
         if self.hidden {
             return;
         }
+        // GPU albo DWM nie odebraly jeszcze poprzedniej klatki: nie dokladamy
+        // nastepnej (`Renderer::frame_ready`). Stan zostaje brudny, wiec nowsza
+        // probka albo timer narysuja go, gdy kolejka zwolni - zamiast stawac
+        // w `Present` i trzymac probki piora w kolejce komunikatow.
+        if !self.renderer.frame_ready() {
+            self.retry_frame();
+            return;
+        }
         let t0 = Instant::now();
         self.sync_pdf();
         // Tlo notatki (metadana `bg`): z otwarcia, przelaczenia, merge'a, LAN
@@ -5636,6 +5669,13 @@ impl App {
             .collect();
 
         let hud = if self.show_hud {
+            if self
+                .refresh_read
+                .is_none_or(|t| t.elapsed().as_secs_f32() > 2.0)
+            {
+                self.refresh_hz = spectre_shell_win::display::window_refresh_hz(self.hwnd);
+                self.refresh_read = Some(Instant::now());
+            }
             Some(self.hud_text())
         } else {
             None
@@ -5951,8 +5991,16 @@ impl App {
                 PresentMode::Immediate
             },
         );
-        if let Err(e) = &presented {
-            eprintln!("present: {e}");
+        match &presented {
+            Ok(true) => {
+                self.present_retries = 0;
+                self.pen_stats.on_present(window::qpc_now_us(self.qpc_freq));
+            }
+            // Kolejka prezentacji pelna - klatka pominieta zamiast blokowac rysik.
+            // Kolejna probka i tak narysuje nowsza; gdyby zadna nie przyszla
+            // (koniec kreski), te klatke powtorzy timer.
+            Ok(false) => self.retry_frame(),
+            Err(e) => eprintln!("present: {e}"),
         }
         // Utrata GPU (przepiecie monitorow, odpiecie stacji): bez tego okno
         // zostawalo puste - sama ramka i pulpit pod spodem - az do restartu.
@@ -5981,6 +6029,19 @@ impl App {
         }
         if gpu_lost {
             self.recover_renderer("present failed or no back buffer");
+        }
+    }
+
+    /// Pominieta klatka (kolejka GPU/DWM pelna) - powtorka z `TIMER_PRESENT`.
+    /// Z limitem: okno zasloniete albo na wylaczonym ekranie moze dlugo nie
+    /// oddawac kolejki, a timer nie ma wtedy budzic procesu co 15 ms bez konca;
+    /// kolejne wejscie i tak wola `render`.
+    fn retry_frame(&mut self) {
+        if self.present_retries < PRESENT_RETRY_MAX {
+            self.present_retries += 1;
+            unsafe {
+                SetTimer(Some(self.hwnd), TIMER_PRESENT, PRESENT_RETRY_MS, None);
+            }
         }
     }
 
@@ -6044,6 +6105,7 @@ impl App {
         format!(
             "SpectreNotes   note {}/{}   strokes: {}   {}   zoom {:.0}%\n\
              tool: {}   width: {:.1} px   scroll: {:.0},{:.0}   waves: {}   frame: {:.2} ms (max {:.1})   GPU: {}\n\
+             {}\n\
              [1-7] color (7 = priority ink)  [E] eraser  [S] select  [Ctrl+C/V] copy/paste  [[ ]] width  [Ctrl+Z/Y] undo/redo  [Home] top\n\
              [barrel button]/[wheel] scroll  [Ctrl+wheel] zoom  [PgUp/PgDn] notes  [Ctrl+N] new  [Win+Shift+N] show/hide\n\
              [F11] fullscreen  [H] hud  [V] vsync  [T] scrolling: {}  [Esc] hide  [Ctrl+Q] quit\n\
@@ -6078,6 +6140,7 @@ impl App {
             self.frame_ms,
             self.frame_max_ms,
             self.renderer.adapter_name(),
+            self.pen_stats.line(self.refresh_hz),
             if self.pan_tearing {
                 "tearing (responsive)"
             } else {
@@ -6790,6 +6853,10 @@ pub unsafe extern "system" fn wndproc(
                 TIMER_FX => app.fx_tick(),
                 TIMER_ZOOM => {
                     app.settle_zoom();
+                    app.render();
+                }
+                TIMER_PRESENT => {
+                    let _ = KillTimer(Some(hwnd), TIMER_PRESENT);
                     app.render();
                 }
                 TIMER_GPU_RETRY => {

@@ -7,7 +7,7 @@ use spectre_core::{Bbox, Camera, Document, StrokeId};
 use spectre_ink::{InkConfig, Segment};
 use spectre_proto::Rgba;
 use windows::core::{Interface, Result, HSTRING};
-use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_COMPOSITE_MODE_PLUS,
     D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
@@ -41,12 +41,14 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SA
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory2, IDXGIAdapter1, IDXGIDevice, IDXGIDevice3, IDXGIFactory6, IDXGISurface,
     IDXGISwapChain1, IDXGISwapChain2, DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_SOFTWARE,
-    DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED, DXGI_FEATURE_PRESENT_ALLOW_TEARING,
-    DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_MWA_NO_ALT_ENTER, DXGI_PRESENT,
-    DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_NONE, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
-    DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
-    DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_WAS_STILL_DRAWING,
+    DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_GPU_PREFERENCE_MINIMUM_POWER, DXGI_MWA_NO_ALT_ENTER,
+    DXGI_PRESENT, DXGI_PRESENT_ALLOW_TEARING, DXGI_PRESENT_DO_NOT_WAIT, DXGI_SCALING_NONE,
+    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING,
+    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
+use windows::Win32::System::Threading::WaitForSingleObjectEx;
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::geometry;
@@ -388,6 +390,11 @@ pub struct Renderer {
     /// `None` tylko w trakcie `reset` (albo po nieudanym) - okno moze miec
     /// jeden swapchain flip, wiec stary trzeba zwolnic przed zalozeniem nowego.
     swapchain: Option<IDXGISwapChain1>,
+    /// "Kolejka ma miejsce na klatke" (`FRAME_LATENCY_WAITABLE_OBJECT`), patrz
+    /// `frame_ready`. Zwalniany razem ze swapchainem.
+    frame_wait: Option<FrameWait>,
+    /// Sygnal z `frame_wait` juz odebrany, a klatka jeszcze nie poszla.
+    frame_token: bool,
     hwnd: HWND,
     factory2d: ID2D1Factory1,
     ctx: ID2D1DeviceContext,
@@ -593,7 +600,14 @@ impl Renderer {
                     Quality: 0,
                 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: 2,
+                // Trzy, nie dwa: rysik daje klatke na kazdy komunikat (~240/s), a DWM
+                // sklada ekran 60-120 razy na sekunde. Przy dwoch buforach jeden trzyma
+                // DWM, drugi czeka w kolejce i `Present` stoi do najblizszego zlozenia
+                // ekranu - probki piora zalegaja w kolejce komunikatow. Zmierzone
+                // 7 XI 2026 (panel 60 Hz, strumien 240 Hz w oknie testowym): zalegla
+                // kolejka w najgorszym miejscu kreski 35-674 ms przy dwoch, 2,5-77 ms
+                // przy trzech. Kolejke GPU nadal trzyma `SetMaximumFrameLatency(1)`.
+                BufferCount: 3,
                 Scaling: DXGI_SCALING_NONE,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 Flags: swapchain_flags(tearing_supported).0 as u32,
@@ -602,8 +616,13 @@ impl Renderer {
             let swapchain = factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?;
             let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
             // Domyslna kolejka to 3 klatki; przy 120 Hz to 25 ms samego kolejkowania.
+            let mut frame_wait = None;
             if let Ok(sc2) = swapchain.cast::<IDXGISwapChain2>() {
                 let _ = sc2.SetMaximumFrameLatency(1);
+                let h = sc2.GetFrameLatencyWaitableObject();
+                if !h.is_invalid() {
+                    frame_wait = Some(FrameWait(h));
+                }
             }
 
             let t_sc = ms(t0);
@@ -647,6 +666,8 @@ impl Renderer {
                 size: (width.max(1), height.max(1)),
                 device,
                 swapchain: Some(swapchain),
+                frame_wait,
+                frame_token: false,
                 hwnd,
                 factory2d,
                 ctx,
@@ -759,6 +780,24 @@ impl Renderer {
         }
     }
 
+    /// Czy klatke mozna narysowac i oddac bez czekania. Rysik daje komunikat co
+    /// ~4 ms, a GPU (zwlaszcza zintegrowane, pelne okno, tusz z poswiata) i DWM
+    /// przyjmuja klatke rzadziej. Rysowanie kazdej mimo to zapychalo kolejke:
+    /// `EndDraw`/`Present` stawaly na dziesiatki ms, a probki czekaly w kolejce
+    /// komunikatow - zmierzone 7 XI 2026 zatory do 2,6 s przy strumieniu 240 Hz.
+    /// `false`: pominac te klatke; stan zostaje, nastepna narysuje nowszy.
+    /// Bez obiektu oczekiwania (stary system) zawsze `true`.
+    pub fn frame_ready(&mut self) -> bool {
+        if self.frame_token {
+            return true;
+        }
+        let Some(w) = &self.frame_wait else {
+            return true;
+        };
+        self.frame_token = unsafe { WaitForSingleObjectEx(w.0, 0, false) } == WAIT_OBJECT_0;
+        self.frame_token
+    }
+
     fn swapchain(&self) -> Result<&IDXGISwapChain1> {
         self.swapchain
             .as_ref()
@@ -792,6 +831,8 @@ impl Renderer {
         self.dry = [None, None];
         self.fx_bmp = None;
         self.fx_effects = None;
+        self.frame_wait = None;
+        self.frame_token = false;
         self.swapchain = None;
         // D2D i D3D11 niszcza obiekty z opoznieniem: bez oproznienia kontekstow
         // swapchain zyje dalej i nowy dla tego samego okna dostaje
@@ -1471,6 +1512,8 @@ impl Renderer {
     }
 
     /// Sklada klatke: warstwa sucha + czubek kreski + overlay, i prezentuje.
+    /// `Ok(false)`: kolejka prezentacji byla pelna i klatka nie poszla na ekran
+    /// (`DXGI_ERROR_WAS_STILL_DRAWING`) - trzeba ja powtorzyc za chwile.
     pub fn present(
         &mut self,
         tail: &[Segment],
@@ -1478,10 +1521,10 @@ impl Renderer {
         cam: &Camera,
         overlay: Overlay,
         mode: PresentMode,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let (Some(back), Some(dry)) = (self.backbuffer.clone(), self.dry[self.dry_cur].clone())
         else {
-            return Ok(());
+            return Ok(true);
         };
         let brush = self.brush(color)?;
         let mut tail_brushes = Vec::with_capacity(overlay.tails.len());
@@ -1589,13 +1632,24 @@ impl Renderer {
             let (interval, flags) = match mode {
                 PresentMode::VSync => (1u32, DXGI_PRESENT(0)),
                 PresentMode::Immediate if self.tearing_supported => {
-                    (0u32, DXGI_PRESENT_ALLOW_TEARING)
+                    (0u32, DXGI_PRESENT_ALLOW_TEARING | DXGI_PRESENT_DO_NOT_WAIT)
                 }
-                PresentMode::Immediate | PresentMode::Latest => (0u32, DXGI_PRESENT(0)),
+                PresentMode::Immediate | PresentMode::Latest => (0u32, DXGI_PRESENT_DO_NOT_WAIT),
             };
-            self.swapchain()?.Present(interval, flags).ok()?;
+            // Bez czekania: gdy kolejka prezentacji jest pelna (DWM jeszcze nie
+            // zlozyl poprzedniej klatki), `Present` stalby 15-30 ms, a w tym czasie
+            // nastepne komunikaty piora czekalyby w kolejce. Pomijamy te klatke;
+            // nastepna probka narysuje nowsza, a koniec kreski dorysuje
+            // `TIMER_PRESENT` (zmierzone 7 XI 2026: zator kolejki do 0,8-2,6 s).
+            let hr = self.swapchain()?.Present(interval, flags);
+            if hr == DXGI_ERROR_WAS_STILL_DRAWING {
+                return Ok(false);
+            }
+            hr.ok()?;
+            // Klatka poszla: nastepna czeka na kolejny sygnal `frame_wait`.
+            self.frame_token = false;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Uniesione zaznaczenie: te same obrysy co w dokumencie (cache geometrii
@@ -2318,6 +2372,17 @@ impl Renderer {
             D2D1_DRAW_TEXT_OPTIONS_NONE,
             DWRITE_MEASURING_MODE_NATURAL,
         );
+    }
+}
+
+/// Uchwyt z `GetFrameLatencyWaitableObject` - wolajacy ma go zamknac.
+struct FrameWait(HANDLE);
+
+impl Drop for FrameWait {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
     }
 }
 

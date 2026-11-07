@@ -28,6 +28,7 @@ mod menu;
 mod pdf;
 mod pdfedit;
 mod pdfview;
+mod penstats;
 mod picker;
 mod select;
 mod spaces;

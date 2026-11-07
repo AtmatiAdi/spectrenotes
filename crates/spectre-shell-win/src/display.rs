@@ -15,7 +15,8 @@ use windows::Win32::Devices::Display::{
 };
 use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
+    EnumDisplaySettingsW, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, DEVMODEW,
+    ENUM_CURRENT_SETTINGS, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow};
 
@@ -98,6 +99,34 @@ fn wide_to_string(w: &[u16]) -> String {
 /// uchodzi monitor podstawowy - tam zwykle stoi jedyny ekran.
 pub fn on_internal_display(hwnd: HWND) -> bool {
     window_display(hwnd).is_none_or(|(_, internal)| internal)
+}
+
+/// Biezace odswiezanie monitora okna w Hz (0, gdy system nie powie). Do HUD-u:
+/// panel 120 Hz ustawiony na 60 Hz podwaja czesc lancucha latencji, na ktora
+/// aplikacja nie ma wplywu (DWM i skanowanie), a z samego odczucia tego nie widac.
+pub fn window_refresh_hz(hwnd: HWND) -> u32 {
+    let mut mi = MONITORINFOEXW::default();
+    mi.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    let mut dm = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    unsafe {
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if !GetMonitorInfoW(mon, &mut mi.monitorInfo).as_bool() {
+            return 0;
+        }
+        if !EnumDisplaySettingsW(
+            windows::core::PCWSTR(mi.szDevice.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &mut dm,
+        )
+        .as_bool()
+        {
+            return 0;
+        }
+    }
+    dm.dmDisplayFrequency
 }
 
 /// Monitor okna: nazwa GDI (`\\.\DISPLAYn`) i czy to panel wbudowany.
