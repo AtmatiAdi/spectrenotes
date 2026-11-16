@@ -157,6 +157,55 @@ mod tests {
         assert!((sx - 360.0).abs() < 1e-3);
     }
 
+    /// Issue #25 (v0.4.2): po przeniesieniu okna na inny ekran zmienial sie zoom.
+    /// Wtedy kazde otwarcie notatki dopasowywalo kolumne do szerokosci okna
+    /// (`fit_width`), wiec zoom zalezal od monitora. Od v0.4.3 start notatki to
+    /// zawsze 100%, a `WM_SIZE` / `WM_DPICHANGED` tylko pilnuja granic
+    /// przewijania (`scroll_x_to`/`scroll_x_free` + `scroll_to` na tej samej
+    /// kamerze) - zoom zmienia wylacznie uzytkownik.
+    #[test]
+    fn zmiana_monitora_nie_rusza_zoomu() {
+        // Okna zmaksymalizowane na roznych ekranach: panel 2880x1800 @125%,
+        // FHD @100%, 4K @175%, panel obrocony do pionu - i z powrotem.
+        let monitors = [
+            (2880.0, 1800.0),
+            (1920.0, 1080.0),
+            (3840.0, 2160.0),
+            (1800.0, 2880.0),
+            (2880.0, 1800.0),
+        ];
+        // Start notatki na kazdym z nich: 100%, niezaleznie od szerokosci okna.
+        for &(w, _) in &monitors {
+            let mut c = Camera::default();
+            c.home(w);
+            assert_eq!(c.zoom, 1.0, "start notatki w oknie {w} px");
+        }
+        let content_bottom = 20_000.0;
+        for locked in [true, false] {
+            let mut c = Camera::default();
+            c.home(monitors[0].0);
+            // Uzytkownik przybliza (lupa / Ctrl+kolko) i przewija w dol.
+            c.zoom = 1.5;
+            c.scroll_to(3000.0, content_bottom, monitors[0].1);
+            for &(w, h) in &monitors {
+                // To, co robi aplikacja po `WM_SIZE` na nowym ekranie.
+                if locked {
+                    c.scroll_x_to(c.scroll_x, w, None);
+                } else {
+                    c.scroll_x_free(c.scroll_x);
+                }
+                c.scroll_to(c.scroll_y, content_bottom, h);
+                assert_eq!(c.zoom, 1.5, "okno {w}x{h}, widok zablokowany: {locked}");
+                // 100 jednostek canvasu = 150 pikseli fizycznych na kazdym ekranie.
+                let (x0, y0) = c.to_screen(1000.0, 3500.0);
+                let (x1, y1) = c.to_screen(1100.0, 3600.0);
+                assert!((x1 - x0 - 150.0).abs() < 1e-3 && (y1 - y0 - 150.0).abs() < 1e-3);
+            }
+            // Przewiniecie w pionie przezylo cala podroz (granica dolu daleko).
+            assert!((c.scroll_y - 3000.0).abs() < 1.0);
+        }
+    }
+
     #[test]
     fn przesuniecie_w_poziomie_tylko_gdy_kolumna_szersza_niz_okno() {
         let mut c = Camera::default();

@@ -6912,7 +6912,8 @@ pub unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         // Inny monitor / inne DPI: UI liczy piksele od nowa (pasek, zakladki,
-        // czcionki), canvas zostaje jak byl.
+        // czcionki), canvas zostaje jak byl - zoomu nie rusza ani to, ani
+        // `WM_SIZE` (issue #25, test `camera::zmiana_monitora_nie_rusza_zoomu`).
         WM_DISPLAYCHANGE | WM_DPICHANGED => {
             app.pen.invalidate();
             app.partner_soon();
