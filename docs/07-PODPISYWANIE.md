@@ -65,6 +65,12 @@ AtmatiAdi/spectrenotes-releases   (wydania) publiczne, bez zmian - tu lądują p
 7. `gh release create` w repo wydań (token z `secrets.RELEASES_TOKEN`),
 8. zostawienie trzech ostatnich wydań.
 
+Gdy wydanie już jest (zrobił je `release.ps1` zaraz po pushu tagu), krok 7 go
+nie nadpisuje i przebieg kończy się na zielono z adnotacją; podpisane pliki
+podmienia (`--clobber`). Bez sekretu `RELEASES_TOKEN` CI tylko sprawdza
+(repo wydań jest publiczne) — utworzyć wydania nie umie i mówi to wprost.
+Do v0.4.4 sekretu nie było i każdy przebieg `release` padał na pustym `GH_TOKEN`.
+
 `release.ps1` zostaje do buildów lokalnych i prób, ale **oficjalne wydanie idzie
 z CI** — inaczej nie ma mowy o „weryfikowalnym buildzie ze źródeł".
 

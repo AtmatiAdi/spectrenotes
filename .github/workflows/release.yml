@@ -151,19 +151,62 @@ jobs:
 
       # Wydania leza w osobnym, publicznym repo - adres instalatora nie zmienia
       # sie od wersji 0.1 i zainstalowane kopie sprawdzaja wlasnie jego.
+      #
+      # Wydanie robia dwie drogi: `release.ps1` (build lokalny, tag, push i od razu
+      # `gh release create`) albo sam tag. Przy `release.ps1` wydanie jest gotowe
+      # na dlugo przed tym krokiem, wiec krok najpierw sprawdza, czy juz jest:
+      #   - jest, pliki niepodpisane  -> zostawia je (notice, przebieg zielony),
+      #   - jest, pliki podpisane     -> podmienia zasoby na podpisane (--clobber),
+      #   - nie ma                    -> tworzy wydanie i zostawia trzy ostatnie.
+      # Zapis wymaga sekretu RELEASES_TOKEN (PAT z Contents: write w repo wydan,
+      # docs/07). Do odczytu wystarcza token przebiegu - repo wydan jest publiczne.
+      # Do v0.4.4 sekretu nie bylo i kazdy przebieg padal tu na pustym GH_TOKEN.
       - name: GitHub Release
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          READ_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           $repo = [regex]::Match((Get-Content crates\spectre-update\src\lib.rs -Raw),
                   '(?m)^pub const RELEASES_REPO: &str = "([^"]+)";').Groups[1].Value
           if (-not $repo) { throw 'brak RELEASES_REPO w spectre-update' }
-          gh release create '${{ steps.ver.outputs.tag }}' `
-            dist\spectrenotes.exe dist\SpectreNotes-Setup.exe dist\SHA256SUMS.txt `
-            --repo $repo --title 'SpectreNotes ${{ steps.ver.outputs.version }}' `
+          $tag = $env:TAG
+          $signed = $env:HAS_SIGNPATH -eq 'true'
+          $canWrite = [bool]$env:RELEASES_TOKEN
+          $env:GH_TOKEN = if ($canWrite) { $env:RELEASES_TOKEN } else { $env:READ_TOKEN }
+          $assets = @('dist\spectrenotes.exe', 'dist\SpectreNotes-Setup.exe', 'dist\SHA256SUMS.txt')
+          function Report($kind, $msg) {
+            Write-Host "::${kind} title=GitHub Release::$msg"
+            if ($env:GITHUB_STEP_SUMMARY) { "$msg`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8 }
+          }
+          $noToken = 'brak sekretu RELEASES_TOKEN w repo zrodel (PAT z Contents: write w repo wydan, docs/07-PODPISYWANIE.md, "Co robisz recznie", pkt 3)'
+
+          $view = gh release view $tag --repo $repo --json tagName 2>&1
+          if ($LASTEXITCODE -eq 0) { $exists = $true }
+          elseif ("$view" -match 'release not found') { $exists = $false }
+          else { throw "nie da sie sprawdzic wydania $tag w ${repo}: $view" }
+
+          if ($exists -and -not $signed) {
+            Report notice "Wydanie $tag juz jest w $repo (zrobione wczesniej, np. przez release.ps1). CI go nie nadpisuje - zostaja pliki, ktore wydano."
+            exit 0
+          }
+          if ($exists) {
+            if (-not $canWrite) { throw "Wydanie $tag juz jest w $repo, ale podpisanych plikow nie ma czym wyslac: $noToken." }
+            gh release upload $tag @assets --repo $repo --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'gh release upload nie przeszedl' }
+            Report notice "Wydanie $tag juz bylo w $repo - zasoby podmienione na podpisane."
+            exit 0
+          }
+          if (-not $canWrite) {
+            throw "Wydania $tag nie ma w $repo, a CI nie ma czym go utworzyc: $noToken. Po dodaniu sekretu: workflow release recznie (workflow_dispatch) z tagiem $tag."
+          }
+          gh release create $tag @assets `
+            --repo $repo --title "SpectreNotes $env:VERSION" `
             --notes-file dist\NOTES.md --latest
           if ($LASTEXITCODE -ne 0) { throw 'gh release create nie przeszedl' }
+          Report notice "Wydanie $tag utworzone w $repo."
           # Zostaja trzy ostatnie wydania (tagi zostaja w repo zrodel).
           $all = gh release list --repo $repo --limit 100 --json tagName,createdAt,isDraft | ConvertFrom-Json
           $old = $all | Where-Object { -not $_.isDraft } |
