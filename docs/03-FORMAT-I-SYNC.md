@@ -83,6 +83,25 @@ to realizuje kryterium "utrata maksymalnie 1 s pracy".
 Zapis: bufor w pamięci, `write` na każdą operację, `fsync` po 300 ms bezczynności
 oraz na końcu każdego stroke'a. Nie fsyncujemy na próbkę — to zabiłoby wydajność i dysk.
 
+### Zgodność w przód: nieznane operacje (O12, od wydania zgodności)
+
+Operacja to `autor | lamport | u8 tag | treść`. Znane tagi: 1 kreska, 2 nagrobek, 3 metadana.
+Rekord cały i z dobrą sumą, ale z **nieznanym tagiem**, to operacja nowszej wersji, nie
+uszkodzenie. Czytnik trzyma ją jako `OpKind::Unknown { tag, body }`:
+
+- plik nie jest na niej ucinany, a `OpsWriter::open` niczego nie obcina;
+- zapis i przekazanie dalej (LAN, pliki `via-`) oddają ją bajt w bajt;
+- `Document::apply` jej nie rysuje, ale zajmuje jej `(lamport, autor)`. Jeśli jest
+  własna, kolejne kreski dostają `seq > lamport` tej operacji, więc identyfikator kreski
+  z nowszej wersji nie powtórzy się w starszej.
+
+Rekord z dobrą sumą, którego treści nie da się odczytać, jest pomijany (`OpsReader::skipped`),
+też bez ucinania. Uszkodzony ogon (zła długość, zła suma, urwany rekord) wykrywa się jak
+dotąd i obcina przed dopisywaniem.
+
+Dopiero wersja z tym czytnikiem może być punktem wyjścia dla nowych typów operacji
+(płaszczyzny 3D). Starsze wersje (do v0.4.5) ucinały plik na pierwszej nieznanej operacji.
+
 ## Snapshoty i przycinanie
 
 Gdy łączny rozmiar `ops/` notatki przekroczy próg (np. 8 MB), sync zapisuje

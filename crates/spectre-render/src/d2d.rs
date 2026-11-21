@@ -26,7 +26,10 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_PRIMITIVE_BLEND_SOURCE_OVER, D2D1_PROPERTY_TYPE_FLOAT, D2D1_ROUNDED_RECT,
     D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0};
+use windows::Win32::Graphics::Direct2D::{D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_MAP_OPTIONS_READ};
+use windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL_11_0,
+};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
 };
@@ -396,6 +399,14 @@ pub struct Renderer {
     /// Sygnal z `frame_wait` juz odebrany, a klatka jeszcze nie poszla.
     frame_token: bool,
     hwnd: HWND,
+    /// Renderer bez okna (uprzaz testowa): `backbuffer` to zwykla bitmapa
+    /// docelowa, `present` nie oddaje jej do DWM, tylko liczy klatke.
+    offscreen: bool,
+    /// Urzadzenie WARP (programowe) - obraz identyczny na kazdej maszynie.
+    warp: bool,
+    /// Licznik klatek oddanych przez `present` (`Present` albo klatka poza
+    /// ekranem). Uprzaz testowa mierzy nim spoczynek (T5.3).
+    presents: u64,
     factory2d: ID2D1Factory1,
     ctx: ID2D1DeviceContext,
     /// D2D 1.2 - realizacje geometrii (Windows 8.1+).
@@ -544,6 +555,36 @@ impl Device {
         }
     }
 
+    /// Urzadzenie programowe WARP, bez karty graficznej. Testy obrazowe ida na
+    /// nim, bo wynik jest taki sam na kazdej maszynie (sprzet odniesienia: T1-T6).
+    pub fn create_warp() -> Result<Self> {
+        unsafe {
+            let factory: IDXGIFactory6 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))?;
+            let mut device: Option<ID3D11Device> = None;
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_WARP,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&[D3D_FEATURE_LEVEL_11_0]),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                None,
+            )?;
+            let device = device.expect("D3D11CreateDevice: sukces bez urzadzenia");
+            Ok(Self {
+                factory,
+                device,
+                adapter_name: "WARP".into(),
+            })
+        }
+    }
+
+    pub fn adapter_name(&self) -> &str {
+        &self.adapter_name
+    }
+
     /// Tworzenie w tle, od pierwszej linijki `main`: sterownik laduje sie,
     /// gdy glowny watek czyta konfiguracje, liste notatek i tworzy okno.
     /// `Renderer::new` czeka na wynik (`join`), wiec kolejnosc inicjalizacji
@@ -566,17 +607,36 @@ impl Renderer {
         device: Option<std::thread::JoinHandle<Result<Device>>>,
     ) -> Result<Self> {
         let t0 = std::time::Instant::now();
-        let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
-        let Device {
-            factory,
-            device,
-            adapter_name,
-        } = match device {
+        let dev = match device {
             Some(h) => h.join().map_err(|_| {
                 windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
             })??,
             None => Device::create()?,
         };
+        Self::build(Some(hwnd), width, height, dev, t0)
+    }
+
+    /// Renderer bez okna: rysuje do bitmapy rozmiaru `width x height`, ktora
+    /// mozna odczytac (`read_pixels`). Ta sama droga rysowania co w oknie -
+    /// warstwa sucha, mokra kreska, overlay - tylko bez `Present` do DWM.
+    pub fn new_offscreen(width: u32, height: u32, device: Device) -> Result<Self> {
+        Self::build(None, width, height, device, std::time::Instant::now())
+    }
+
+    fn build(
+        hwnd: Option<HWND>,
+        width: u32,
+        height: u32,
+        dev: Device,
+        t0: std::time::Instant,
+    ) -> Result<Self> {
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
+        let Device {
+            factory,
+            device,
+            adapter_name,
+        } = dev;
+        let warp = adapter_name == "WARP";
         unsafe {
             let t_dev = ms(t0);
 
@@ -613,16 +673,20 @@ impl Renderer {
                 Flags: swapchain_flags(tearing_supported).0 as u32,
                 ..Default::default()
             };
-            let swapchain = factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?;
-            let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
-            // Domyslna kolejka to 3 klatki; przy 120 Hz to 25 ms samego kolejkowania.
+            let mut swapchain = None;
             let mut frame_wait = None;
-            if let Ok(sc2) = swapchain.cast::<IDXGISwapChain2>() {
-                let _ = sc2.SetMaximumFrameLatency(1);
-                let h = sc2.GetFrameLatencyWaitableObject();
-                if !h.is_invalid() {
-                    frame_wait = Some(FrameWait(h));
+            if let Some(hwnd) = hwnd {
+                let sc = factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?;
+                let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+                // Domyslna kolejka to 3 klatki; przy 120 Hz to 25 ms samego kolejkowania.
+                if let Ok(sc2) = sc.cast::<IDXGISwapChain2>() {
+                    let _ = sc2.SetMaximumFrameLatency(1);
+                    let h = sc2.GetFrameLatencyWaitableObject();
+                    if !h.is_invalid() {
+                        frame_wait = Some(FrameWait(h));
+                    }
                 }
+                swapchain = Some(sc);
             }
 
             let t_sc = ms(t0);
@@ -662,13 +726,16 @@ impl Renderer {
 
             let mut r = Self {
                 adapter_name,
-                tearing_supported,
+                tearing_supported: tearing_supported && hwnd.is_some(),
                 size: (width.max(1), height.max(1)),
                 device,
-                swapchain: Some(swapchain),
+                swapchain,
                 frame_wait,
                 frame_token: false,
-                hwnd,
+                hwnd: hwnd.unwrap_or_default(),
+                offscreen: hwnd.is_none(),
+                warp,
+                presents: 0,
                 factory2d,
                 ctx,
                 ctx1,
@@ -734,23 +801,127 @@ impl Renderer {
         self.size
     }
 
+    /// Ile klatek oddal `present` od utworzenia renderera.
+    pub fn presents(&self) -> u64 {
+        self.presents
+    }
+
+    /// Czeka, az GPU skonczy wszystko, co mu dotad zlecono (zapytanie
+    /// `D3D11_QUERY_EVENT`). Uprzaz testowa mierzy tym czas od zdarzenia piora
+    /// do gotowej klatki, a nie tylko do oddania polecen.
+    pub fn gpu_wait(&self) -> Result<()> {
+        use windows::Win32::Graphics::Direct3D11::{D3D11_QUERY_DESC, D3D11_QUERY_EVENT};
+        unsafe {
+            let ctx = self.device.GetImmediateContext()?;
+            let desc = D3D11_QUERY_DESC {
+                Query: D3D11_QUERY_EVENT,
+                MiscFlags: 0,
+            };
+            let mut q = None;
+            self.device.CreateQuery(&desc, Some(&mut q))?;
+            let Some(q) = q else {
+                return Ok(());
+            };
+            ctx.End(&q);
+            ctx.Flush();
+            let mut done = windows::core::BOOL(0);
+            let t0 = std::time::Instant::now();
+            loop {
+                let hr = ctx.GetData(
+                    &q,
+                    Some(&mut done as *mut _ as *mut std::ffi::c_void),
+                    size_of::<windows::core::BOOL>() as u32,
+                    0,
+                );
+                if (hr.is_ok() && done.as_bool()) || t0.elapsed().as_secs() > 5 {
+                    break;
+                }
+                std::hint::spin_loop();
+            }
+        }
+        Ok(())
+    }
+
+    /// Renderer bez okna (`new_offscreen`).
+    pub fn is_offscreen(&self) -> bool {
+        self.offscreen
+    }
+
+    /// Piksele ostatniej klatki (BGRA, wiersz po wierszu, bez wyrownania).
+    /// Tylko renderer bez okna: bufor okna po `Present` nalezy do DWM.
+    pub fn read_pixels(&self) -> Result<Vec<u8>> {
+        let Some(back) = self.backbuffer.clone().filter(|_| self.offscreen) else {
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_FAIL,
+            ));
+        };
+        let (w, h) = self.size;
+        unsafe {
+            let staging = self.ctx.CreateBitmap(
+                D2D_SIZE_U {
+                    width: w,
+                    height: h,
+                },
+                None,
+                0,
+                &D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                    ..Default::default()
+                },
+            )?;
+            staging.CopyFromBitmap(None, &back, None)?;
+            let map = staging.Map(D2D1_MAP_OPTIONS_READ)?;
+            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                let row = map.bits.add((y * map.pitch) as usize);
+                out.extend_from_slice(std::slice::from_raw_parts(row, (w * 4) as usize));
+            }
+            staging.Unmap()?;
+            Ok(out)
+        }
+    }
+
     fn create_size_dependent(&mut self) -> Result<()> {
         unsafe {
-            let surface: IDXGISurface = self.swapchain()?.GetBuffer(0)?;
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-                ..Default::default()
-            };
-            self.backbuffer = Some(
-                self.ctx
-                    .CreateBitmapFromDxgiSurface(&surface, Some(&props))?,
-            );
+            if self.offscreen {
+                let props = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+                    ..Default::default()
+                };
+                let size = D2D_SIZE_U {
+                    width: self.size.0,
+                    height: self.size.1,
+                };
+                self.backbuffer = Some(self.ctx.CreateBitmap(size, None, 0, &props)?);
+            } else {
+                let surface: IDXGISurface = self.swapchain()?.GetBuffer(0)?;
+                let props = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                    ..Default::default()
+                };
+                self.backbuffer = Some(
+                    self.ctx
+                        .CreateBitmapFromDxgiSurface(&surface, Some(&props))?,
+                );
+            }
 
             let dry_props = D2D1_BITMAP_PROPERTIES1 {
                 pixelFormat: D2D1_PIXEL_FORMAT {
@@ -811,7 +982,7 @@ impl Renderer {
     /// `ResizeBuffers` zostawia renderer bez bufora. Okno pokazywalo wtedy
     /// sama ramke z pulpitem pod spodem. Ratunek to `reset`.
     pub fn healthy(&self) -> bool {
-        self.swapchain.is_some()
+        (self.swapchain.is_some() || self.offscreen)
             && self.backbuffer.is_some()
             && unsafe { self.device.GetDeviceRemovedReason().is_ok() }
     }
@@ -845,7 +1016,16 @@ impl Renderer {
             }
         }
         let (w, h) = self.size;
-        let mut fresh = Renderer::new(self.hwnd, w, h, None)?;
+        let mut fresh = if self.offscreen {
+            let dev = if self.warp {
+                Device::create_warp()?
+            } else {
+                Device::create()?
+            };
+            Renderer::new_offscreen(w, h, dev)?
+        } else {
+            Renderer::new(self.hwnd, w, h, None)?
+        };
         fresh.pages = std::mem::take(&mut self.pages);
         fresh.hidden = std::mem::take(&mut self.hidden);
         fresh.set_ui_scale(self.ui_scale);
@@ -871,13 +1051,15 @@ impl Renderer {
             self.ctx.SetTarget(None);
             self.backbuffer = None;
             self.dry = [None, None];
-            self.swapchain()?.ResizeBuffers(
-                0,
-                width,
-                height,
-                DXGI_FORMAT_B8G8R8A8_UNORM,
-                swapchain_flags(self.tearing_supported),
-            )?;
+            if !self.offscreen {
+                self.swapchain()?.ResizeBuffers(
+                    0,
+                    width,
+                    height,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    swapchain_flags(self.tearing_supported),
+                )?;
+            }
         }
         self.size = (width, height);
         self.create_size_dependent()?;
@@ -1629,6 +1811,10 @@ impl Renderer {
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
 
+            if self.offscreen {
+                self.presents += 1;
+                return Ok(true);
+            }
             let (interval, flags) = match mode {
                 PresentMode::VSync => (1u32, DXGI_PRESENT(0)),
                 PresentMode::Immediate if self.tearing_supported => {
@@ -1648,6 +1834,7 @@ impl Renderer {
             hr.ok()?;
             // Klatka poszla: nastepna czeka na kolejny sygnal `frame_wait`.
             self.frame_token = false;
+            self.presents += 1;
         }
         Ok(true)
     }

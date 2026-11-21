@@ -89,6 +89,17 @@ pub enum OpKind {
         key: String,
         value: String,
     },
+    /// Operacja z nowszej wersji formatu, ktorej ta wersja nie zna (O12).
+    ///
+    /// Czytnik jej nie odrzuca i nie ucina na niej pliku: trzyma jej tag
+    /// i bajty tresci bez zmian, `encode_op` oddaje je bajt w bajt, a
+    /// `Document::apply` ja pomija (rysunek jej nie widzi). Dzieki temu
+    /// notatka zapisana nowsza wersja otwiera sie w starszej z tym, co ta
+    /// rozumie, i nie traci reszty - ani na dysku, ani w synchronizacji.
+    Unknown {
+        tag: u8,
+        body: Vec<u8>,
+    },
 }
 
 /// Operacja w logu. Para `(lamport, author)` jest unikalna i wyznacza

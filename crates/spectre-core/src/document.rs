@@ -192,6 +192,18 @@ impl Document {
                     self.meta.insert(key.clone(), (stamp, value.clone()));
                 }
             }
+            // Operacja nowszej wersji formatu (O12): nie rysujemy jej, ale jej
+            // (lamport, autor) jest zajety (`applied`, zegar wyzej). Jesli to
+            // nasza operacja, moze nosic identyfikator kreski naszego autora,
+            // ktorego ta wersja nie widzi - kolejne kreski nie moga go powtorzyc.
+            // Lokalny identyfikator nigdy nie przekracza lamporta swojej
+            // operacji (kazde `fresh_id` idzie z `local_op`, ktore podbija
+            // zegar), wiec `lamport + 1` jest bezpieczna dolna granica.
+            OpKind::Unknown { .. } => {
+                if op.author == self.author {
+                    self.next_seq = self.next_seq.max(op.lamport + 1);
+                }
+            }
         }
         true
     }
@@ -767,6 +779,47 @@ mod tests {
                 prop_assert!(!a.apply(op), "powtorka nie moze byc uznana za nowa");
             }
             prop_assert_eq!(snapshot(&a), before);
+        }
+    }
+
+    /// O12: operacja nowszej wersji nie zmienia rysunku, ale zajmuje swoj
+    /// lamport, a jesli jest nasza - takze identyfikatory kresek az do niego.
+    #[test]
+    fn nieznana_operacja_nie_rysuje_i_nie_daje_kolizji_id() {
+        let me = AuthorId(1);
+        let mut d = Document::new(me);
+        d.add_stroke(stroke(3, 1.0));
+        let future = Op {
+            author: me,
+            lamport: 50,
+            kind: OpKind::Unknown {
+                tag: 9,
+                body: vec![1, 2, 3],
+            },
+        };
+        assert!(d.apply(&future));
+        assert!(!d.apply(&future), "idempotencja takze dla nieznanych");
+        assert_eq!(d.live_count(), 1);
+        assert_eq!(d.lamport(), 50);
+        let op = d.add_stroke(stroke(2, 5.0));
+        assert!(op.lamport > 50);
+        match op.kind {
+            OpKind::StrokeAdd { id, .. } => assert!(id.seq > 50),
+            _ => unreachable!(),
+        }
+        // Cudza nieznana operacja nie rusza naszych identyfikatorow.
+        let mut d = Document::new(me);
+        d.apply(&Op {
+            author: AuthorId(2),
+            lamport: 1000,
+            kind: OpKind::Unknown {
+                tag: 9,
+                body: vec![],
+            },
+        });
+        match d.add_stroke(stroke(2, 5.0)).kind {
+            OpKind::StrokeAdd { id, .. } => assert_eq!(id.seq, 1),
+            _ => unreachable!(),
         }
     }
 

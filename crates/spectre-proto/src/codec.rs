@@ -19,6 +19,7 @@ const TAG_META: u8 = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
     Truncated,
+    /// Nieuzywane od wydania zgodnosci (O12): nieznany tag to `OpKind::Unknown`.
     UnknownTag(u8),
     BadUtf8,
 }
@@ -47,6 +48,10 @@ pub fn encode_op(op: &Op, out: &mut Vec<u8>) {
             encode_str(key, out);
             encode_str(value, out);
         }
+        OpKind::Unknown { tag, body } => {
+            out.push(*tag);
+            out.extend_from_slice(body);
+        }
     }
 }
 
@@ -67,7 +72,15 @@ pub fn decode_op(buf: &[u8]) -> Result<Op, DecodeError> {
             key: decode_str(&mut r)?,
             value: decode_str(&mut r)?,
         },
-        t => return Err(DecodeError::UnknownTag(t)),
+        // Nieznany tag w calym, poprawnym rekordzie (CRC sie zgadza) to
+        // operacja nowszej wersji, nie uszkodzenie: zostaje w calosci (O12).
+        t => {
+            let n = r.remaining();
+            OpKind::Unknown {
+                tag: t,
+                body: r.bytes(n)?.to_vec(),
+            }
+        }
     };
     Ok(Op {
         author,
@@ -277,6 +290,32 @@ mod tests {
             encode_op(&op, &mut buf);
             let n = buf.len().saturating_sub(cut);
             let _ = decode_op(&buf[..n]);
+        }
+    }
+
+    /// O12: nieznany tag to operacja nowszej wersji - odczyt i zapis
+    /// zachowuja ja bajt w bajt (rowniez pusta tresc).
+    #[test]
+    fn nieznany_tag_zostaje_bajt_w_bajt() {
+        for body in [vec![], vec![0u8, 1, 2, 3, 0xff, 0x80, 0x7f]] {
+            let mut buf = Vec::new();
+            put_u64(&mut buf, 77);
+            put_u64(&mut buf, 123_456);
+            buf.push(42);
+            buf.extend_from_slice(&body);
+            let op = decode_op(&buf).unwrap();
+            assert_eq!(op.author, AuthorId(77));
+            assert_eq!(op.lamport, 123_456);
+            assert_eq!(
+                op.kind,
+                OpKind::Unknown {
+                    tag: 42,
+                    body: body.clone()
+                }
+            );
+            let mut again = Vec::new();
+            encode_op(&op, &mut again);
+            assert_eq!(again, buf);
         }
     }
 

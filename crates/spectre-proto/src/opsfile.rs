@@ -56,6 +56,11 @@ pub struct OpsReader {
     pub ops: Vec<Op>,
     pub valid_len: usize,
     pub truncated: bool,
+    /// Rekordy cale i z poprawna suma, ktorych tresci nie dalo sie odczytac.
+    /// Pomijane, nie ucinane: bajty w pliku sa takie, jak je zapisano, a ucięcie
+    /// zniszczyloby wszystko za nimi (O12). Operacje nieznanego typu nie sa tu
+    /// liczone - wchodza do `ops` jako `OpKind::Unknown`.
+    pub skipped: usize,
 }
 
 impl OpsReader {
@@ -65,6 +70,7 @@ impl OpsReader {
         let mut ops = Vec::new();
         let mut valid_len = HEADER_LEN;
         let mut truncated = false;
+        let mut skipped = 0;
         loop {
             if r.is_empty() {
                 break;
@@ -76,9 +82,11 @@ impl OpsReader {
                         ops.push(op);
                         valid_len = HEADER_LEN + r.pos();
                     }
+                    // Rekord jest caly i ma dobra sume, wiec to nie jest
+                    // uszkodzony ogon: plik za nim jest nadal wiarygodny.
                     Err(_) => {
-                        truncated = true;
-                        break;
+                        skipped += 1;
+                        valid_len = HEADER_LEN + r.pos();
                     }
                 },
                 // Nieznany typ rekordu (np. zaszyfrowany) - pomijamy, ale plik jest
@@ -96,6 +104,7 @@ impl OpsReader {
             ops,
             valid_len,
             truncated,
+            skipped,
         })
     }
 
@@ -265,6 +274,80 @@ mod tests {
 
         // Inny autor nie ma prawa pisac do tego pliku.
         assert!(OpsWriter::open(&path, AuthorId(8), 0).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// O12: operacja nieznanego typu (z nowszej wersji) w srodku pliku nie
+    /// ucina go. Czytnik ja zachowuje, zapis oddaje ja bajt w bajt, a otwarcie
+    /// do dopisywania niczego nie obcina. Uszkodzony ogon jest dalej wykrywany.
+    #[test]
+    fn nieznana_operacja_nie_ucina_pliku() {
+        let dir = std::env::temp_dir().join(format!("spectre-ops-o12-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("000001.ops");
+        let future = Op {
+            author: AuthorId(7),
+            lamport: 2,
+            kind: OpKind::Unknown {
+                tag: 200,
+                body: vec![1, 2, 3, 250, 0, 9],
+            },
+        };
+        {
+            let mut w = OpsWriter::open(&path, AuthorId(7), 0).unwrap();
+            w.append(&op(7, 1));
+            w.append(&future);
+            w.append(&op(7, 3));
+            w.sync().unwrap();
+        }
+        let full = std::fs::read(&path).unwrap();
+        let parsed = OpsReader::read_path(&path).unwrap().unwrap();
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.skipped, 0);
+        assert_eq!(parsed.valid_len, full.len());
+        assert_eq!(parsed.ops.len(), 3);
+        assert_eq!(parsed.ops[1], future);
+
+        // Ponowny zapis tych samych operacji daje te same bajty.
+        let mut again = Vec::new();
+        OpsFileHeader {
+            version: FORMAT_VERSION,
+            author: AuthorId(7),
+            base_lamport: 0,
+        }
+        .encode(&mut again);
+        for o in &parsed.ops {
+            let mut payload = Vec::new();
+            encode_op(o, &mut payload);
+            write_record(REC_OP, &payload, &mut again);
+        }
+        assert_eq!(again, full, "zapis w starej wersji gubi bajty nowej");
+
+        // Otwarcie do dopisywania niczego nie obcina, nowe operacje ida za.
+        {
+            let mut w = OpsWriter::open(&path, AuthorId(7), 0).unwrap();
+            w.append(&op(7, 4));
+            w.sync().unwrap();
+        }
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(&after[..full.len()], &full[..]);
+        let parsed = OpsReader::read_path(&path).unwrap().unwrap();
+        assert_eq!(parsed.ops.len(), 4);
+
+        // Uszkodzony koniec nadal wykrywany jak dotad (T2.3).
+        std::fs::write(&path, &after[..after.len() - 3]).unwrap();
+        let parsed = OpsReader::read_path(&path).unwrap().unwrap();
+        assert!(parsed.truncated);
+        assert_eq!(parsed.ops.len(), 3);
+        assert_eq!(parsed.valid_len, full.len());
+
+        // Przeklamany bajt w srodku: zla suma, plik od tego miejsca niewiarygodny.
+        let mut bad = full.clone();
+        bad[HEADER_LEN + 6] ^= 0x40;
+        let parsed = OpsReader::parse(&bad).unwrap();
+        assert!(parsed.truncated);
+        assert!(parsed.ops.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
