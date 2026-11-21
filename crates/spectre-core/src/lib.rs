@@ -16,7 +16,10 @@ pub mod camera;
 pub mod document;
 pub mod fx;
 pub mod hittest;
+pub mod space;
 
 pub use camera::Camera;
 pub use document::{Bbox, Document};
-pub use spectre_proto::{AuthorId, Op, OpKind, Rgba, Sample, StrokeData, StrokeId};
+pub use spectre_proto::{
+    AuthorId, Op, OpKind, PlaneId, PlanePose, Rgba, Sample, StrokeData, StrokeId,
+};

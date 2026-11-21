@@ -36,6 +36,36 @@ pub struct StrokeId {
     pub seq: u64,
 }
 
+/// Identyfikator plaszczyzny (tryb 3D): jak `StrokeId`, z tego samego licznika
+/// autora. `PlaneId::ZERO` to plaszczyzna zerowa, czyli zwykla notatka 2D -
+/// jej kreski sa zwyklymi `StrokeAdd` i nie wymagaja zadnej operacji.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PlaneId {
+    pub author: AuthorId,
+    pub seq: u64,
+}
+
+impl PlaneId {
+    pub const ZERO: PlaneId = PlaneId {
+        author: AuthorId(0),
+        seq: 0,
+    };
+
+    pub fn is_zero(&self) -> bool {
+        *self == Self::ZERO
+    }
+}
+
+/// Ustawienie plaszczyzny w przestrzeni: obrot wokol X, potem wokol Y
+/// (stopnie, wartosci bezwzgledne z kompasu) i srodek. Jednostki jak na
+/// canvasie (1 j. = 1 px przy 100%). Matematyka: `spectre_core::space`.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PlanePose {
+    pub rx: f64,
+    pub ry: f64,
+    pub origin: [f64; 3],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Rgba {
     pub r: u8,
@@ -86,6 +116,25 @@ pub enum OpKind {
     },
     /// Metadane notatki (tytul itp.), LWW po (lamport, author).
     Meta {
+        key: String,
+        value: String,
+    },
+    /// Nowa plaszczyzna (tryb 3D). Niezmienna - inne ustawienie to inna
+    /// plaszczyzna. Powstaje sama, przy pierwszej kresce na niej (W9).
+    PlaneAdd {
+        id: PlaneId,
+        pose: PlanePose,
+    },
+    /// Kreska na plaszczyznie innej niz zerowa. Probki w ukladzie plaszczyzny
+    /// (u, v od jej srodka). Wersje sprzed 3D jej nie rysuja (O12).
+    StrokeOn {
+        id: StrokeId,
+        plane: PlaneId,
+        data: StrokeData,
+    },
+    /// Wlasciwosc plaszczyzny (widocznosc, nazwa), LWW po (lamport, author).
+    PlaneProp {
+        id: PlaneId,
         key: String,
         value: String,
     },

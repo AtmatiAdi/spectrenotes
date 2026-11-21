@@ -5,7 +5,7 @@
 //! typowa probka to 6-8 bajtow zamiast 24 - i to bez utraty informacji, ktora
 //! digitizer realnie dostarcza (jego rozdzielczosc jest nizsza niz 1/32 px).
 
-use crate::types::{AuthorId, Op, OpKind, Rgba, Sample, StrokeData, StrokeId};
+use crate::types::{AuthorId, Op, OpKind, PlaneId, PlanePose, Rgba, Sample, StrokeData, StrokeId};
 use crate::varint::{put_i64, put_u64, Reader, Truncated};
 
 const POS_SCALE: f32 = 32.0;
@@ -15,6 +15,11 @@ const PRESSURE_MAX: f32 = 1023.0;
 const TAG_STROKE_ADD: u8 = 1;
 const TAG_STROKE_ERASE: u8 = 2;
 const TAG_META: u8 = 3;
+/// Tryb 3D. Czytnik do v0.4.5 ucinal plik na tych tagach; od wydania
+/// zgodnosci (O12) trzyma je jako `OpKind::Unknown`.
+const TAG_PLANE_ADD: u8 = 4;
+const TAG_STROKE_ON: u8 = 5;
+const TAG_PLANE_PROP: u8 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
@@ -48,6 +53,31 @@ pub fn encode_op(op: &Op, out: &mut Vec<u8>) {
             encode_str(key, out);
             encode_str(value, out);
         }
+        OpKind::PlaneAdd { id, pose } => {
+            out.push(TAG_PLANE_ADD);
+            encode_plane_id(id, out);
+            for v in [
+                pose.rx,
+                pose.ry,
+                pose.origin[0],
+                pose.origin[1],
+                pose.origin[2],
+            ] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        OpKind::StrokeOn { id, plane, data } => {
+            out.push(TAG_STROKE_ON);
+            encode_stroke_id(id, out);
+            encode_plane_id(plane, out);
+            encode_stroke(data, out);
+        }
+        OpKind::PlaneProp { id, key, value } => {
+            out.push(TAG_PLANE_PROP);
+            encode_plane_id(id, out);
+            encode_str(key, out);
+            encode_str(value, out);
+        }
         OpKind::Unknown { tag, body } => {
             out.push(*tag);
             out.extend_from_slice(body);
@@ -69,6 +99,32 @@ pub fn decode_op(buf: &[u8]) -> Result<Op, DecodeError> {
             id: decode_stroke_id(&mut r)?,
         },
         TAG_META => OpKind::Meta {
+            key: decode_str(&mut r)?,
+            value: decode_str(&mut r)?,
+        },
+        TAG_PLANE_ADD => {
+            let id = decode_plane_id(&mut r)?;
+            let mut v = [0f64; 5];
+            for x in &mut v {
+                *x =
+                    f64::from_le_bytes(r.bytes(8)?.try_into().map_err(|_| DecodeError::Truncated)?);
+            }
+            OpKind::PlaneAdd {
+                id,
+                pose: PlanePose {
+                    rx: v[0],
+                    ry: v[1],
+                    origin: [v[2], v[3], v[4]],
+                },
+            }
+        }
+        TAG_STROKE_ON => OpKind::StrokeOn {
+            id: decode_stroke_id(&mut r)?,
+            plane: decode_plane_id(&mut r)?,
+            data: decode_stroke(&mut r)?,
+        },
+        TAG_PLANE_PROP => OpKind::PlaneProp {
+            id: decode_plane_id(&mut r)?,
             key: decode_str(&mut r)?,
             value: decode_str(&mut r)?,
         },
@@ -96,6 +152,18 @@ fn encode_stroke_id(id: &StrokeId, out: &mut Vec<u8>) {
 
 fn decode_stroke_id(r: &mut Reader) -> Result<StrokeId, DecodeError> {
     Ok(StrokeId {
+        author: AuthorId(r.u64()?),
+        seq: r.u64()?,
+    })
+}
+
+fn encode_plane_id(id: &PlaneId, out: &mut Vec<u8>) {
+    put_u64(out, id.author.0);
+    put_u64(out, id.seq);
+}
+
+fn decode_plane_id(r: &mut Reader) -> Result<PlaneId, DecodeError> {
+    Ok(PlaneId {
         author: AuthorId(r.u64()?),
         seq: r.u64()?,
     })
@@ -240,16 +308,46 @@ mod tests {
             author: AuthorId(a),
             seq: s,
         });
-        let kind = prop_oneof![
-            (id.clone(), stroke_strategy()).prop_map(|(id, data)| OpKind::StrokeAdd { id, data }),
-            id.prop_map(|id| OpKind::StrokeErase { id }),
-            ("[a-z]{0,8}", ".{0,32}").prop_map(|(key, value)| OpKind::Meta { key, value }),
-        ];
+        let plane = (any::<u64>(), any::<u64>()).prop_map(|(a, s)| PlaneId {
+            author: AuthorId(a),
+            seq: s,
+        });
+        let kind =
+            prop_oneof![
+                (id.clone(), stroke_strategy())
+                    .prop_map(|(id, data)| OpKind::StrokeAdd { id, data }),
+                id.clone().prop_map(|id| OpKind::StrokeErase { id }),
+                ("[a-z]{0,8}", ".{0,32}").prop_map(|(key, value)| OpKind::Meta { key, value }),
+                (
+                    plane.clone(),
+                    -720.0f64..720.0,
+                    -720.0f64..720.0,
+                    any::<[f64; 3]>()
+                )
+                    .prop_map(|(id, rx, ry, origin)| OpKind::PlaneAdd {
+                        id,
+                        pose: PlanePose { rx, ry, origin }
+                    }),
+                (id, plane.clone(), stroke_strategy())
+                    .prop_map(|(id, plane, data)| OpKind::StrokeOn { id, plane, data }),
+                (plane, "[a-z]{0,8}", ".{0,32}").prop_map(|(id, key, value)| OpKind::PlaneProp {
+                    id,
+                    key,
+                    value
+                }),
+            ];
         (any::<u64>(), any::<u64>(), kind).prop_map(|(a, lamport, kind)| Op {
             author: AuthorId(a),
             lamport,
             kind,
         })
+    }
+
+    fn plane_of(k: &OpKind) -> Option<PlaneId> {
+        match k {
+            OpKind::StrokeOn { plane, .. } => Some(*plane),
+            _ => None,
+        }
     }
 
     fn close(a: f32, b: f32, eps: f32) -> bool {
@@ -265,7 +363,15 @@ mod tests {
             prop_assert_eq!(back.author, op.author);
             prop_assert_eq!(back.lamport, op.lamport);
             match (&op.kind, &back.kind) {
-                (OpKind::StrokeAdd { id: a, data: da }, OpKind::StrokeAdd { id: b, data: db }) => {
+                (
+                    OpKind::StrokeOn { id: a, data: da, .. },
+                    OpKind::StrokeOn { id: b, data: db, .. },
+                )
+                | (
+                    OpKind::StrokeAdd { id: a, data: da },
+                    OpKind::StrokeAdd { id: b, data: db },
+                ) => {
+                    prop_assert_eq!(plane_of(&op.kind), plane_of(&back.kind));
                     prop_assert_eq!(a, b);
                     prop_assert_eq!(da.tool, db.tool);
                     prop_assert_eq!(da.color, db.color);

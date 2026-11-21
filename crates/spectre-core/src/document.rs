@@ -1,7 +1,9 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use spectre_proto::{AuthorId, Op, OpKind, StrokeData, StrokeId};
+use spectre_proto::{AuthorId, Op, OpKind, PlaneId, Sample, StrokeData, StrokeId};
+
+use crate::space::Pose;
 
 /// Prostokat otaczajacy w przestrzeni canvasu, z uwzglednieniem szerokosci kreski.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,9 +59,31 @@ impl Bbox {
 
 struct Entry {
     data: StrokeData,
+    /// Obwiednia w ukladzie swojej plaszczyzny (dla zerowej: canvas).
     bbox: Bbox,
     key: (u64, AuthorId),
+    plane: PlaneId,
 }
+
+/// Plaszczyzna trybu 3D w dokumencie.
+struct PlaneEntry {
+    pose: Pose,
+    key: (u64, AuthorId),
+}
+
+/// Plaszczyzna do listy (W14).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaneInfo {
+    pub id: PlaneId,
+    pub pose: Pose,
+    /// Zywe kreski na niej.
+    pub live: usize,
+    /// Oko na liscie (wlasciwosc `visible`, domyslnie widoczna).
+    pub visible: bool,
+}
+
+/// Wlasciwosc plaszczyzny: widocznosc (`"0"` = ukryta).
+pub const PLANE_VISIBLE: &str = "visible";
 
 /// Jedna akcja uzytkownika w sensie undo. Grupa, bo jedno pociagniecie gumka
 /// potrafi wymazac wiele kresek i cofa sie je razem.
@@ -113,6 +137,18 @@ pub struct Document {
     /// Idempotencja: zbior zastosowanych (author, lamport).
     applied: HashSet<(AuthorId, u64)>,
 
+    /// Plaszczyzny trybu 3D (bez zerowej). Kreska moze przyjsc przed swoja
+    /// plaszczyzna (siec) - wtedy czeka w `plane_order`, a lista jej nie pokazuje.
+    planes: HashMap<PlaneId, PlaneEntry>,
+    /// Kolejnosc rysowania zywych kresek kazdej plaszczyzny poza zerowa.
+    plane_order: HashMap<PlaneId, BTreeMap<(u64, AuthorId), StrokeId>>,
+    /// Wlasciwosci plaszczyzn: (plaszczyzna, klucz) -> (stempel, wartosc). LWW.
+    plane_props: HashMap<(PlaneId, String), ((u64, AuthorId), String)>,
+    /// Licznik zmian kazdej plaszczyzny (renderer przepieka, gdy sie zmieni).
+    plane_rev: HashMap<PlaneId, u64>,
+    /// Licznik zmian zbioru plaszczyzn (nowa, wlasciwosc).
+    planes_rev: u64,
+
     undo: Vec<Action>,
     redo: Vec<Action>,
     /// Grupa wymazania otwarta: kolejne `erase_strokes_continuing` dopisuja sie
@@ -133,6 +169,11 @@ impl Document {
             erased: HashSet::new(),
             meta: HashMap::new(),
             applied: HashSet::new(),
+            planes: HashMap::new(),
+            plane_order: HashMap::new(),
+            plane_props: HashMap::new(),
+            plane_rev: HashMap::new(),
+            planes_rev: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             erase_open: false,
@@ -155,31 +196,47 @@ impl Document {
         }
         self.clock = self.clock.max(op.lamport);
         match &op.kind {
-            OpKind::StrokeAdd { id, data } => {
+            OpKind::StrokeAdd { id, data } => self.apply_stroke(op, *id, PlaneId::ZERO, data),
+            OpKind::StrokeOn { id, plane, data } => self.apply_stroke(op, *id, *plane, data),
+            OpKind::StrokeErase { id } => {
+                if self.erased.insert(*id) {
+                    if let Some(e) = self.strokes.get(id) {
+                        let (key, plane) = (e.key, e.plane);
+                        if plane.is_zero() {
+                            self.order.remove(&key);
+                            self.index_remove(*id);
+                        } else {
+                            if let Some(o) = self.plane_order.get_mut(&plane) {
+                                o.remove(&key);
+                            }
+                            self.bump_plane(plane);
+                        }
+                    }
+                }
+            }
+            OpKind::PlaneAdd { id, pose } => {
                 if id.author == self.author {
                     self.next_seq = self.next_seq.max(id.seq + 1);
                 }
                 let key = op.key();
-                self.strokes.insert(
-                    *id,
-                    Entry {
-                        data: data.clone(),
-                        bbox: Bbox::of(data),
-                        key,
-                    },
-                );
-                if !self.erased.contains(id) {
-                    self.order.insert(key, *id);
-                    self.index_insert(*id);
-                }
+                // Niezmienna: ta sama operacja dwa razy nie trafi tu (applied),
+                // a dwie rozne o tym samym id nie powstaja (licznik autora).
+                self.planes.entry(*id).or_insert(PlaneEntry {
+                    pose: Pose::from_proto(pose),
+                    key,
+                });
+                self.bump_plane(*id);
             }
-            OpKind::StrokeErase { id } => {
-                if self.erased.insert(*id) {
-                    if let Some(e) = self.strokes.get(id) {
-                        let key = e.key;
-                        self.order.remove(&key);
-                        self.index_remove(*id);
-                    }
+            OpKind::PlaneProp { id, key, value } => {
+                let stamp = op.key();
+                let k = (*id, key.clone());
+                let newer = match self.plane_props.get(&k) {
+                    Some((old, _)) => stamp > *old,
+                    None => true,
+                };
+                if newer {
+                    self.plane_props.insert(k, (stamp, value.clone()));
+                    self.bump_plane(*id);
                 }
             }
             OpKind::Meta { key, value } => {
@@ -206,6 +263,47 @@ impl Document {
             }
         }
         true
+    }
+
+    fn apply_stroke(&mut self, op: &Op, id: StrokeId, plane: PlaneId, data: &StrokeData) {
+        if id.author == self.author {
+            self.next_seq = self.next_seq.max(id.seq + 1);
+        }
+        let key = op.key();
+        self.strokes.insert(
+            id,
+            Entry {
+                data: data.clone(),
+                bbox: Bbox::of(data),
+                key,
+                plane,
+            },
+        );
+        if self.erased.contains(&id) {
+            return;
+        }
+        if plane.is_zero() {
+            self.order.insert(key, id);
+            self.index_insert(id);
+        } else {
+            self.plane_order.entry(plane).or_default().insert(key, id);
+            self.bump_plane(plane);
+        }
+    }
+
+    fn bump_plane(&mut self, plane: PlaneId) {
+        *self.plane_rev.entry(plane).or_default() += 1;
+        self.planes_rev += 1;
+    }
+
+    /// Operacja dodania kreski na plaszczyznie (zerowa: zwykle `StrokeAdd`,
+    /// bajt w bajt jak przed 3D).
+    fn stroke_kind(id: StrokeId, plane: PlaneId, data: StrokeData) -> OpKind {
+        if plane.is_zero() {
+            OpKind::StrokeAdd { id, data }
+        } else {
+            OpKind::StrokeOn { id, plane, data }
+        }
     }
 
     fn local_op(&mut self, kind: OpKind) -> Op {
@@ -311,14 +409,12 @@ impl Document {
             if !self.strokes.contains_key(old) || self.erased.contains(old) {
                 continue;
             }
+            let plane = self.strokes[old].plane;
             erased.push(*old);
             ops.push(self.local_op(OpKind::StrokeErase { id: *old }));
             let id = self.fresh_id();
             added.push(id);
-            ops.push(self.local_op(OpKind::StrokeAdd {
-                id,
-                data: new.clone(),
-            }));
+            ops.push(self.local_op(Self::stroke_kind(id, plane, new.clone())));
         }
         if !added.is_empty() {
             self.push_action(Action::Replaced {
@@ -327,6 +423,172 @@ impl Document {
             });
         }
         (ops, added)
+    }
+
+    // ----- plaszczyzny (tryb 3D) ---------------------------------------------
+
+    /// Kreska narysowana na plaszczyznie `pose` (probki w jej ukladzie).
+    ///
+    /// Plaszczyzna powstaje sama (W9): jesli juz jest taka (ta sama
+    /// nieskonczona plaszczyzna, `Pose::same_plane`), kreska trafia na nia,
+    /// przeliczona do jej ukladu; jesli to plaszczyzna zerowa - jest zwykla
+    /// kreska notatki 2D. Inaczej najpierw `PlaneAdd`, potem kreska. Dla
+    /// historii to jedna akcja (cofniecie zdejmuje kreske; pusta plaszczyzna
+    /// znika z listy).
+    pub fn add_stroke_on(&mut self, pose: &Pose, data: StrokeData) -> Vec<Op> {
+        let mut ops = Vec::new();
+        let (plane, data) = match self.find_plane(pose) {
+            Some(p) => {
+                let to = self.plane_pose(p).unwrap_or(Pose::ZERO);
+                (p, transform_samples(data, &pose.local_to(&to)))
+            }
+            None => {
+                let id = self.fresh_plane_id();
+                ops.push(self.local_op(OpKind::PlaneAdd {
+                    id,
+                    pose: pose.to_proto(),
+                }));
+                (id, data)
+            }
+        };
+        let id = self.fresh_id();
+        self.push_action(Action::Added(vec![id]));
+        ops.push(self.local_op(Self::stroke_kind(id, plane, data)));
+        ops
+    }
+
+    fn fresh_plane_id(&mut self) -> PlaneId {
+        let s = self.fresh_id();
+        PlaneId {
+            author: s.author,
+            seq: s.seq,
+        }
+    }
+
+    /// Istniejaca plaszczyzna rownowazna `pose` (zerowa tez); najstarsza,
+    /// gdyby bylo kilka (rownolegle utworzone u dwoch osob).
+    pub fn find_plane(&self, pose: &Pose) -> Option<PlaneId> {
+        if pose.is_zero_plane() {
+            return Some(PlaneId::ZERO);
+        }
+        self.planes
+            .iter()
+            .filter(|(_, p)| p.pose.same_plane(pose))
+            .min_by_key(|(_, p)| p.key)
+            .map(|(id, _)| *id)
+    }
+
+    pub fn plane_pose(&self, id: PlaneId) -> Option<Pose> {
+        if id.is_zero() {
+            return Some(Pose::ZERO);
+        }
+        self.planes.get(&id).map(|p| p.pose)
+    }
+
+    pub fn plane_of(&self, stroke: StrokeId) -> Option<PlaneId> {
+        self.strokes.get(&stroke).map(|e| e.plane)
+    }
+
+    /// Plaszczyzny poza zerowa, w kolejnosci powstania, z liczba zywych kresek.
+    pub fn planes(&self) -> Vec<PlaneInfo> {
+        let mut v: Vec<_> = self.planes.iter().collect();
+        v.sort_by_key(|(_, p)| p.key);
+        v.into_iter()
+            .map(|(id, p)| PlaneInfo {
+                id: *id,
+                pose: p.pose,
+                live: self.plane_order.get(id).map_or(0, |o| o.len()),
+                visible: self.plane_visible(*id),
+            })
+            .collect()
+    }
+
+    pub fn plane_visible(&self, id: PlaneId) -> bool {
+        self.plane_prop(id, PLANE_VISIBLE) != Some("0")
+    }
+
+    /// Zywe kreski plaszczyzny w kolejnosci rysowania (zerowa: jak `visible`).
+    pub fn plane_strokes(
+        &self,
+        plane: PlaneId,
+    ) -> Box<dyn Iterator<Item = (StrokeId, &StrokeData, &Bbox)> + '_> {
+        if plane.is_zero() {
+            return Box::new(self.visible());
+        }
+        match self.plane_order.get(&plane) {
+            Some(o) => Box::new(o.values().map(move |id| {
+                let e = &self.strokes[id];
+                (*id, &e.data, &e.bbox)
+            })),
+            None => Box::new(std::iter::empty()),
+        }
+    }
+
+    /// Obwiednia tresci plaszczyzny w jej ukladzie.
+    pub fn plane_content(&self, plane: PlaneId) -> Option<Bbox> {
+        if plane.is_zero() {
+            return self.content_bbox();
+        }
+        self.plane_strokes(plane).map(|(_, _, b)| *b).reduce(union)
+    }
+
+    /// Licznik zmian plaszczyzny (kreski, wlasciwosci). Zerowa: zawsze 0 -
+    /// jej zmiany zglasza aplikacja jak w 2D.
+    pub fn plane_rev(&self, plane: PlaneId) -> u64 {
+        self.plane_rev.get(&plane).copied().unwrap_or(0)
+    }
+
+    /// Licznik zmian wszystkich plaszczyzn poza zerowa.
+    pub fn planes_rev(&self) -> u64 {
+        self.planes_rev
+    }
+
+    pub fn set_plane_prop(&mut self, id: PlaneId, key: &str, value: &str) -> Op {
+        self.local_op(OpKind::PlaneProp {
+            id,
+            key: key.to_string(),
+            value: value.to_string(),
+        })
+    }
+
+    pub fn plane_prop(&self, id: PlaneId, key: &str) -> Option<&str> {
+        self.plane_props
+            .get(&(id, key.to_string()))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Wszystkie zywe kreski, ze wszystkich plaszczyzn.
+    pub fn live_count_all(&self) -> usize {
+        self.order.len() + self.plane_order.values().map(|o| o.len()).sum::<usize>()
+    }
+
+    /// Nazwa nadana sama (W14): "Pozioma", "Pionowa" albo "Ukosna" z numerem
+    /// kolejnym wsrod plaszczyzn tego rodzaju.
+    pub fn plane_auto_name(&self, id: PlaneId) -> String {
+        if id.is_zero() {
+            return "Notatka".into();
+        }
+        let kind = |p: &Pose| {
+            let ny = p.basis().n.y.abs();
+            if ny > 1.0 - 1e-6 {
+                "Pozioma"
+            } else if ny < 1e-6 {
+                "Pionowa"
+            } else {
+                "Ukośna"
+            }
+        };
+        let Some(me) = self.plane_pose(id) else {
+            return "?".into();
+        };
+        let k = kind(&me);
+        let n = self
+            .planes()
+            .iter()
+            .filter(|p| kind(&p.pose) == k)
+            .position(|p| p.id == id)
+            .map_or(0, |i| i + 1);
+        format!("{k} {n}")
     }
 
     pub fn set_meta(&mut self, key: &str, value: &str) -> Op {
@@ -406,12 +668,13 @@ impl Document {
     fn revive(&mut self, ids: Vec<StrokeId>, ops: &mut Vec<Op>) -> Vec<StrokeId> {
         let mut done = Vec::new();
         for old in ids {
-            let Some(data) = self.strokes.get(&old).map(|e| e.data.clone()) else {
+            let Some((data, plane)) = self.strokes.get(&old).map(|e| (e.data.clone(), e.plane))
+            else {
                 continue;
             };
             let id = self.fresh_id();
             done.push(id);
-            ops.push(self.local_op(OpKind::StrokeAdd { id, data }));
+            ops.push(self.local_op(Self::stroke_kind(id, plane, data)));
             // Kreska odrodzila sie pod nowym id. Starsze wpisy historii
             // (np. jej pierwotne dodanie) musza od teraz wskazywac na nowe,
             // inaczej kolejne undo trafialoby w nagrobek i nic nie robilo.
@@ -610,6 +873,23 @@ impl Document {
         }
         self.content.set(None);
     }
+}
+
+/// Probki kreski w innym ukladzie tej samej plaszczyzny (`Pose::local_to`).
+fn transform_samples(mut data: StrokeData, m: &[f64; 6]) -> StrokeData {
+    let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    if m.iter().zip(identity).all(|(a, b)| (a - b).abs() < 1e-12) {
+        return data;
+    }
+    for s in &mut data.samples {
+        let (x, y) = (s.x as f64, s.y as f64);
+        *s = Sample {
+            x: (m[0] * x + m[2] * y + m[4]) as f32,
+            y: (m[1] * x + m[3] * y + m[5]) as f32,
+            ..*s
+        };
+    }
+    data
 }
 
 /// Naglowek pliku historii (`Document::history_bytes`), wersja 1.
@@ -820,6 +1100,195 @@ mod tests {
         match d.add_stroke(stroke(2, 5.0)).kind {
             OpKind::StrokeAdd { id, .. } => assert_eq!(id.seq, 1),
             _ => unreachable!(),
+        }
+    }
+
+    mod plaszczyzny {
+        use super::*;
+        use crate::space::compass::{self, Handle};
+        use crate::space::{Pose, V3};
+
+        fn tilted() -> Pose {
+            let mut p = Pose::new(0.0, 0.0, V3::new(400.0, 300.0, 0.0));
+            compass::apply(&mut p, Handle::RingX, -1.0, 0); // -45
+            compass::apply(&mut p, Handle::RingX, -1.0, 0); // -90: pozioma
+            p
+        }
+
+        /// W9 i kryterium T4: po obroceniu plaszczyzny rysowania i pierwszej
+        /// kresce przybywa dokladnie jedna plaszczyzna; kolejne kreski na niej
+        /// (takze z innym srodkiem - O16) nie tworza nowej; na plaszczyznie
+        /// zerowej kreska jest zwykla kreska 2D.
+        #[test]
+        fn plaszczyzna_powstaje_sama_i_tylko_raz() {
+            let mut d = Document::new(AuthorId(1));
+            let ops = d.add_stroke_on(
+                &Pose::new(0.0, 360.0, V3::new(50.0, 60.0, 0.0)),
+                stroke(3, 1.0),
+            );
+            assert_eq!(ops.len(), 1);
+            assert!(
+                matches!(ops[0].kind, OpKind::StrokeAdd { .. }),
+                "zerowa = 2D"
+            );
+            assert!(d.planes().is_empty());
+            // Kreska na zerowej z innym srodkiem: probki w ukladzie notatki.
+            let got = d.visible().next().unwrap().1.samples[0];
+            assert_eq!((got.x, got.y), (51.0, 62.0));
+
+            let floor = tilted();
+            let ops = d.add_stroke_on(&floor, stroke(4, 2.0));
+            assert_eq!(ops.len(), 2);
+            assert!(matches!(ops[0].kind, OpKind::PlaneAdd { .. }));
+            assert!(matches!(ops[1].kind, OpKind::StrokeOn { .. }));
+            assert_eq!(d.planes().len(), 1);
+            // Przesuniecie srodka po plaszczyznie: ta sama plaszczyzna.
+            let mut moved = floor;
+            compass::apply(&mut moved, Handle::ArrowU, 1.0, 0);
+            compass::apply(&mut moved, Handle::ArrowV, -1.0, 1);
+            let ops = d.add_stroke_on(&moved, stroke(4, 3.0));
+            assert_eq!(ops.len(), 1);
+            assert_eq!(d.planes().len(), 1);
+            assert_eq!(d.planes()[0].live, 2);
+            // Ten sam punkt swiata niezaleznie od srodka, z ktorego rysowano.
+            let id = d.planes()[0].id;
+            let pose = d.plane_pose(id).unwrap();
+            let s = d.plane_strokes(id).last().unwrap().1.samples[0];
+            let w = pose.to_world(s.x as f64, s.y as f64);
+            let expect = moved.to_world(3.0, 6.0);
+            assert!((w - expect).len() < 1e-3);
+            // Przesuniecie wzdluz normalnej: nowa plaszczyzna.
+            let mut up = floor;
+            compass::apply(&mut up, Handle::ArrowN, 1.0, 2);
+            d.add_stroke_on(&up, stroke(2, 4.0));
+            assert_eq!(d.planes().len(), 2);
+            // 2D nadal widzi tylko plaszczyzne zerowa.
+            assert_eq!(d.live_count(), 1);
+            assert_eq!(d.live_count_all(), 4);
+            assert_eq!(d.plane_auto_name(id), "Pozioma 1");
+        }
+
+        #[test]
+        fn cofanie_kreski_na_plaszczyznie() {
+            let mut d = Document::new(AuthorId(1));
+            d.add_stroke_on(&tilted(), stroke(4, 2.0));
+            let id = d.planes()[0].id;
+            d.undo();
+            assert_eq!(d.planes()[0].live, 0);
+            d.redo();
+            assert_eq!(d.planes()[0].live, 1);
+            // Odrodzona kreska jest na tej samej plaszczyznie.
+            let (sid, _, _) = d.plane_strokes(id).next().unwrap();
+            assert_eq!(d.plane_of(sid), Some(id));
+            let e = d.erase_strokes(&[sid]);
+            assert_eq!(e.len(), 1);
+            assert_eq!(d.planes()[0].live, 0);
+            d.undo();
+            assert_eq!(d.planes()[0].live, 1);
+        }
+
+        /// Kreska moze przyjsc z sieci przed swoja plaszczyzna, nagrobek przed
+        /// kreska - wynik ten sam w kazdej kolejnosci; powtorki nic nie zmieniaja.
+        #[test]
+        fn przemiennosc_z_plaszczyznami() {
+            let mut a = Document::new(AuthorId(1));
+            let mut b = Document::new(AuthorId(2));
+            let mut ops = Vec::new();
+            ops.extend(a.add_stroke_on(&tilted(), stroke(3, 1.0)));
+            for op in &ops {
+                b.apply(op);
+            }
+            let mut wall = Pose::new(0.0, 90.0, V3::new(0.0, 0.0, 500.0));
+            compass::apply(&mut wall, Handle::ArrowU, 1.0, 1);
+            ops.extend(b.add_stroke_on(&wall, stroke(5, 2.0)));
+            ops.extend(b.add_stroke_on(&wall, stroke(5, 3.0)));
+            let victim = b.plane_strokes(b.planes()[1].id).next().unwrap().0;
+            ops.extend(b.erase_strokes(&[victim]));
+            ops.push(b.set_plane_prop(b.planes()[0].id, PLANE_VISIBLE, "0"));
+            let snap = |d: &Document| {
+                let mut v: Vec<_> = d
+                    .planes()
+                    .into_iter()
+                    .map(|p| {
+                        (
+                            p.id,
+                            p.live,
+                            p.visible,
+                            d.plane_strokes(p.id).map(|s| s.0).collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+                v.sort_by_key(|x| x.0);
+                v
+            };
+            let mut fwd = Document::new(AuthorId(9));
+            for op in &ops {
+                fwd.apply(op);
+            }
+            let mut rev = Document::new(AuthorId(9));
+            for op in ops.iter().rev() {
+                rev.apply(op);
+            }
+            for op in &ops {
+                assert!(!rev.apply(op));
+            }
+            assert_eq!(snap(&fwd), snap(&rev));
+            assert_eq!(fwd.planes().len(), 2);
+            assert!(!fwd.planes()[0].visible);
+        }
+
+        /// T2.1 (dokument): piec plaszczyzn przez plik .ops i z powrotem - te
+        /// same plaszczyzny i kreski, bajt w bajt po ponownym zapisie.
+        #[test]
+        fn t2_1_piec_plaszczyzn_zapis_i_odczyt() {
+            let mut d = Document::new(AuthorId(7));
+            let mut ops = Vec::new();
+            ops.extend(d.add_stroke_on(&Pose::ZERO, stroke(5, 1.0)));
+            for k in 0..5 {
+                let mut p = Pose::new(0.0, 0.0, V3::new(100.0 * k as f64, 0.0, 0.0));
+                for _ in 0..=k {
+                    compass::apply(&mut p, Handle::RingY, 1.0, 1);
+                }
+                compass::apply(&mut p, Handle::ArrowN, 1.0, 3);
+                ops.extend(d.add_stroke_on(&p, stroke(6, k as f32)));
+                ops.extend(d.add_stroke_on(&p, stroke(3, 10.0 + k as f32)));
+            }
+            assert_eq!(d.planes().len(), 5);
+            let mut bytes = Vec::new();
+            for op in &ops {
+                let mut payload = Vec::new();
+                spectre_proto::encode_op(op, &mut payload);
+                spectre_proto::record::write_record(
+                    spectre_proto::record::REC_OP,
+                    &payload,
+                    &mut bytes,
+                );
+            }
+            let mut r = spectre_proto::varint::Reader::new(&bytes);
+            let mut back = Document::new(AuthorId(7));
+            let mut again = Vec::new();
+            while !r.is_empty() {
+                let (_, payload) = spectre_proto::record::read_record(&mut r).unwrap();
+                let op = spectre_proto::decode_op(payload).unwrap();
+                back.apply(&op);
+                let mut p = Vec::new();
+                spectre_proto::encode_op(&op, &mut p);
+                spectre_proto::record::write_record(spectre_proto::record::REC_OP, &p, &mut again);
+            }
+            assert_eq!(again, bytes);
+            assert_eq!(back.planes(), d.planes());
+            for p in d.planes() {
+                let a: Vec<_> = d
+                    .plane_strokes(p.id)
+                    .map(|(i, s, _)| (i, s.samples.len()))
+                    .collect();
+                let b: Vec<_> = back
+                    .plane_strokes(p.id)
+                    .map(|(i, s, _)| (i, s.samples.len()))
+                    .collect();
+                assert_eq!(a, b);
+            }
+            assert_eq!(snapshot(&back), snapshot(&d));
         }
     }
 

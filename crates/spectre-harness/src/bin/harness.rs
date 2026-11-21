@@ -7,6 +7,8 @@
 //! spectre-harness record <plik>              zapis syntetycznego nagrania piora
 //! spectre-harness idle                       licznik klatek w spoczynku (T5.3)
 //! spectre-harness ops-roundtrip <we> <wy>    plik .ops przez czytnik tej wersji (T2.2)
+//! spectre-harness t2-write <plik>            notatka z 5 plaszczyznami (T2.1, T2.2)
+//! spectre-harness t2-check <plik> [<wzor>]   plaszczyzny i kreski po odczycie (T2.2)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -32,6 +34,8 @@ fn main() {
         "record" => record(&args),
         "idle" => idle(),
         "ops-roundtrip" => ops_roundtrip(&args),
+        "t2-write" => t2_write(&args),
+        "t2-check" => t2_check(&args),
         _ => {
             eprintln!("uzycie: spectre-harness t1|t1-compare|latency|record|idle (docs/08)");
             std::process::exit(2);
@@ -256,5 +260,84 @@ fn ops_roundtrip(args: &[String]) -> Res {
         doc.live_count(),
         new.lamport
     );
+    Ok(())
+}
+
+/// Notatka wzorcowa T2: kreski na plaszczyznie zerowej i na pieciu
+/// plaszczyznach ustawionych kompasem, jeden autor.
+fn t2_note() -> Vec<spectre_core::Op> {
+    use spectre_core::space::compass::{self, Handle};
+    use spectre_core::space::{Pose, V3};
+    use spectre_core::Document;
+    let mut d = Document::new(spectre_harness::notes::AUTHOR);
+    let mut ops = Vec::new();
+    let rec = Recording::handwriting(5, (100.0, 100.0), 2, 3, 30.0);
+    let data = |s: &Vec<spectre_proto::Sample>| spectre_proto::StrokeData {
+        tool: 0,
+        color: spectre_proto::Rgba::rgb(216, 216, 216),
+        base_width: 3.2,
+        samples: s.clone(),
+    };
+    for s in &rec.strokes {
+        ops.extend(d.add_stroke_on(&Pose::ZERO, data(s)));
+    }
+    for k in 0..5 {
+        let mut p = Pose::new(0.0, 0.0, V3::new(300.0 * k as f64, 0.0, 0.0));
+        for _ in 0..=k {
+            compass::apply(&mut p, Handle::RingY, 1.0, 1);
+        }
+        compass::apply(&mut p, Handle::RingX, -1.0, 2);
+        compass::apply(&mut p, Handle::ArrowN, 1.0, 0);
+        for s in &rec.strokes {
+            ops.extend(d.add_stroke_on(&p, data(s)));
+        }
+    }
+    ops
+}
+
+fn t2_write(args: &[String]) -> Res {
+    let path = PathBuf::from(args.get(1).ok_or("brak pliku")?);
+    let bytes = spectre_harness::notes::ops_bytes(&t2_note());
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    println!("zapisano {} B", bytes.len());
+    Ok(())
+}
+
+/// Odczyt notatki 3D: plaszczyzny, kreski na kazdej i czy wszystkie operacje
+/// wzorca (`<wzor>`, np. plik z `t2-write`) sa w pliku bez zmian.
+fn t2_check(args: &[String]) -> Res {
+    use spectre_core::Document;
+    use spectre_proto::OpsReader;
+    let path = PathBuf::from(args.get(1).ok_or("brak pliku")?);
+    let parsed = OpsReader::read_path(&path)
+        .map_err(|e| e.to_string())?
+        .ok_or("zly naglowek")?;
+    let mut d = Document::new(parsed.header.author);
+    for op in &parsed.ops {
+        d.apply(op);
+    }
+    let planes = d.planes();
+    println!(
+        "plaszczyzny {}: kreski {:?}; zerowa {}; uciety {}, pominiete {}",
+        planes.len(),
+        planes.iter().map(|p| p.live).collect::<Vec<_>>(),
+        d.live_count(),
+        parsed.truncated,
+        parsed.skipped
+    );
+    if let Some(w) = args.get(2) {
+        let want = OpsReader::read_path(Path::new(w))
+            .map_err(|e| e.to_string())?
+            .ok_or("zly wzor")?;
+        let missing = want.ops.iter().filter(|o| !parsed.ops.contains(o)).count();
+        let file = std::fs::read(&path).map_err(|e| e.to_string())?;
+        let base = std::fs::read(w).map_err(|e| e.to_string())?;
+        let prefix = file.starts_with(&base);
+        println!("operacje wzorca brakujace: {missing}; wzorzec jest poczatkiem pliku bajt w bajt: {prefix}");
+        if missing > 0 || !prefix || planes.len() != 5 {
+            return Err("T2.2 NIE".into());
+        }
+        println!("T2.2 ok");
+    }
     Ok(())
 }

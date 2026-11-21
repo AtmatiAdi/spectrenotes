@@ -19,7 +19,7 @@ pub mod varint;
 
 pub use codec::{decode_op, encode_op, DecodeError};
 pub use opsfile::{OpsFileHeader, OpsReader, OpsWriter};
-pub use types::{AuthorId, Op, OpKind, Rgba, Sample, StrokeData, StrokeId};
+pub use types::{AuthorId, Op, OpKind, PlaneId, PlanePose, Rgba, Sample, StrokeData, StrokeId};
 
 /// Wersja formatu. Podbijana tylko przy zmianie niekompatybilnej wstecz.
 pub const FORMAT_VERSION: u16 = 1;

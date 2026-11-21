@@ -3335,11 +3335,18 @@ impl App {
         for op in ops {
             let id = match &op.kind {
                 spectre_core::OpKind::StrokeAdd { id, .. }
+                | spectre_core::OpKind::StrokeOn { id, .. }
                 | spectre_core::OpKind::StrokeErase { id } => *id,
-                spectre_core::OpKind::Meta { .. } | spectre_core::OpKind::Unknown { .. } => {
-                    continue
-                }
+                spectre_core::OpKind::Meta { .. }
+                | spectre_core::OpKind::PlaneAdd { .. }
+                | spectre_core::OpKind::PlaneProp { .. }
+                | spectre_core::OpKind::Unknown { .. } => continue,
             };
+            // Kreska na plaszczyznie 3D: warstwy 2D nie dotyczy; scena 3D
+            // widzi zmiane po licznikach plaszczyzn dokumentu.
+            if self.doc.plane_of(id).is_some_and(|p| !p.is_zero()) {
+                continue;
+            }
             match self.doc.get(id) {
                 Some(data) => self.dirty = self.dirty.add_region(Bbox::of(data)),
                 None => self.dirty = Dirty::Full,
@@ -4356,6 +4363,11 @@ impl App {
                                 self.sync_entry();
                                 list_changed = true;
                             }
+                            // Plaszczyzny 3D: warstwa 2D sie nie zmienia, scena 3D
+                            // widzi zmiane po licznikach plaszczyzn dokumentu.
+                            OpKind::StrokeOn { .. }
+                            | OpKind::PlaneAdd { .. }
+                            | OpKind::PlaneProp { .. } => {}
                             // Operacja nowszej wersji: nic do narysowania (O12).
                             OpKind::Unknown { .. } => {}
                         }
