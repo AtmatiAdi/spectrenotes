@@ -34,6 +34,7 @@ mod picker;
 mod select;
 mod spaces;
 mod sync;
+mod three;
 mod thumbs;
 mod ui;
 mod update;
@@ -60,11 +61,25 @@ fn main() -> windows::core::Result<()> {
     if std::env::args().any(|a| a == install::WARMUP_ARG) {
         return Ok(());
     }
-    if std::env::args().any(|a| a == "--bench" || a == "--fill-white" || a == "--console") {
+    if std::env::args()
+        .any(|a| a == "--bench" || a == "--fill-white" || a == "--console" || a == "--ui3d-png")
+    {
         window::attach_parent_console();
     }
     if std::env::args().any(|a| a == "--bench") {
         return bench::run();
+    }
+    // `--ui3d-png <katalog>`: zrzuty interfejsu 3D poza ekranem (WARP), bez okna.
+    if std::env::args().any(|a| a == "--ui3d-png") {
+        let dir = std::env::args()
+            .skip_while(|a| a != "--ui3d-png")
+            .nth(1)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("ui3d"));
+        return three::preview_png(&dir).map_err(|e| {
+            eprintln!("blad: {e}");
+            windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL)
+        });
     }
     if std::env::args().any(|a| a == "--fill-white") {
         let dir = std::env::args()

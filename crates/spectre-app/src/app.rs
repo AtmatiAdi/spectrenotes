@@ -8,7 +8,8 @@ use spectre_core::hittest::stroke_hit;
 use spectre_core::InkName;
 use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
-use spectre_render::{Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail};
+use spectre_render::scene3d::IDENTITY;
+use spectre_render::{segments_to_screen, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail};
 
 /// Urzadzenie D3D tworzone w tle od startu `main` (`spectre_render::Device`).
 type DeviceHandle = Option<std::thread::JoinHandle<windows::core::Result<spectre_render::Device>>>;
@@ -115,6 +116,9 @@ const TIMER_FX: usize = 13;
 const TIMER_GPU_RETRY: usize = 14;
 /// Domkniecie zoomu kolkiem (`zoom_at`): pelna przebudowa po tylu ms ciszy.
 const TIMER_ZOOM: usize = 15;
+/// Tryb 3D: kamera stoi od `three::SETTLE_MS` - przepieczenie plaszczyzn
+/// (jak przebudowa po zoomie); tez kolejne porcje pieczenia (`pending`).
+const TIMER_SETTLE3D: usize = 17;
 const ZOOM_SETTLE_MS: u32 = 150;
 /// Powtorka klatki, ktorej `Present` nie przyjal, bo kolejka byla pelna
 /// (`Renderer::present` zwraca `Ok(false)`). Zwykle i tak wczesniej przychodzi
@@ -222,6 +226,8 @@ enum Mode {
     Menu,
     /// Pioro pisze w polu nazwy (`NamePad`), nie na canvasie.
     NamePad,
+    /// Gest na elementach trybu 3D: kostka, kompas, lista (`three::Drag3`).
+    Three,
 }
 
 /// Czego chce rysik przy tych przyciskach i tym narzedziu. Tryb okna jest
@@ -381,6 +387,8 @@ pub struct App {
     /// Widok zablokowany: przesuwanie w poziomie tylko w granicach kolumny
     /// (zoom nadal wolno). Odblokowany: canvas nieskonczony w osi X.
     view_locked: bool,
+    /// Tryb 3D (`None` = zwykla notatka 2D). `three.rs`.
+    three: Option<crate::three::Three>,
 
     dirty: Dirty,
     show_hud: bool,
@@ -878,6 +886,7 @@ impl App {
             last_screen: (0.0, 0.0),
             last_erase_canvas: None,
             pan_start: ((0.0, 0.0), (0.0, 0.0)),
+            three: None,
             first_size: true,
             view_locked,
             dirty: Dirty::Full,
@@ -1068,7 +1077,11 @@ impl App {
     /// Przycisk trzymany = funkcja. Zmiana w trakcie ruchu konczy biezaca
     /// akcje i zaczyna nowa od tej samej probki.
     fn apply_buttons(&mut self, batch: &PenBatch) -> bool {
-        if self.mode == Mode::DragBar || self.mode == Mode::Menu || self.mode == Mode::NamePad {
+        if self.mode == Mode::DragBar
+            || self.mode == Mode::Menu
+            || self.mode == Mode::NamePad
+            || self.mode == Mode::Three
+        {
             return false; // przyciski nie przerywaja przenoszenia paska, menu ani pisania nazwy
         }
         let want = if batch.buttons.barrel {
@@ -1102,7 +1115,7 @@ impl App {
             Mode::Erase => Some(Want::Erase),
             Mode::Pan => Some(Want::Pan),
             Mode::Lasso | Mode::Transform => Some(Want::Select),
-            Mode::Idle | Mode::DragBar | Mode::Menu | Mode::NamePad => None,
+            Mode::Idle | Mode::DragBar | Mode::Menu | Mode::NamePad | Mode::Three => None,
         }
     }
 
@@ -1119,7 +1132,9 @@ impl App {
             }
             Mode::Lasso => self.end_lasso(),
             Mode::Transform => self.end_transform(),
-            Mode::Pan | Mode::Idle => {}
+            Mode::Three => self.three_release(),
+            Mode::Pan => self.end_pan_3d(),
+            Mode::Idle => {}
         }
         self.mode = Mode::Idle;
         if self.reload_pending {
@@ -1331,7 +1346,7 @@ impl App {
             }
             if on_bar {
                 self.toolbar_tap(x, y);
-            } else {
+            } else if !self.three_down(x, y) {
                 self.apply_buttons(batch);
             }
         }
@@ -1361,7 +1376,35 @@ impl App {
             }
             m || t
         };
+        // 3D: podswietlenie scian kostki i przyciskow pod piorem.
+        let three_changed = match self.three.as_ref() {
+            Some(t) => {
+                let (w, h) = self.renderer.size();
+                let hot = t.hit(
+                    &self.doc,
+                    pos.0,
+                    pos.1,
+                    (w as f32, h as f32),
+                    self.toolbar.scale(),
+                    self.right_inset(),
+                );
+                let hot = hot.filter(|h| {
+                    matches!(
+                        h,
+                        crate::three::Hit3::CubeView(_)
+                            | crate::three::Hit3::Home
+                            | crate::three::Hit3::To2D
+                    )
+                });
+                let t = self.three.as_mut().unwrap();
+                let changed = t.hot != hot;
+                t.hot = hot;
+                changed
+            }
+            None => false,
+        };
         let changed = ui_changed
+            || three_changed
             || b != self.buttons
             || !self.hover
             || (eraser_cursor && pos != self.last_screen);
@@ -1388,6 +1431,7 @@ impl App {
                 Mode::NamePad => self.pad_feed(batch),
                 Mode::Lasso => self.lasso_feed(batch),
                 Mode::Transform => self.transform_feed(batch),
+                Mode::Three => self.three_drag(),
             }
             let (px, py) = self.last_screen;
             self.share_cursor(px, py);
@@ -1568,7 +1612,15 @@ impl App {
                 }
                 continue;
             }
-            let (x, y) = self.cam.to_canvas(s.x, s.y);
+            // 3D: rzut odwrotny na plaszczyzne rysowania (jedno mnozenie na
+            // probke). Poza nia (horyzont) probka przepada.
+            let (x, y) = match &self.three {
+                Some(t) => match t.cam.unproject(s.x as f64, s.y as f64, &t.draw) {
+                    Some((u, v)) => (u as f32, v as f32),
+                    None => continue,
+                },
+                None => self.cam.to_canvas(s.x, s.y),
+            };
             let pressure = if thr > 0.0 {
                 (s.pressure - thr) / (1.0 - thr)
             } else {
@@ -1587,7 +1639,8 @@ impl App {
         }
         // Mokra kreska do peerow paczka po paczce (co komunikat piora, ~4 ms) -
         // druga osoba widzi ja w trakcie, nie dopiero po oderwaniu rysika.
-        if share && !shared.is_empty() {
+        // W 3D probki sa w ukladzie plaszczyzny - peerzy dostana kreske gotowa.
+        if share && !shared.is_empty() && self.three.is_none() {
             self.live.send(LiveJob::Wet {
                 note: self.notes[self.note_idx].id.clone(),
                 seq: self.wet_seq,
@@ -1667,6 +1720,21 @@ impl App {
             base_width: self.ink.base_width,
             samples,
         };
+        // 3D: kreska na plaszczyznie rysowania; plaszczyzna powstaje sama
+        // przy pierwszej kresce (W9).
+        if let Some(t) = &mut self.three {
+            let draw = t.draw;
+            let ops = self.doc.add_stroke_on(&draw, data);
+            if ops
+                .iter()
+                .any(|o| matches!(o.kind, spectre_core::OpKind::StrokeAdd { .. }))
+            {
+                t.zero_rev += 1;
+            }
+            t.need_compose = true;
+            self.persist(&ops);
+            return;
+        }
         let bbox = Bbox::of(&data);
         let op = self.doc.add_stroke(data);
         self.persist(&[op]);
@@ -1683,6 +1751,10 @@ impl App {
     }
 
     fn erase_with(&mut self, batch: &PenBatch) {
+        if self.three.is_some() {
+            self.erase_with_3d(batch);
+            return;
+        }
         let radius = ERASER_RADIUS_PX / self.cam.zoom;
         self.hit_buf.clear();
         for s in &batch.samples {
@@ -1722,6 +1794,11 @@ impl App {
     /// zaznaczenie tam, gdzie jest** (tresc sie nie rusza) i od razu zaczyna
     /// nowy obrys - przesuwa sie tylko to, co sie zlapie.
     fn begin_select(&mut self) {
+        // Zaznaczenie w 3D (O5) - jeszcze nie: narzedzie nic nie robi.
+        if self.three.is_some() {
+            self.status = "3D: zaznaczanie jeszcze niedostepne".into();
+            return;
+        }
         let (sx, sy) = self.last_screen;
         let (cx, cy) = self.cam.to_canvas(sx, sy);
         let scale = self.toolbar.scale();
@@ -1974,6 +2051,13 @@ impl App {
     }
 
     fn begin_pan(&mut self, batch: &PenBatch) {
+        if self.three.is_some() {
+            if let Some(s) = batch.samples.last() {
+                self.pan_start = ((s.x, s.y), (s.x, s.y));
+                self.mode = Mode::Pan;
+            }
+            return;
+        }
         if let Some(s) = batch.samples.last() {
             self.pan_start = ((s.x, s.y), (self.cam.scroll_x, self.cam.scroll_y));
             self.mode = Mode::Pan;
@@ -1981,6 +2065,17 @@ impl App {
     }
 
     fn update_pan(&mut self, batch: &PenBatch) {
+        // 3D: przesuwanie widoku piorem przesuwa kamere (W15).
+        if let Some(t) = &mut self.three {
+            if let Some(s) = batch.samples.last() {
+                let (lx, ly) = self.pan_start.1;
+                t.cam.pan_px((s.x - lx) as f64, (s.y - ly) as f64);
+                t.anim = None;
+                t.moved();
+                self.pan_start.1 = (s.x, s.y);
+            }
+            return;
+        }
         if let Some(s) = batch.samples.last() {
             let ((sx0, sy0), (cx0, cy0)) = self.pan_start;
             let k = self.scroll_mult / self.cam.zoom;
@@ -2064,6 +2159,15 @@ impl App {
 
     /// Zoom wokol punktu ekranu (kursora), zeby tresc pod rysikiem stala w miejscu.
     fn zoom_at(&mut self, factor: f32, sx: f32, sy: f32) {
+        // 3D: zoom do kursora na plaszczyznie rysowania (O3).
+        if let Some(t) = &mut self.three {
+            let draw = t.draw;
+            t.anim = None;
+            t.cam.zoom_at(factor as f64, sx as f64, sy as f64, &draw);
+            t.moved();
+            self.arm_settle_3d(crate::three::SETTLE_MS);
+            return;
+        }
         let new_zoom = (self.cam.zoom * factor).clamp(ZOOM_MIN, ZOOM_MAX);
         if (new_zoom - self.cam.zoom).abs() < 1e-4 {
             return;
@@ -2131,6 +2235,11 @@ impl App {
     /// i lewa krawedz kolumny (`home_view`); odblokowanie zostawia widok tam,
     /// gdzie jest, i od tej chwili wolno jechac w bok bez konca.
     fn toggle_view_lock(&mut self) {
+        // Blokada widoku w 3D robi to samo co wyjscie z 3D (W18).
+        if self.three.is_some() {
+            self.exit_3d();
+            return;
+        }
         self.view_locked = !self.view_locked;
         self.config
             .set("view_lock", if self.view_locked { "1" } else { "0" });
@@ -2143,6 +2252,325 @@ impl App {
         } else {
             "view unlocked: scroll sideways over the infinite canvas".to_string()
         };
+    }
+
+    // ----- tryb 3D ------------------------------------------------------------
+
+    /// Pasek zadokowany z prawej zabiera kostce i liscie miejsce.
+    fn right_inset(&self) -> f32 {
+        if self.toolbar.dock == Dock::Right && self.toolbar.visible {
+            self.toolbar.thickness()
+        } else {
+            0.0
+        }
+    }
+
+    fn arm_settle_3d(&self, ms: u32) {
+        unsafe {
+            SetTimer(Some(self.hwnd), TIMER_SETTLE3D, ms, None);
+        }
+    }
+
+    fn toggle_3d(&mut self) {
+        if self.three.is_some() {
+            self.exit_3d();
+        } else {
+            self.enter_3d();
+        }
+    }
+
+    /// Wejscie w 3D (W18): kamera ortograficzna plynnie przechodzi w
+    /// perspektywe, pojawia sie kostka. Blokada widoku zdjeta, wyjscie
+    /// przywroci ja razem z kamera 2D.
+    fn enter_3d(&mut self) {
+        self.end_action();
+        self.clear_selection();
+        self.commit_title();
+        let (w, h) = self.renderer.size();
+        let t = crate::three::Three::enter(&self.cam, w as f32, h as f32, self.view_locked);
+        self.view_locked = false;
+        self.three = Some(t);
+        self.renderer.clear_3d();
+        self.arm_anim();
+    }
+
+    /// Wyjscie z 3D (przycisk 3D, "2D" pod kostka, blokada widoku): zwykly
+    /// stan notatki 2D sprzed wejscia - kamera, zoom, miejsce, blokada,
+    /// plaszczyzna zerowa (W18, T6.5).
+    fn exit_3d(&mut self) {
+        if self.three.is_none() {
+            return;
+        }
+        self.end_action();
+        let Some(t) = self.three.take() else {
+            return;
+        };
+        // Notatka zamknieta teraz w 2D otwiera sie w 2D (O11) - tylko gdy byl
+        // zapis z 3D; notatka nigdy nie ogladana w 3D zostaje bez metadanej.
+        let key = crate::three::view_key(self.doc.author());
+        if let Some(old) = self.doc.meta(&key).filter(|v| v.starts_with("3d;")) {
+            let value = format!("2d;{}", &old[3..]);
+            let op = self.doc.set_meta(&key, &value);
+            self.persist(&[op]);
+        }
+        self.cam = t.saved_2d;
+        self.view_locked = t.saved_lock;
+        self.renderer.clear_3d();
+        self.dirty = Dirty::Full;
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), TIMER_SETTLE3D);
+        }
+    }
+
+    /// Zapis widoku 3D w notatce (O11) - przy zmianie notatki i zamknieciu
+    /// okna w trybie 3D. Tylko gdy sie zmienil.
+    fn save_view3d(&mut self) {
+        let Some(t) = &self.three else {
+            return;
+        };
+        let key = crate::three::view_key(self.doc.author());
+        let value = t.save_view();
+        if self.doc.meta(&key) == Some(value.as_str()) {
+            return;
+        }
+        let op = self.doc.set_meta(&key, &value);
+        self.persist(&[op]);
+    }
+
+    /// Notatka zamknieta w 3D otwiera sie w 3D, w zapisanym widoku (O11).
+    fn restore_3d(&mut self) {
+        let key = crate::three::view_key(self.doc.author());
+        let Some(saved) = self.doc.meta(&key).filter(|v| v.starts_with("3d;")) else {
+            return;
+        };
+        let (w, h) = self.renderer.size();
+        if let Some(t) =
+            crate::three::Three::restore(&self.cam, self.view_locked, saved, w as f32, h as f32)
+        {
+            self.view_locked = false;
+            self.three = Some(t);
+            self.renderer.clear_3d();
+        }
+    }
+
+    /// Dotkniecie w trybie 3D: kostka, przyciski pod nia, kompas, lista.
+    /// `false` = nic z tego - pioro dziala na plaszczyznie.
+    fn three_down(&mut self, x: f32, y: f32) -> bool {
+        use crate::three::{Drag3, Hit3};
+        use spectre_core::space::compass::{self, Handle};
+        let (w, h) = self.renderer.size();
+        let k = self.toolbar.scale();
+        let ri = self.right_inset();
+        let Some(hit) = self
+            .three
+            .as_ref()
+            .and_then(|t| t.hit(&self.doc, x, y, (w as f32, h as f32), k, ri))
+        else {
+            return false;
+        };
+        self.end_action();
+        let Some(t) = self.three.as_mut() else {
+            return false;
+        };
+        match hit {
+            Hit3::CubeView(_) | Hit3::Cube => {
+                t.drag = Some(Drag3::Cube {
+                    start: (x, y),
+                    last: (x, y),
+                    moved: false,
+                    click: match hit {
+                        Hit3::CubeView(d) => Some(d),
+                        _ => None,
+                    },
+                });
+            }
+            Hit3::Home => {
+                t.go_home();
+                self.arm_anim();
+                return true;
+            }
+            Hit3::To2D => {
+                self.exit_3d();
+                return true;
+            }
+            Hit3::Compass(Handle::Center) => t.drag = Some(Drag3::Center),
+            Hit3::Compass(hd) => {
+                let dir = t.handle_dir(hd, (x, y), k);
+                t.drag = Some(Drag3::Compass {
+                    drag: compass::Drag::new(hd),
+                    dir,
+                    last: (x, y),
+                });
+            }
+            // Wybor z listy: plaszczyzna rysowania, kamera stoi (W14). Srodek
+            // kompasu zostaje tam, gdzie byl, rzutowany na wybrana plaszczyzne.
+            Hit3::ListRow(id) => {
+                if let Some(p) = self.doc.plane_pose(id) {
+                    let mut pose = p;
+                    compass::move_center(&mut pose, t.draw.origin);
+                    t.draw = pose;
+                    t.need_compose = true;
+                }
+                return true;
+            }
+            Hit3::ListEye(id) => {
+                let vis = self.doc.plane_visible(id);
+                t.need_compose = true;
+                let op = self.doc.set_plane_prop(
+                    id,
+                    spectre_core::document::PLANE_VISIBLE,
+                    if vis { "0" } else { "1" },
+                );
+                self.persist(&[op]);
+                return true;
+            }
+            Hit3::ListName(id) => {
+                let key = crate::three::Three::name_key(id);
+                let current = crate::namepad::decode_name(
+                    self.doc
+                        .meta(&spectre_core::inkname::ink_key(&key))
+                        .unwrap_or(""),
+                );
+                self.open_name_pad(NameTarget::Meta(key), current.as_deref());
+                return true;
+            }
+            Hit3::ListPanel => return true,
+        }
+        self.mode = Mode::Three;
+        true
+    }
+
+    /// Ruch piora w gescie 3D.
+    fn three_drag(&mut self) {
+        use crate::three::Drag3;
+        let (x, y) = self.last_screen;
+        let k = self.toolbar.scale();
+        let Some(t) = self.three.as_mut() else {
+            return;
+        };
+        match t.drag {
+            Some(Drag3::Cube {
+                start,
+                last,
+                moved,
+                click,
+            }) => {
+                let moved = moved || (x - start.0).hypot(y - start.1) > 6.0 * k;
+                if moved {
+                    // Przeciagniecie obraca cala przestrzen (W2).
+                    t.anim = None;
+                    t.cam.orbit(
+                        ((x - last.0) * 0.45 / k) as f64,
+                        (-(y - last.1) * 0.45 / k) as f64,
+                    );
+                    t.moved();
+                }
+                t.drag = Some(Drag3::Cube {
+                    start,
+                    last: (x, y),
+                    moved,
+                    click,
+                });
+            }
+            Some(Drag3::Compass {
+                mut drag,
+                dir,
+                last,
+            }) => {
+                let along = (x - last.0) as f64 * dir.0 + (y - last.1) as f64 * dir.1;
+                let dist = t.center_dist((x, y));
+                if drag.feed(&mut t.draw, along, dist, k as f64) != 0 {
+                    t.need_compose = true;
+                }
+                t.step_hint = Some((drag.last_zone, drag.handle, (x, y)));
+                t.drag = Some(Drag3::Compass {
+                    drag,
+                    dir,
+                    last: (x, y),
+                });
+            }
+            Some(Drag3::Center) => {
+                let draw = t.draw;
+                if let Some(p) = t.cam.hit(x as f64, y as f64, &draw) {
+                    spectre_core::space::compass::move_center(&mut t.draw, p);
+                    t.need_compose = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Koniec gestu 3D: klik w kostke bez ruchu ustawia widok z animacja.
+    fn three_release(&mut self) {
+        use crate::three::Drag3;
+        let Some(t) = self.three.as_mut() else {
+            return;
+        };
+        let drag = t.drag.take();
+        t.step_hint = None;
+        t.need_compose = true;
+        match drag {
+            Some(Drag3::Cube {
+                moved: false,
+                click: Some(d),
+                ..
+            }) => {
+                t.view_dir(d);
+                self.arm_anim();
+            }
+            Some(Drag3::Cube { .. }) => self.arm_settle_3d(crate::three::SETTLE_MS),
+            _ => {}
+        }
+    }
+
+    fn end_pan_3d(&mut self) {
+        if self.three.is_some() {
+            self.arm_settle_3d(crate::three::SETTLE_MS);
+        }
+    }
+
+    /// Gumka w 3D: tylko kreski aktywnej plaszczyzny (O5), w jej ukladzie.
+    fn erase_with_3d(&mut self, batch: &PenBatch) {
+        let Some(t) = &self.three else {
+            return;
+        };
+        let Some(plane) = self.doc.find_plane(&t.draw) else {
+            return;
+        };
+        let pose = self.doc.plane_pose(plane).unwrap_or(t.draw);
+        let m = t.draw.local_to(&pose);
+        let h = t.cam.homography(&t.draw);
+        self.hit_buf.clear();
+        for s in &batch.samples {
+            let Some((u, v)) = t.cam.unproject(s.x as f64, s.y as f64, &t.draw) else {
+                continue;
+            };
+            let scale = spectre_render::scene3d::local_scale(&h, u, v).max(1e-6);
+            let radius = (ERASER_RADIUS_PX as f64 / scale) as f32;
+            let cur = (
+                (m[0] * u + m[2] * v + m[4]) as f32,
+                (m[1] * u + m[3] * v + m[5]) as f32,
+            );
+            let prev = self.last_erase_canvas.unwrap_or(cur);
+            for (id, data, bbox) in self.doc.plane_strokes(plane) {
+                if !self.hit_buf.contains(&id) && stroke_hit(data, bbox, prev, cur, radius) {
+                    self.hit_buf.push(id);
+                }
+            }
+            self.last_erase_canvas = Some(cur);
+        }
+        if !self.hit_buf.is_empty() {
+            let ids = std::mem::take(&mut self.hit_buf);
+            let ops = self.doc.erase_strokes_continuing(&ids);
+            self.hit_buf = ids;
+            self.persist(&ops);
+            if let Some(t) = self.three.as_mut() {
+                if plane.is_zero() {
+                    t.zero_rev += 1;
+                }
+                t.need_compose = true;
+            }
+        }
     }
 
     // ----- pasek -------------------------------------------------------------
@@ -2162,8 +2590,14 @@ impl App {
             can_paste: !self.clipboard.is_empty(),
             title: "",
             title_ink: None,
-            zoom: self.cam.zoom,
+            zoom: self
+                .three
+                .as_ref()
+                .map_or(self.cam.zoom, |t| t.cam.zoom as f32),
             view_locked: self.view_locked,
+            three: self.three.is_some(),
+            compass: self.three.as_ref().is_some_and(|t| t.compass_on),
+            planes: self.three.as_ref().is_some_and(|t| t.list_on),
             // W pelnym ekranie przycisk pokazuje stan, do ktorego wyjscie wroci -
             // inaczej obiecywalby co innego, niz da klikniecie.
             maximized: if self.fullscreen.is_active() {
@@ -2284,6 +2718,15 @@ impl App {
     }
 
     fn anim_tick(&mut self) {
+        if let Some(t) = &mut self.three {
+            if t.anim.is_some() {
+                if !t.tick() {
+                    self.arm_settle_3d(crate::three::SETTLE_MS);
+                }
+                self.render();
+                return;
+            }
+        }
         // Sprezyna gornej krawedzi wraca, gdy nikt juz nie ciagnie. W trakcie
         // przewijania rysikiem `scroll_to` i tak nadpisuje ja co probke.
         if self.mode != Mode::Pan && self.cam.shift.1 > 0.0 {
@@ -2297,7 +2740,11 @@ impl App {
         {
             self.waves_leaving = None;
         }
-        if !self.toolbar.animating() && self.cam.shift.1 <= 0.0 && self.waves_leaving.is_none() {
+        if !self.toolbar.animating()
+            && self.cam.shift.1 <= 0.0
+            && self.waves_leaving.is_none()
+            && self.three.as_ref().is_none_or(|t| t.anim.is_none())
+        {
             unsafe {
                 let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
             }
@@ -2378,6 +2825,20 @@ impl App {
             Action::ZoomIn => self.zoom_center(1.25),
             Action::ZoomActual => self.zoom_actual(),
             Action::ViewLock => self.toggle_view_lock(),
+            Action::ThreeD => self.toggle_3d(),
+            // W 2D kompas i lista sa nieaktywne: klik nic nie zmienia (T6.4).
+            Action::Compass => {
+                if let Some(t) = &mut self.three {
+                    t.compass_on = !t.compass_on;
+                    t.need_compose = true;
+                }
+            }
+            Action::Planes => {
+                if let Some(t) = &mut self.three {
+                    t.list_on = !t.list_on;
+                    t.list_first = 0;
+                }
+            }
             Action::LockPc => {
                 if !window::lock_workstation() {
                     self.status = "could not lock the computer".to_string();
@@ -2972,6 +3433,8 @@ impl App {
     }
 
     fn save_placement(&mut self) {
+        // Zamkniecie okna w 3D: notatka otworzy sie w 3D (O11).
+        self.save_view3d();
         // Okno nigdy niepokazane (start do traya, wyjscie z traya): w
         // konfiguracji jest wciaz to, co odtworzymy - nie ma czego zapisywac.
         if self.pending_placement.is_some() {
@@ -3526,6 +3989,15 @@ impl App {
         // Zaznaczenie dotyczy kresek tej notatki - z niej nie wychodzi.
         self.clear_selection();
         self.commit_title();
+        // Widok 3D zostaje w opuszczanej notatce (O11); nowa otwiera sie
+        // w swoim trybie.
+        if self.three.is_some() {
+            self.save_view3d();
+            if let Some(t) = self.three.take() {
+                self.view_locked = t.saved_lock;
+            }
+            self.renderer.clear_3d();
+        }
         self.sync_now();
         // Opuszczana notatka rysowana przy zamknietym menu ma miniature sprzed
         // kresek - zamknieta notatka nie jest juz sprawdzana po lamporcie.
@@ -3546,6 +4018,7 @@ impl App {
                 self.peer_cursors.clear();
                 self.cam = Camera::default();
                 self.home_view();
+                self.restore_3d();
                 self.status.clear();
                 self.sync_entry();
                 self.remember_note();
@@ -5795,6 +6268,50 @@ impl App {
         }
         // Klatka przewijania - z piora albo z kolka; decyduje o trybie prezentacji.
         let scrolling = self.mode == Mode::Pan || matches!(self.dirty, Dirty::Scrolled(_));
+        // Tryb 3D: warstwa sucha to zlozona scena (`compose3d`), skladana tylko,
+        // gdy cos sie zmienilo - kamera, plaszczyzna rysowania, kreski. Zmiana
+        // notatki 2D (kreska na zerowej, gumka, cofanie, LAN) to zmiana
+        // plaszczyzny zerowej.
+        if let Some(t) = self.three.as_mut() {
+            if self.dirty != Dirty::Clean {
+                t.zero_rev += 1;
+                t.need_compose = true;
+                self.dirty = Dirty::Clean;
+            }
+        }
+        let mut pending_3d = false;
+        if let Some(t) = self.three.as_mut() {
+            let rev = self.doc.planes_rev();
+            if t.need_compose || t.planes_rev != rev {
+                let bg = self.doc.meta("bg").and_then(Background::from_meta);
+                let grid_frame = self
+                    .doc
+                    .find_plane(&t.draw)
+                    .and_then(|id| self.doc.plane_pose(id))
+                    .unwrap_or(t.draw);
+                let view = spectre_render::View3 {
+                    cam: t.cam,
+                    draw_plane: t.draw,
+                    grid_frame,
+                    grid: bg.filter(|b| b.pattern != Pattern::None),
+                    grid3d: t.grid3d,
+                    zero_rev: t.zero_rev,
+                    settled: t.settled && t.anim.is_none() && t.drag.is_none(),
+                };
+                match self.renderer.compose3d(&self.doc, &view, &self.ink) {
+                    Ok(st) => {
+                        t.need_compose = st.pending > 0;
+                        pending_3d = st.pending > 0;
+                    }
+                    Err(e) => eprintln!("compose3d: {e}"),
+                }
+                t.planes_rev = rev;
+            }
+        }
+        if pending_3d {
+            // Reszta pieczenia w kolejnej klatce - pioro dziala w przerwie.
+            self.arm_settle_3d(16);
+        }
         match self.dirty {
             Dirty::Clean => {}
             Dirty::Scrolled(old) => {
@@ -5825,19 +6342,38 @@ impl App {
             // klatke w przebiegu efektow (`FxLayer::wet`) i mieni sie od pierwszej
             // probki - kolor bazowy w warstwie suchej zakrylby to pod spodem.
             if self.wet_pending.len() >= WET_BURN_SEGS && self.ink_tool() == 0 {
-                let _ = self
-                    .renderer
-                    .commit(&self.wet_pending, self.color(), &self.cam);
+                let color = self.color();
+                match &self.three {
+                    // 3D: odcinki z ukladu plaszczyzny na ekran, potem jak w 2D.
+                    Some(t) => {
+                        let mut scr = Vec::with_capacity(self.wet_pending.len());
+                        segments_to_screen(&t.cam, &t.draw, &self.wet_pending, &mut scr);
+                        let _ = self.renderer.commit(&scr, color, &IDENTITY);
+                    }
+                    None => {
+                        let _ = self.renderer.commit(&self.wet_pending, color, &self.cam);
+                    }
+                }
                 self.wet_pending.clear();
             }
             self.tail_buf.extend_from_slice(&self.wet_pending);
             self.stroke.tail(&mut self.tail_buf);
+            if let Some(t) = &self.three {
+                let local = std::mem::take(&mut self.tail_buf);
+                segments_to_screen(&t.cam, &t.draw, &local, &mut self.tail_buf);
+            }
         }
         // Mokre kreski peerow: tak samo jak wlasna - odcinki ostateczne do
         // warstwy suchej, czubek na wierzch klatki.
         let mut wet_tails = std::mem::take(&mut self.wet_tails);
         wet_tails.clear();
-        for w in self.remote_wet.values_mut() {
+        // W 3D mokre kreski peerow (uklad notatki 2D) czekaja - kreske gotowa
+        // scena pokaze po jej zakonczeniu.
+        for w in self
+            .remote_wet
+            .values_mut()
+            .filter(|_| self.three.is_none())
+        {
             self.commit_buf.clear();
             w.builder.commit(&mut self.commit_buf);
             w.pending.extend_from_slice(&self.commit_buf);
@@ -5853,11 +6389,22 @@ impl App {
             wet_tails.push(t);
         }
         self.commit_buf.clear();
-        let marks: Vec<(f32, f32)> = self
-            .peer_cursors
-            .values()
-            .map(|&(x, y)| self.cam.to_screen(x, y))
-            .collect();
+        let marks: Vec<(f32, f32)> = match &self.three {
+            Some(t) => self
+                .peer_cursors
+                .values()
+                .filter_map(|&(x, y)| {
+                    t.cam
+                        .project(spectre_core::space::V3::new(x as f64, y as f64, 0.0))
+                        .map(|(a, b, _)| (a as f32, b as f32))
+                })
+                .collect(),
+            None => self
+                .peer_cursors
+                .values()
+                .map(|&(x, y)| self.cam.to_screen(x, y))
+                .collect(),
+        };
 
         let hud = if self.show_hud {
             if self
@@ -5954,6 +6501,27 @@ impl App {
                     &mut prims,
                 );
             }
+        }
+        // Tryb 3D: kompas, kostka i lista nad scena, pod paskiem i menu.
+        if let (Some(t), None) = (&self.three, &self.waves) {
+            let (w, h) = self.renderer.size();
+            let doc = &self.doc;
+            let names = |id: spectre_core::PlaneId| {
+                crate::namepad::decode_name(
+                    doc.meta(&spectre_core::inkname::ink_key(
+                        &crate::three::Three::name_key(id),
+                    ))
+                    .unwrap_or(""),
+                )
+            };
+            t.build_ui(
+                doc,
+                &names,
+                (w as f32, h as f32),
+                self.toolbar.scale(),
+                self.right_inset(),
+                &mut prims,
+            );
         }
         let mut st = self.ui_state();
         st.title = &title;
@@ -6091,9 +6659,11 @@ impl App {
             .cam
             .visible(vw as f32, vh as f32)
             .expand(FX_MARGIN_PX / self.cam.zoom);
+        // W 3D tusze z efektem sa w bitmapach plaszczyzn (kolor bazowy).
         let fx_strokes: Vec<(StrokeId, &StrokeData)> = self
             .doc
             .visible_in(fx_view)
+            .filter(|_| self.three.is_none())
             .filter(|(_, d, _)| spectre_core::fx::for_tool(d.tool).is_some())
             .map(|(id, d, _)| (id, d))
             .collect();
@@ -6131,12 +6701,13 @@ impl App {
 
         let color = self.color();
         // Wlasna kreska tuszem z efektem mieni sie juz w trakcie pisania.
-        let fx_wet_data = (self.mode == Mode::Draw && self.ink_tool() != 0).then(|| StrokeData {
-            tool: self.ink_tool(),
-            color,
-            base_width: self.ink.base_width,
-            samples: self.stroke.samples().to_vec(),
-        });
+        let fx_wet_data = (self.mode == Mode::Draw && self.ink_tool() != 0 && self.three.is_none())
+            .then(|| StrokeData {
+                tool: self.ink_tool(),
+                color,
+                base_width: self.ink.base_width,
+                samples: self.stroke.samples().to_vec(),
+            });
         // Fale (Z7): krok symulacji o czas od poprzedniej klatki, tylko gdy trwaja.
         let dim = match (self.waves.as_mut(), self.waves_leaving.as_mut()) {
             (Some(wv), _) => {
@@ -6164,10 +6735,15 @@ impl App {
             }),
             _ => None,
         };
+        let present_cam = if self.three.is_some() {
+            IDENTITY
+        } else {
+            self.cam
+        };
         let presented = self.renderer.present(
             &tail,
             color,
-            &self.cam,
+            &present_cam,
             Overlay {
                 lift,
                 hud: hud.as_deref(),
@@ -6303,6 +6879,7 @@ impl App {
             Mode::NamePad => "WRITING NAME".to_string(),
             Mode::Lasso => "SELECTING".to_string(),
             Mode::Transform => "MOVING SELECTION".to_string(),
+            Mode::Three => "3D CONTROL".to_string(),
             Mode::Idle if self.buttons.eraser || self.eraser_tool => "eraser".to_string(),
             Mode::Idle if self.select_tool => "select".to_string(),
             Mode::Idle => format!("pen #{}", self.color_idx + 1),
@@ -6793,6 +7370,9 @@ pub unsafe extern "system" fn wndproc(
                 if app.menu.wheel(delta / 120.0) {
                     app.render();
                 }
+            } else if app.three.is_some() {
+                // 3D: kolko przybliza do kursora (O3).
+                app.zoom_at(if delta > 0.0 { 1.1 } else { 1.0 / 1.1 }, mx, my);
             } else if ctrl_down() {
                 let (x, y) = app.last_screen;
                 app.zoom_at(if delta > 0.0 { 1.1 } else { 1.0 / 1.1 }, x, y);
@@ -7073,6 +7653,14 @@ pub unsafe extern "system" fn wndproc(
                     app.settle_zoom();
                     app.render();
                 }
+                TIMER_SETTLE3D => {
+                    let _ = KillTimer(Some(hwnd), TIMER_SETTLE3D);
+                    if let Some(t) = &mut app.three {
+                        t.settled = true;
+                        t.need_compose = true;
+                    }
+                    app.render();
+                }
                 TIMER_PRESENT => {
                     let _ = KillTimer(Some(hwnd), TIMER_PRESENT);
                     app.render();
@@ -7108,12 +7696,18 @@ pub unsafe extern "system" fn wndproc(
             // (`toggle_fullscreen`) - okno go tylko odslania.
             if app.slide.is_none() && matches!(app.renderer.resize(w, h), Ok(true)) {
                 app.dirty = Dirty::Full;
+                if let Some(t) = &mut app.three {
+                    t.resize(w as f32, h as f32);
+                    app.arm_settle_3d(crate::three::SETTLE_MS);
+                }
                 // Zmiana rozmiaru okna (i obrot ekranu) **nie rusza zoomu** - w mniejszym
                 // oknie widac mniej canvasu, w wiekszym wiecej, kreska ma ten sam rozmiar
                 // fizyczny (Z9: piksel = piksel).
                 if app.first_size {
                     app.first_size = false;
                     app.home_view();
+                    // Notatka zamknieta w 3D otwiera sie w 3D (O11).
+                    app.restore_3d();
                 } else {
                     app.scroll_x_to(app.cam.scroll_x);
                     app.scroll_to(app.cam.scroll_y);

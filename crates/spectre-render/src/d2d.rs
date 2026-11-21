@@ -186,6 +186,11 @@ pub enum UiPrim {
         /// sie co probke, wiec rysuje bez niej.
         cache: bool,
     },
+    /// Wypelniony wielokat (sciany kostki widoku w 3D), piksele ekranu.
+    Poly {
+        pts: Vec<(f32, f32)>,
+        color: Rgba,
+    },
     /// Od tego miejsca rysowanie jest przycinane do prostokata - do `Unclip`.
     Clip {
         x: f32,
@@ -2562,6 +2567,30 @@ impl Renderer {
                     self.ctx
                         .PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     depth += 1;
+                }
+                UiPrim::Poly { pts, color } => {
+                    if pts.len() >= 3 {
+                        let brush = self.brush(*color)?;
+                        let geo = self.factory2d.CreatePathGeometry()?;
+                        let sink = geo.Open()?;
+                        sink.BeginFigure(
+                            Vector2 {
+                                X: pts[0].0,
+                                Y: pts[0].1,
+                            },
+                            windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED,
+                        );
+                        let rest: Vec<Vector2> = pts[1..]
+                            .iter()
+                            .map(|&(x, y)| Vector2 { X: x, Y: y })
+                            .collect();
+                        sink.AddLines(&rest);
+                        sink.EndFigure(
+                            windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED,
+                        );
+                        sink.Close()?;
+                        self.ctx.FillGeometry(&geo, &brush, None);
+                    }
                 }
                 UiPrim::Unclip => {
                     if depth > 0 {

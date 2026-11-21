@@ -119,6 +119,11 @@ pub(crate) struct PlaneTex {
 pub(crate) struct Tex3 {
     map: HashMap<PlaneId, PlaneTex>,
     bytes: usize,
+    /// Osobny cache obrysow kresek dla pieczenia: obrysy zbudowane w gestosci
+    /// bitmap nie trafiaja do cache warstwy 2D, wiec po wyjsciu z 3D notatka
+    /// wyglada piksel w piksel jak przed wejsciem (T6.5).
+    geo: HashMap<spectre_core::StrokeId, super::GeoEntry>,
+    geo_verts: usize,
 }
 
 /// Mokra kreska z ukladu plaszczyzny na ekran: punkty przez homografie,
@@ -301,6 +306,8 @@ impl Renderer {
     pub fn clear_3d(&mut self) {
         self.tex3.map.clear();
         self.tex3.bytes = 0;
+        self.tex3.geo.clear();
+        self.tex3.geo_verts = 0;
     }
 
     /// Pamiec bitmap plaszczyzn w bajtach (T5.5).
@@ -487,6 +494,8 @@ impl Renderer {
                 a: 0.0,
             }));
             self.ctx.SetTransform(&Self::cam_matrix(&cam2));
+            std::mem::swap(&mut self.geo_cache, &mut self.tex3.geo);
+            std::mem::swap(&mut self.geo_cache_verts, &mut self.tex3.geo_verts);
             let res = (|| -> Result<()> {
                 if id.is_zero() {
                     // Strony PDF tylko na plaszczyznie zerowej (O8).
@@ -512,6 +521,8 @@ impl Renderer {
                 }
                 Ok(())
             })();
+            std::mem::swap(&mut self.geo_cache, &mut self.tex3.geo);
+            std::mem::swap(&mut self.geo_cache_verts, &mut self.tex3.geo_verts);
             self.ctx.SetTransform(&Matrix3x2::identity());
             self.ctx.EndDraw(None, None)?;
             self.ctx.SetTarget(None);
@@ -705,7 +716,10 @@ impl Renderer {
                     Y: by as f32,
                 },
                 &brush,
-                (width * s).max(0.6) as f32,
+                // Jak w 2D: grubosc z notatki, ale nie ciensza niz 0,6 px
+                // i nie grubsza niz 1,6 px - blisko kamery perspektywa
+                // rozdmuchalaby siatke w pasy.
+                (width * s).clamp(0.6, 1.6) as f32,
                 None,
             );
         };

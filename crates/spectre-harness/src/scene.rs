@@ -161,7 +161,6 @@ impl Scene {
             last: Compose3Stats::default(),
             composes: 0,
         });
-        self.renderer.clear_geometry();
     }
 
     /// Wyjscie z 3D: kamera 2D sprzed wejscia i pelna przebudowa jak w 2D.
@@ -169,8 +168,9 @@ impl Scene {
         if let Some(st) = self.three.take() {
             self.cam = st.saved_2d;
         }
+        // Jak w aplikacji: cache obrysow 2D zostaje (3D ma wlasny), wiec obraz
+        // 2D po wyjsciu jest piksel w piksel taki jak przed wejsciem (T6.5).
         self.renderer.clear_3d();
-        self.renderer.clear_geometry();
         self.dirty = Dirty::Full;
     }
 

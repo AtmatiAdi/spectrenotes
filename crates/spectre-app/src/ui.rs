@@ -73,6 +73,9 @@ pub(crate) const FG_DIM: Rgba = Rgba::rgb(110, 110, 110);
 pub(crate) const ACCENT: Rgba = Rgba::rgb(115, 160, 140);
 pub(crate) const HOT: Rgba = Rgba::rgb(34, 34, 34);
 pub(crate) const ACTIVE: Rgba = Rgba::rgb(40, 52, 46);
+/// Przycisk 3D wlaczony: zielone podswietlenie i jasna ikona (W18).
+const THREE_ON: Rgba = Rgba::rgb(46, 104, 70);
+const FG_ON: Rgba = Rgba::rgb(220, 240, 226);
 const CLOSE_HOT: Rgba = Rgba::rgb(120, 40, 40);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -157,6 +160,12 @@ pub enum Action {
     /// Widok zablokowany (kolumna wysrodkowana, bez scrolla w poziomie)
     /// albo odblokowany (canvas nieskonczony w osi X).
     ViewLock,
+    /// Tryb 3D: perspektywa i kostka widoku (W18); podswietlony na zielono.
+    ThreeD,
+    /// Kompas plaszczyzny rysowania (tylko w 3D).
+    Compass,
+    /// Lista plaszczyzn (tylko w 3D).
+    Planes,
     /// Zablokuj komputer (jak Win+L) - zawsze na samym koncu paska.
     LockPc,
 }
@@ -192,6 +201,10 @@ pub struct UiState<'a> {
     pub title_ink: Option<&'a Arc<InkName>>,
     pub zoom: f32,
     pub view_locked: bool,
+    /// Tryb 3D wlaczony; kompas i lista otwarte (tylko w 3D).
+    pub three: bool,
+    pub compass: bool,
+    pub planes: bool,
     pub maximized: bool,
     pub fullscreen: bool,
     pub menu_open: bool,
@@ -369,6 +382,9 @@ impl Toolbar {
             (Action::ZoomIn, 0.0, item),
             (Action::ZoomActual, 0.0, px(ZOOM_W)),
             (Action::ViewLock, 0.0, item),
+            (Action::ThreeD, px(4.0), item),
+            (Action::Compass, 0.0, item),
+            (Action::Planes, 0.0, item),
         ]);
 
         let horizontal = self.dock.horizontal();
@@ -1045,8 +1061,21 @@ impl Toolbar {
                 Action::Select => s.select,
                 Action::Color(i) => i == s.color_idx && !s.eraser,
                 Action::ViewLock => s.view_locked,
+                Action::Compass => s.compass,
+                Action::Planes => s.planes,
                 _ => false,
             };
+            // 3D wlaczone: przycisk podswietlony na zielono (W18).
+            if it.action == Action::ThreeD && s.three {
+                out.push(UiPrim::Rect {
+                    x: r.x + 4.0 * k,
+                    y: r.y + 2.0 * k,
+                    w: r.w - 8.0 * k,
+                    h: r.h - 4.0 * k,
+                    color: THREE_ON,
+                    r: 8.0 * k,
+                });
+            }
             if (hot || active) && it.action != Action::Grip {
                 out.push(UiPrim::Rect {
                     x: r.x + 4.0 * k,
@@ -1062,6 +1091,8 @@ impl Toolbar {
                 Action::Redo => s.can_redo,
                 Action::Copy => s.can_copy,
                 Action::Paste => s.can_paste,
+                // Kompas i lista sa szare i nieaktywne w 2D (W18).
+                Action::Compass | Action::Planes => s.three,
                 _ => true,
             };
             let fg = if enabled { FG } else { FG_DIM };
@@ -1286,6 +1317,100 @@ impl Toolbar {
                         });
                     }
                 }
+                Action::ThreeD => {
+                    // Szescian w rzucie: przednia sciana i przesuniety tyl.
+                    let (cx, cy) = (r.cx(), r.cy());
+                    let fg = if s.three { FG_ON } else { fg };
+                    let d = 4.0 * k;
+                    let sz = 13.0 * k;
+                    let (x0, y0) = (cx - sz * 0.5 - d * 0.5, cy - sz * 0.5 + d * 0.5);
+                    out.push(UiPrim::Outline {
+                        x: x0,
+                        y: y0,
+                        w: sz,
+                        h: sz,
+                        color: fg,
+                        width: 1.5 * k,
+                        r: 0.0,
+                    });
+                    for (ax, ay) in [(0.0, 0.0), (sz, 0.0), (sz, sz)] {
+                        out.push(UiPrim::Line {
+                            x0: x0 + ax,
+                            y0: y0 + ay,
+                            x1: x0 + ax + d,
+                            y1: y0 + ay - d,
+                            color: fg,
+                            width: 1.5 * k,
+                        });
+                    }
+                    out.push(UiPrim::Line {
+                        x0: x0 + d,
+                        y0: y0 - d,
+                        x1: x0 + sz + d,
+                        y1: y0 - d,
+                        color: fg,
+                        width: 1.5 * k,
+                    });
+                    out.push(UiPrim::Line {
+                        x0: x0 + sz + d,
+                        y0: y0 - d,
+                        x1: x0 + sz + d,
+                        y1: y0 + sz - d,
+                        color: fg,
+                        width: 1.5 * k,
+                    });
+                }
+                Action::Compass => {
+                    // Dwa pierscienie i strzalka.
+                    let (cx, cy) = (r.cx(), r.cy());
+                    out.push(UiPrim::Outline {
+                        x: cx - 10.0 * k,
+                        y: cy - 10.0 * k,
+                        w: 20.0 * k,
+                        h: 20.0 * k,
+                        color: fg,
+                        width: 1.4 * k,
+                        r: 10.0 * k,
+                    });
+                    out.push(UiPrim::Outline {
+                        x: cx - 10.0 * k,
+                        y: cy - 4.0 * k,
+                        w: 20.0 * k,
+                        h: 8.0 * k,
+                        color: fg,
+                        width: 1.2 * k,
+                        r: 4.0 * k,
+                    });
+                    out.push(UiPrim::Line {
+                        x0: cx,
+                        y0: cy,
+                        x1: cx,
+                        y1: cy - 13.0 * k,
+                        color: fg,
+                        width: 1.5 * k,
+                    });
+                }
+                Action::Planes => {
+                    // Lista: trzy wiersze z kropka (oko).
+                    let (cx, cy) = (r.cx(), r.cy());
+                    for i in -1..=1 {
+                        let y = cy + i as f32 * 6.0 * k;
+                        out.push(UiPrim::Circle {
+                            x: cx - 8.0 * k,
+                            y,
+                            radius: 1.6 * k,
+                            color: fg,
+                        });
+                        out.push(UiPrim::Line {
+                            x0: cx - 4.0 * k,
+                            y0: y,
+                            x1: cx + 10.0 * k,
+                            y1: y,
+                            color: fg,
+                            width: 1.5 * k,
+                        });
+                    }
+                }
                 Action::LockPc => {
                     // Klodka: palak (obrys z zaokraglona gora), korpus, dziurka.
                     let (cx, cy) = (r.cx(), r.cy());
@@ -1478,6 +1603,13 @@ fn shift_fade(prims: &mut [UiPrim], dx: f32, dy: f32, alpha: f32) {
                 *y1 += dy;
                 fade(color);
             }
+            UiPrim::Poly { pts, color } => {
+                for (x, y) in pts.iter_mut() {
+                    *x += dx;
+                    *y += dy;
+                }
+                fade(color);
+            }
             UiPrim::Thumb { x, y, .. }
             | UiPrim::InkSwatch { x, y, .. }
             | UiPrim::Avatar { x, y, .. }
@@ -1518,6 +1650,9 @@ mod tests {
             title_ink: None,
             zoom: 1.0,
             view_locked: false,
+            three: false,
+            compass: false,
+            planes: false,
             maximized: false,
             fullscreen: false,
             menu_open: false,
@@ -1595,8 +1730,17 @@ mod tests {
         assert!(!t.caption_hit(700.0, px(TAB_H, S) + 2.0));
         // Puste miejsce paska z lewej (pod elementami, nad klodka) przesuwa okno,
         // element paska - nie.
-        assert!(t.caption_hit(30.0, 1000.0));
-        assert!(t.hit(30.0, 1000.0).is_none());
+        // (za ostatnim elementem, przed klodka - przyciski 3D tez sa elementami).
+        let last = t
+            .items
+            .iter()
+            .filter(|i| !matches!(i.action, Action::LockPc | Action::Grip))
+            .map(|i| i.rect.y + i.rect.h)
+            .fold(0.0f32, f32::max);
+        let free_y = last + 20.0;
+        assert!(free_y < 1300.0 - px(GRIP_LEN + 10.0 + ITEM_LEN + 6.0, S));
+        assert!(t.caption_hit(30.0, free_y));
+        assert!(t.hit(30.0, free_y).is_none());
         assert_eq!(t.hit(30.0, 60.0), Some(Action::Menu));
         assert!(!t.caption_hit(30.0, 60.0));
         // Uchwyt paska nie jest juz przy menu: siedzi na samym koncu, za klodka.
