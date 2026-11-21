@@ -29,6 +29,8 @@ pub struct Offer {
     pub author_dir: String,
     pub note: String,
     pub title: String,
+    /// Tytul pisany piorem od peera (`title.ink`), pusty = brak.
+    pub title_ink: String,
     pub protected: bool,
     /// Space wspoldzielony, z ktorego notatka pochodzi (pusty = zwykle udostepnienie).
     pub space: String,
@@ -173,6 +175,7 @@ impl LiveWorker {
                             author_dir: author_dir.clone(),
                             note: n.note.clone(),
                             title: n.title.clone(),
+                            title_ink: n.title_ink.clone(),
                             protected: n.protected,
                             space: n.space.clone(),
                         });

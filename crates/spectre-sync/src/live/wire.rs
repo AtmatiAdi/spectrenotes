@@ -53,6 +53,10 @@ pub struct Have {
 pub struct SharedNote {
     pub note: String,
     pub title: String,
+    /// Tytul pisany piorem (W19): wartosc metadanej `title.ink`, pusta = brak.
+    /// Na drucie po calej liscie (sekcja dopisana na koncu), wiec starszy
+    /// odbiorca jej nie czyta, a od starszego nadawcy przychodzi pusta.
+    pub title_ink: String,
     pub protected: bool,
     /// Space wspoldzielony, do ktorego notatka nalezy (nazwa katalogu);
     /// pusty = zwykle udostepnienie z prywatnego space'u. Odbiorca, ktory
@@ -153,6 +157,10 @@ impl Msg {
                     p.push(s.protected as u8);
                     encode_str(&s.space, &mut p);
                 }
+                // W19: pismo tytulow po liscie - starszy dekoder konczy na liscie.
+                for s in list {
+                    encode_str(&s.title_ink, &mut p);
+                }
                 T_SHARED
             }
             Msg::Open { note, proof } => {
@@ -239,9 +247,17 @@ impl Msg {
                     list.push(SharedNote {
                         note: decode_str(&mut r).ok()?,
                         title: decode_str(&mut r).ok()?,
+                        title_ink: String::new(),
                         protected: r.u8().ok()? != 0,
                         space: decode_str(&mut r).ok()?,
                     });
+                }
+                // Sekcja W19 (opcjonalna): nadawca sprzed W19 jej nie ma.
+                for s in &mut list {
+                    match decode_str(&mut r) {
+                        Ok(v) => s.title_ink = v,
+                        Err(_) => break,
+                    }
                 }
                 Msg::Shared(list)
             }
@@ -342,12 +358,14 @@ mod tests {
                 SharedNote {
                     note: "01J8".into(),
                     title: "Plan".into(),
+                    title_ink: "ink1:AQ".into(),
                     protected: true,
                     space: String::new(),
                 },
                 SharedNote {
                     note: "01J9".into(),
                     title: String::new(),
+                    title_ink: String::new(),
                     protected: false,
                     space: "projekt".into(),
                 },
@@ -439,6 +457,38 @@ mod tests {
         }
     }
 
+    /// W19: lista od nadawcy sprzed W19 (bez sekcji pisma) czyta sie z pustym
+    /// pismem, a sekcja pisma lezy za lista - dekoder sprzed W19 konczy na
+    /// liscie i dalszych bajtow nie czyta.
+    #[test]
+    fn lista_udostepnien_zgodna_wstecz() {
+        let mut old = Vec::new();
+        put_u64(&mut old, 1);
+        encode_str("01J8", &mut old);
+        encode_str("Plan", &mut old);
+        old.push(0);
+        encode_str("", &mut old);
+        let mut frame = Vec::new();
+        write_record(T_SHARED, &old, &mut frame);
+        match next_frame(&frame) {
+            Frame::Msg(Msg::Shared(list), _) => {
+                assert_eq!(list[0].title, "Plan");
+                assert_eq!(list[0].title_ink, "");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Nowa ramka zaczyna sie od dokladnie tych bajtow, co stara.
+        let new = Msg::Shared(vec![SharedNote {
+            note: "01J8".into(),
+            title: "Plan".into(),
+            title_ink: "ink1:AQ".into(),
+            protected: false,
+            space: String::new(),
+        }])
+        .encode();
+        // Tresc nowej ramki zaczyna sie od tresci starej (naglowek ma dlugosc).
+        assert!(new.windows(old.len()).any(|w| w == old.as_slice()));
+    }
     #[test]
     fn niepelna_i_zepsuta_ramka() {
         let f = Msg::Bye.encode();

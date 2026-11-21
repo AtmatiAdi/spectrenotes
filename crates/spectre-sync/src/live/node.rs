@@ -107,6 +107,8 @@ pub enum Job {
     Share {
         note: String,
         title: String,
+        /// Tytul pisany piorem (wartosc `title.ink`), pusty = brak.
+        title_ink: String,
         key: Option<ShareKey>,
     },
     Unshare(String),
@@ -416,6 +418,7 @@ fn beacon_loop(udp: UdpSocket, beacon: Vec<u8>, discovering: Arc<AtomicBool>, tx
 
 struct Share {
     title: String,
+    title_ink: String,
     key: Option<ShareKey>,
 }
 
@@ -649,13 +652,25 @@ impl State {
                 }
                 false
             }
-            Job::Share { note, title, key } => {
+            Job::Share {
+                note,
+                title,
+                title_ink,
+                key,
+            } => {
                 let changed_key = self
                     .shares
                     .get(&note)
                     .map(|s| s.key != key)
                     .unwrap_or(false);
-                self.shares.insert(note.clone(), Share { title, key });
+                self.shares.insert(
+                    note.clone(),
+                    Share {
+                        title,
+                        title_ink,
+                        key,
+                    },
+                );
                 if changed_key {
                     // Nowe haslo: kto mial otwarte, musi otworzyc od nowa.
                     self.close_everywhere(&note);
@@ -742,6 +757,7 @@ impl State {
             .map(|(note, s)| SharedNote {
                 note: note.clone(),
                 title: s.title.clone(),
+                title_ink: s.title_ink.clone(),
                 protected: s.key.is_some(),
                 // Tylko space wspoldzielony; notatka z domyslnego to zwykle
                 // udostepnienie (odbiorca ma wlasny "default" - to nie ten sam).
@@ -760,6 +776,7 @@ impl State {
                 }
                 out.push(SharedNote {
                     title: self.replica.note_title(&note),
+                    title_ink: self.replica.note_title_ink(&note),
                     note,
                     protected: false,
                     space: space.clone(),
@@ -1386,6 +1403,7 @@ mod tests {
         a.send(Job::Share {
             note: note.clone(),
             title: "plan".into(),
+            title_ink: "ink1:AQ".into(),
             key: Some(share::key_from_password("sezam")),
         });
         // Bez czekania na multicast: A jest u B stalym peerem (sciezka Tailscale).
@@ -1414,6 +1432,7 @@ mod tests {
         };
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "plan");
+        assert_eq!(notes[0].title_ink, "ink1:AQ");
         assert!(notes[0].protected);
 
         // Zle haslo: odmowa, nic nie plynie.

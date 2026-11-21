@@ -268,20 +268,20 @@ impl Picker {
             color: CARD_BAND_BG,
             r: 0.0,
         });
-        let title = if n.title.is_empty() {
-            "untitled"
-        } else {
-            n.title.as_str()
-        };
-        out.push(UiPrim::Text {
-            x: r.x + 8.0 * k,
-            y: r.y + r.h - band,
-            w: r.w - 16.0 * k,
-            h: band * 0.58,
-            text: title.to_string(),
-            color: FG,
-            font: UiFont::Ui,
-        });
+        crate::namepad::name_label(
+            n.title_ink.as_ref(),
+            &n.title,
+            Rect {
+                x: r.x + 8.0 * k,
+                y: r.y + r.h - band + 2.0 * k,
+                w: r.w - 16.0 * k,
+                h: band * 0.58 - 2.0 * k,
+            },
+            UiFont::Ui,
+            FG,
+            false,
+            out,
+        );
         let sub = if n.folder.is_empty() {
             crate::menu::local_date(n.created_ms)
         } else {

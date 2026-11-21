@@ -16,7 +16,9 @@ pub mod camera;
 pub mod document;
 pub mod fx;
 pub mod hittest;
+pub mod inkname;
 
 pub use camera::Camera;
 pub use document::{Bbox, Document};
+pub use inkname::{Fit, InkName};
 pub use spectre_proto::{AuthorId, Op, OpKind, Rgba, Sample, StrokeData, StrokeId};

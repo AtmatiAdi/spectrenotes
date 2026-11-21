@@ -23,6 +23,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use spectre_core::inkname::TITLE_INK_KEY;
 use spectre_proto::{Op, OpKind, OpsReader, OpsWriter};
 
 use crate::author::AuthorName;
@@ -92,8 +93,13 @@ impl Space {
 
     /// Metadane notatki z cache; gdy go nie ma - skan op-logu i zapis cache.
     pub fn note_meta(&self, id: &str) -> NoteMeta {
-        if let Ok(text) = fs::read_to_string(self.meta_cache_path(id)) {
-            return NoteMeta::parse(&text);
+        // Cache bez biezacej wersji (np. zapisany przez v0.4.5, ktora nie zna
+        // pisma w tytule) jest nieaktualny: skan op-logu i zapis od nowa.
+        if let Some(meta) = fs::read_to_string(self.meta_cache_path(id))
+            .ok()
+            .and_then(|text| NoteMeta::parse(&text))
+        {
+            return meta;
         }
         let meta = self.scan_meta(id).unwrap_or_default();
         let _ = self.write_note_meta(id, &meta);
@@ -119,6 +125,7 @@ impl Space {
     fn scan_meta(&self, id: &str) -> io::Result<NoteMeta> {
         let ops_dir = self.note_dir(id).join("ops");
         let mut title: Option<((u64, u64), String)> = None;
+        let mut title_ink: Option<((u64, u64), String)> = None;
         let mut folder: Option<((u64, u64), String)> = None;
         for author_dir in read_sorted_dirs(&ops_dir)? {
             for chunk in read_sorted_chunks(&author_dir)? {
@@ -132,6 +139,7 @@ impl Space {
                     let stamp = (op.lamport, op.author.0);
                     let slot = match key.as_str() {
                         "title" => &mut title,
+                        TITLE_INK_KEY => &mut title_ink,
                         "folder" => &mut folder,
                         _ => continue,
                     };
@@ -143,6 +151,7 @@ impl Space {
         }
         Ok(NoteMeta {
             title: title.map(|(_, v)| v).unwrap_or_default(),
+            title_ink: title_ink.map(|(_, v)| v).unwrap_or_default(),
             folder: folder.map(|(_, v)| v).unwrap_or_default(),
         })
     }
@@ -189,28 +198,43 @@ impl Space {
 /// Pochodna z `Meta` op-logu; patrz naglowek modulu.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NoteMeta {
+    /// Tytul tekstowy (sprzed W19 albo z nazwy importowanego pliku).
     pub title: String,
+    /// Tytul pisany piorem: wartosc metadanej `title.ink` (kodowanie
+    /// `spectre_core::inkname`), pusta = brak pisma. Niepusta ma pierwszenstwo
+    /// przed tekstem.
+    pub title_ink: String,
     /// Pusty = korzen.
     pub folder: String,
 }
 
+/// Wersja pliku cache metadanych. 2 = z pismem w tytule (W19). Plik bez tej
+/// wersji (np. zapisany przez v0.4.5) jest przeliczany ze skanu op-logu.
+const META_CACHE_VERSION: &str = "2";
+
 impl NoteMeta {
-    fn parse(text: &str) -> Self {
+    fn parse(text: &str) -> Option<Self> {
         let mut m = Self::default();
+        let mut version = None;
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
                 match k.trim() {
+                    "v" => version = Some(v.trim().to_string()),
                     "title" => m.title = v.trim().to_string(),
+                    "ink" => m.title_ink = v.trim().to_string(),
                     "folder" => m.folder = v.trim().to_string(),
                     _ => {}
                 }
             }
         }
-        m
+        (version.as_deref() == Some(META_CACHE_VERSION)).then_some(m)
     }
 
     fn serialize(&self) -> String {
-        format!("title={}\nfolder={}\n", self.title, self.folder)
+        format!(
+            "v={META_CACHE_VERSION}\ntitle={}\nink={}\nfolder={}\n",
+            self.title, self.title_ink, self.folder
+        )
     }
 }
 
@@ -468,11 +492,33 @@ mod tests {
                 &note,
                 &NoteMeta {
                     title: "z cache".into(),
+                    title_ink: "ink1:AQ".into(),
                     folder: String::new(),
                 },
             )
             .unwrap();
         assert_eq!(space.note_meta(&note).title, "z cache");
+        assert_eq!(space.note_meta(&note).title_ink, "ink1:AQ");
+
+        // Cache w starym ukladzie (v0.4.5, bez wersji i bez pisma) nie jest
+        // zaufany: skan op-logu znajduje odreczny tytul dopisany pozniej.
+        {
+            let (mut s, ops) = NoteStore::open(&space, &note, &adi).unwrap();
+            let mut d = Document::new(adi.id());
+            for op in &ops {
+                d.apply(op);
+            }
+            s.append(&d.set_meta(TITLE_INK_KEY, "ink1:Ag")).unwrap();
+            s.sync().unwrap();
+        }
+        fs::write(
+            root.join(".cache").join("meta").join(format!("{note}.txt")),
+            "title=nowy\nfolder=Fizyka\n",
+        )
+        .unwrap();
+        let m = space.note_meta(&note);
+        assert_eq!(m.title_ink, "ink1:Ag");
+        assert_eq!(m.title, "nowy");
 
         space.add_folder("Chemia").unwrap();
         space.add_folder("Chemia").unwrap();

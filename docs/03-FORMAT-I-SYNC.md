@@ -49,6 +49,18 @@ poza space.
 Tytuł notatki jest w `note.json`, nie w nazwie katalogu. Zmiana tytułu nie jest
 wtedy przeniesieniem pliku w gicie i nie generuje szumu w historii.
 
+**Nazwy pisane piórem (W19).** Nazwa w aplikacji nie jest tekstem, tylko małą
+kanwą z kreskami (`spectre_core::inkname::InkName`). Zapis to zwykła metadana
+`Meta`: klucz nazwy z dopiskiem `.ink` (tytuł notatki: `title.ink`, nazwa
+płaszczyzny 3D: np. `plane.<id>.name.ink`), wartość `ink1:` + base64url bajtów
+kresek w kodowaniu `StrokeAdd` (pozycje w 1/32 jednostki nazwy, pole ma
+40 jednostek wysokości). Pusta wartość = nazwa wyczyszczona, LWW jak każda
+metadana. Każda wersja od v0.1 zna operację `Meta`, więc starsza wersja
+zachowuje pismo w op-logu nietknięte i dalej pokazuje dawny tekstowy `title`
+(zgodność wstecz, O12). Nowa wersja pokazuje tekstowy `title`, dopóki nie ma
+pisma. Cache listy notatek (`.cache/meta/<ULID>.txt`) ma od W19 wiersz `v=2`
+i pole `ink`; plik bez `v=2` (np. z v0.4.5) jest przeliczany ze skanu op-logu.
+
 ## Dlaczego konflikt merge jest tu strukturalnie niemożliwy
 
 Trzy własności, działające razem:

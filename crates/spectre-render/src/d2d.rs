@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
+use std::sync::Arc;
 
 use spectre_core::background::{Background, Prim as BgPrim};
 use spectre_core::fx::{self, InkFx, Spark};
-use spectre_core::{Bbox, Camera, Document, StrokeId};
+use spectre_core::{Bbox, Camera, Document, Fit, InkName, StrokeId};
 use spectre_ink::{InkConfig, Segment};
 use spectre_proto::Rgba;
 use windows::core::{Interface, Result, HSTRING};
@@ -160,6 +161,25 @@ pub enum UiPrim {
         x: f32,
         y: f32,
         size: f32,
+    },
+    /// Nazwa pisana piorem (W19) dopasowana do prostokata (`InkName::fit`).
+    /// Kreski ida ta sama droga co kreski notatki (`stroke_segments` i
+    /// `geometry::build`), wiec nazwa wyglada jak pismo na kanwie.
+    Ink {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        name: Arc<InkName>,
+        /// Jak nazwa wchodzi w prostokat (`InkName::fit`).
+        fit: Fit,
+        /// Jeden kolor dla calej nazwy (np. przygaszona); `None` = kolory kresek.
+        color: Option<Rgba>,
+        /// Krycie 0..1 (chowanie paska: nazwa blednie razem z nim).
+        alpha: f32,
+        /// Geometria w pamieci podrecznej (nazwy gotowe). Pole pisania zmienia
+        /// sie co probke, wiec rysuje bez niej.
+        cache: bool,
     },
     /// Od tego miejsca rysowanie jest przycinane do prostokata - do `Unclip`.
     Clip {
@@ -424,6 +444,10 @@ pub struct Renderer {
     /// Miniatury notatek (lista w menu), klucz = skrot identyfikatora notatki.
     thumbs: HashMap<u64, ID2D1Bitmap1>,
     dwrite: IDWriteFactory,
+    /// Geometria nazw pisanych piorem (`UiPrim::Ink`): klucz = odcisk nazwy
+    /// i skala; wartosc = obrys kazdej kreski z jej kolorem. Nazw jest kilka
+    /// do kilkuset (lista notatek), wiec przy przepelnieniu czyscimy calosc.
+    ink_cache: HashMap<(u64, u32), Vec<(ID2D1PathGeometry1, Rgba)>>,
     /// Czcionki UI w fizycznych pikselach dla `ui_scale` (`set_ui_scale`).
     fonts: TextFormats,
     ui_scale: f32,
@@ -502,6 +526,8 @@ struct GeoEntry {
 /// Suma wierzcholkow obrysow w cache; powyzej - czyszczenie w calosci.
 /// Rzad 100-200 MB GPU przy pelnym budzecie.
 const GEO_CACHE_BUDGET: usize = 6_000_000;
+/// Ile roznych nazw (z ich skalami) trzyma `ink_cache`.
+const INK_CACHE_MAX: usize = 512;
 /// Zoom w tym zakresie wzgledem zbudowanego nie wymaga przebudowy obrysu.
 const GEO_ZOOM_TOL: f32 = 1.5;
 
@@ -685,6 +711,7 @@ impl Renderer {
                 dim_px: Vec::new(),
                 avatar: None,
                 thumbs: HashMap::new(),
+                ink_cache: HashMap::new(),
                 dwrite,
                 fonts,
                 ui_scale: 1.0,
@@ -2320,6 +2347,19 @@ impl Renderer {
                         );
                     }
                 }
+                UiPrim::Ink {
+                    x,
+                    y,
+                    w,
+                    h,
+                    name,
+                    fit,
+                    color,
+                    alpha,
+                    cache,
+                } => {
+                    self.draw_ink_name(*x, *y, *w, *h, name, *fit, *color, *alpha, *cache)?;
+                }
                 UiPrim::Clip { x, y, w, h } => {
                     let r = D2D_RECT_F {
                         left: *x,
@@ -2345,6 +2385,83 @@ impl Renderer {
             depth -= 1;
         }
         Ok(())
+    }
+
+    /// `UiPrim::Ink`: kreski nazwy w ukladzie nazwy, przeskalowane do prostokata.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn draw_ink_name(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        name: &InkName,
+        fit: Fit,
+        color: Option<Rgba>,
+        alpha: f32,
+        cache: bool,
+    ) -> Result<()> {
+        if name.is_empty() || w <= 0.0 || h <= 0.0 || alpha <= 0.0 {
+            return Ok(());
+        }
+        let (k, dx, dy) = name.fit(w, h, fit);
+        if k <= 0.0 {
+            return Ok(());
+        }
+        // Skala zaokraglona do 1/64: drobne roznice ukladu nie buduja nowej geometrii.
+        let qk = (k * 64.0).round().max(1.0);
+        let key = (name.fingerprint(), qk as u32);
+        let shapes = match self.ink_cache.get(&key) {
+            Some(s) if cache => s.clone(),
+            _ => {
+                let ink = InkConfig::default();
+                let mut segs = std::mem::take(&mut self.seg_scratch);
+                let mut shapes = Vec::with_capacity(name.strokes().len());
+                let mut res = Ok(());
+                for data in name.strokes() {
+                    segs.clear();
+                    stroke_segments(data, &ink, &mut segs);
+                    match geometry::build(&self.factory2d, &segs, k) {
+                        Ok(g) => shapes.push((g, data.color)),
+                        Err(e) => {
+                            res = Err(e);
+                            break;
+                        }
+                    }
+                }
+                self.seg_scratch = segs;
+                res?;
+                if cache {
+                    if self.ink_cache.len() >= INK_CACHE_MAX {
+                        self.ink_cache.clear();
+                    }
+                    self.ink_cache.insert(key, shapes.clone());
+                }
+                shapes
+            }
+        };
+        self.ctx.SetTransform(&Matrix3x2 {
+            M11: k,
+            M12: 0.0,
+            M21: 0.0,
+            M22: k,
+            M31: x + dx,
+            M32: y + dy,
+        });
+        let mut res = Ok(());
+        for (geo, c) in &shapes {
+            let mut c = color.unwrap_or(*c);
+            c.a = (c.a as f32 * alpha.min(1.0)).round() as u8;
+            match self.brush(c) {
+                Ok(b) => self.ctx.FillGeometry(geo, &b, None),
+                Err(e) => {
+                    res = Err(e);
+                    break;
+                }
+            }
+        }
+        self.ctx.SetTransform(&Matrix3x2::identity());
+        res
     }
 
     unsafe fn draw_hud(&self, text: &str) {

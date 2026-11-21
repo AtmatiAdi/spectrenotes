@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use spectre_core::background::{Background, Pattern, COLORS as BG_COLORS};
 use spectre_core::hittest::stroke_hit;
+use spectre_core::InkName;
 use spectre_core::{AuthorId, Bbox, Camera, Document, OpKind, Rgba, StrokeData, StrokeId};
 use spectre_ink::{InkConfig, Sample, Segment, StrokeBuilder};
 use spectre_render::{Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail};
@@ -33,6 +35,7 @@ use crate::feedback::{self, Feedback, Hit as FeedbackHit};
 use crate::lan::LanConfig;
 use crate::live::{LiveWorker, WM_LIVE};
 use crate::menu::{self, Menu, MenuHit, MenuState, NoteEntry, OfferState, OfferView, Setting};
+use crate::namepad::{self, NamePad, NameTarget, PadHit};
 use crate::pdf;
 use crate::pdfedit;
 use crate::pdfview::{self, WM_PDF};
@@ -217,6 +220,8 @@ enum Mode {
     /// = dotkniecie elementu (issue #8 - ustawienia przelaczaly sie przy
     /// samym kontakcie, a listy nie dalo sie przewinac bez kolka).
     Menu,
+    /// Pioro pisze w polu nazwy (`NamePad`), nie na canvasie.
+    NamePad,
 }
 
 /// Czego chce rysik przy tych przyciskach i tym narzedziu. Tryb okna jest
@@ -476,6 +481,8 @@ pub struct App {
     feedback: Feedback,
     /// Okno wyboru notatki na start (issues #2, #15).
     picker: Picker,
+    /// Pole pisania nazwy piorem (W19) - otwarte nad wszystkim poza oknami modalnymi.
+    name_pad: Option<NamePad>,
 
     toolbar: Toolbar,
     menu: Menu,
@@ -804,14 +811,11 @@ impl App {
             .unwrap_or_default();
         let lan = LanConfig::load(&data_dir, &space_name);
         for (note, key) in &lan.shares {
-            let title = notes
-                .iter()
-                .find(|e| &e.id == note)
-                .map(|e| e.title.clone())
-                .unwrap_or_default();
+            let entry = notes.iter().find(|e| &e.id == note);
             live.send(LiveJob::Share {
                 note: note.clone(),
-                title,
+                title: entry.map(|e| e.title.clone()).unwrap_or_default(),
+                title_ink: entry.map(share_ink).unwrap_or_default(),
                 key: *key,
             });
         }
@@ -924,6 +928,7 @@ impl App {
             code_copied: false,
             feedback: Feedback::new(&update_repo),
             picker: Picker::new(),
+            name_pad: None,
             toolbar,
             menu,
             config,
@@ -1063,8 +1068,8 @@ impl App {
     /// Przycisk trzymany = funkcja. Zmiana w trakcie ruchu konczy biezaca
     /// akcje i zaczyna nowa od tej samej probki.
     fn apply_buttons(&mut self, batch: &PenBatch) -> bool {
-        if self.mode == Mode::DragBar || self.mode == Mode::Menu {
-            return false; // przyciski nie przerywaja przenoszenia paska ani menu
+        if self.mode == Mode::DragBar || self.mode == Mode::Menu || self.mode == Mode::NamePad {
+            return false; // przyciski nie przerywaja przenoszenia paska, menu ani pisania nazwy
         }
         let want = if batch.buttons.barrel {
             Want::Pan
@@ -1097,7 +1102,7 @@ impl App {
             Mode::Erase => Some(Want::Erase),
             Mode::Pan => Some(Want::Pan),
             Mode::Lasso | Mode::Transform => Some(Want::Select),
-            Mode::Idle | Mode::DragBar | Mode::Menu => None,
+            Mode::Idle | Mode::DragBar | Mode::Menu | Mode::NamePad => None,
         }
     }
 
@@ -1107,6 +1112,11 @@ impl App {
             Mode::Erase => self.last_erase_canvas = None,
             Mode::DragBar => self.end_drag_bar(),
             Mode::Menu => self.menu_touch = None,
+            Mode::NamePad => {
+                if let Some(p) = &mut self.name_pad {
+                    p.end();
+                }
+            }
             Mode::Lasso => self.end_lasso(),
             Mode::Transform => self.end_transform(),
             Mode::Pan | Mode::Idle => {}
@@ -1249,6 +1259,40 @@ impl App {
             self.render();
             return;
         }
+        // Pole pisania nazwy (W19) lezy nad wszystkim: pioro pisze w polu,
+        // przyciski dzialaja od razu, a dotkniecie poza polem zatwierdza nazwe
+        // i dziala dalej jak zwykle (jak dawniej Enter w polu tytulu).
+        if let Some(hit) = self.name_pad.as_ref().map(|p| p.hit(x, y)) {
+            match hit {
+                Some(PadHit::Area) => {
+                    let eraser = batch.buttons.eraser || self.eraser_tool;
+                    if let Some(p) = &mut self.name_pad {
+                        p.begin(eraser, &batch.samples);
+                    }
+                    self.mode = Mode::NamePad;
+                    self.render();
+                    return;
+                }
+                Some(PadHit::Card) => {
+                    self.render();
+                    return;
+                }
+                Some(h) => {
+                    self.pad_action(h);
+                    self.render();
+                    return;
+                }
+                None => {
+                    let on_title = self.toolbar.title_hit(x, y) == Some(TitleAction::WriteTitle);
+                    self.commit_title();
+                    // Dotkniecie tytulu przy otwartym polu tylko je zamyka.
+                    if on_title {
+                        self.render();
+                        return;
+                    }
+                }
+            }
+        }
         // Pigulka akcji pod zaznaczeniem lezy na canvasie, ale jest przyciskiem:
         // dotkniecie wykonuje akcje i nie zaczyna obrysu.
         if let Some(a) = self.action_bar().and_then(|b| b.hit(x, y)) {
@@ -1288,9 +1332,6 @@ impl App {
             if on_bar {
                 self.toolbar_tap(x, y);
             } else {
-                if self.toolbar.title_edit.is_some() {
-                    self.commit_title();
-                }
                 self.apply_buttons(batch);
             }
         }
@@ -1305,6 +1346,8 @@ impl App {
             self.feedback.hover(pos.0, pos.1)
         } else if self.picker.open {
             self.picker.hover(pos.0, pos.1)
+        } else if let Some(p) = self.name_pad.as_mut().filter(|p| p.contains(pos.0, pos.1)) {
+            p.hover(pos.0, pos.1)
         } else if self.menu.contains(pos.0, pos.1) {
             self.menu.hover(pos.0, pos.1)
         } else {
@@ -1342,6 +1385,7 @@ impl App {
                 Mode::DragBar => self.toolbar.drag_to(self.last_screen.0, self.last_screen.1),
                 Mode::Idle => {}
                 Mode::Menu => self.menu_drag(),
+                Mode::NamePad => self.pad_feed(batch),
                 Mode::Lasso => self.lasso_feed(batch),
                 Mode::Transform => self.transform_feed(batch),
             }
@@ -1360,6 +1404,7 @@ impl App {
             match self.mode {
                 Mode::Draw => self.feed(batch),
                 Mode::Erase => self.erase_with(batch),
+                Mode::NamePad => self.pad_feed(batch),
                 Mode::Lasso => self.lasso_feed(batch),
                 Mode::Transform => self.transform_feed(batch),
                 _ => {}
@@ -2116,6 +2161,7 @@ impl App {
             can_copy: self.selection.is_some(),
             can_paste: !self.clipboard.is_empty(),
             title: "",
+            title_ink: None,
             zoom: self.cam.zoom,
             view_locked: self.view_locked,
             // W pelnym ekranie przycisk pokazuje stan, do ktorego wyjscie wroci -
@@ -2345,10 +2391,15 @@ impl App {
     /// Dotkniecie paska tytulowego: przyciski okna albo edycja tytulu.
     fn title_tap(&mut self, action: TitleAction) {
         match action {
-            TitleAction::EditTitle => {
-                self.toolbar.title_edit = Some(self.title());
-                unsafe {
-                    let _ = SetFocus(Some(self.hwnd));
+            TitleAction::WriteTitle => {
+                if self.name_pad.is_some() {
+                    self.commit_title();
+                } else {
+                    self.open_title_pad();
+                    // Enter i Esc w polu pisania ida z klawiatury okna.
+                    unsafe {
+                        let _ = SetFocus(Some(self.hwnd));
+                    }
                 }
             }
             TitleAction::Fullscreen => self.toggle_fullscreen(),
@@ -2944,18 +2995,119 @@ impl App {
         self.stroke.set_config(self.ink);
     }
 
-    fn commit_title(&mut self) {
-        if let Some(buf) = self.toolbar.title_edit.take() {
-            let buf = buf.trim().to_string();
-            if buf != self.title() {
-                let op = self.doc.set_meta("title", &buf);
-                self.persist(&[op]);
-                self.sync_entry();
-                // Udostepniona: peerzy widza tytul na swojej liscie.
-                let note = self.notes[self.note_idx].id.clone();
-                if self.lan.shares.contains_key(&note) {
-                    self.send_share(&note);
+    /// Tytul pisany piorem biezacej notatki (z wpisu listy, ktory `sync_entry`
+    /// trzyma zgodnie z dokumentem).
+    fn title_ink(&self) -> Option<Arc<InkName>> {
+        self.notes
+            .get(self.note_idx)
+            .and_then(|e| e.title_ink.clone())
+    }
+
+    /// Pole pisania tytulu pod zakladka tytulu (W19). Tytul nie ma pola
+    /// tekstowego: pisze sie go piorem, a dawny tekst zostaje pokazany, dopoki
+    /// nie powstanie pismo.
+    fn open_title_pad(&mut self) {
+        let ink = self.title_ink();
+        self.open_name_pad(NameTarget::Title, ink.as_deref());
+        self.toolbar.naming = true;
+    }
+
+    /// Pole pisania dowolnej nazwy z metadanych notatki - tytulu albo, w trybie
+    /// 3D, nazwy plaszczyzny (`NameTarget::Meta("plane.<id>.name")`).
+    fn open_name_pad(&mut self, target: NameTarget, current: Option<&InkName>) {
+        self.commit_title();
+        let (anchor, view, k) = self.name_pad_anchor();
+        self.name_pad = Some(NamePad::open(
+            target,
+            current,
+            self.name_color(),
+            anchor,
+            view,
+            k,
+        ));
+    }
+
+    /// Kolor pisma nazwy: kolor piora (tusz z efektem - jego kolor bazowy,
+    /// bo nazwa rysuje sie zwyklym wypelnieniem).
+    fn name_color(&self) -> Rgba {
+        self.color()
+    }
+
+    /// Kotwica pola pisania: zakladka tytulu, a gdy jej nie widac - srodek
+    /// gornej krawedzi okna.
+    fn name_pad_anchor(&self) -> (crate::ui::Rect, (f32, f32), f32) {
+        let (w, h) = self.renderer.size();
+        let view = (w as f32, h as f32);
+        let k = self.toolbar.scale();
+        let anchor = self.toolbar.title_rect().unwrap_or(crate::ui::Rect {
+            x: view.0 * 0.5 - 150.0 * k,
+            y: 0.0,
+            w: 300.0 * k,
+            h: crate::ui::TAB_H * k,
+        });
+        (anchor, view, k)
+    }
+
+    /// Probki piora w polu pisania nazwy.
+    fn pad_feed(&mut self, batch: &PenBatch) {
+        if let Some(p) = &mut self.name_pad {
+            p.feed(&batch.samples);
+        }
+    }
+
+    fn pad_action(&mut self, hit: PadHit) {
+        match hit {
+            PadHit::Undo => {
+                if let Some(p) = &mut self.name_pad {
+                    p.undo();
                 }
+            }
+            PadHit::Clear => {
+                if let Some(p) = &mut self.name_pad {
+                    p.clear();
+                }
+            }
+            PadHit::Cancel => self.cancel_name_pad(),
+            PadHit::Done => self.commit_title(),
+            PadHit::Area | PadHit::Card => {}
+        }
+    }
+
+    /// Zamyka pole pisania bez zapisu.
+    fn cancel_name_pad(&mut self) {
+        self.name_pad = None;
+        self.toolbar.naming = false;
+        if self.mode == Mode::NamePad {
+            self.mode = Mode::Idle;
+        }
+    }
+
+    /// Zatwierdza otwarte pole pisania nazwy: pismo idzie do metadanej celu
+    /// (`title.ink` albo `<klucz>.ink`) zwykla operacja `Meta`, ktora czyta
+    /// kazda wersja (O12). Nazwa bez zmian niczego nie zapisuje. Wolane takze
+    /// przed zmiana notatki, zamknieciem i synchronizacja - jak dawniej
+    /// zatwierdzenie pola tytulu.
+    fn commit_title(&mut self) {
+        let Some(mut pad) = self.name_pad.take() else {
+            return;
+        };
+        pad.end();
+        self.toolbar.naming = false;
+        if self.mode == Mode::NamePad {
+            self.mode = Mode::Idle;
+        }
+        if !pad.changed() {
+            return;
+        }
+        let value = pad.result().encode();
+        let op = self.doc.set_meta(&pad.target.meta_key(), &value);
+        self.persist(&[op]);
+        if pad.target == NameTarget::Title {
+            self.sync_entry();
+            // Udostepniona: peerzy widza tytul na swojej liscie.
+            let note = self.notes[self.note_idx].id.clone();
+            if self.lan.shares.contains_key(&note) {
+                self.send_share(&note);
             }
         }
     }
@@ -3222,10 +3374,20 @@ impl App {
         }
         self.spaces[from].space.invalidate_meta(&id);
         let title = self.doc.meta("title").unwrap_or("").to_string();
+        let title_ink = self
+            .doc
+            .meta(spectre_core::inkname::TITLE_INK_KEY)
+            .unwrap_or("")
+            .to_string();
         let folder = self.doc.meta("folder").unwrap_or("").to_string();
-        let _ = self.spaces[target]
-            .space
-            .write_note_meta(&id, &spectre_sync::NoteMeta { title, folder });
+        let _ = self.spaces[target].space.write_note_meta(
+            &id,
+            &spectre_sync::NoteMeta {
+                title,
+                title_ink,
+                folder,
+            },
+        );
         self.thumbs.remove(&id);
         match open_note(&self.spaces[target].space, &id, &self.author) {
             Ok((store, doc)) => {
@@ -4479,15 +4641,15 @@ impl App {
         }
     }
 
-    /// Aktywne pole tekstowe: tytul, nazwa folderu, token, hasla, adres peera.
+    /// Aktywne pole tekstowe: nazwa folderu, token, hasla, adres peera. Tytulu
+    /// notatki tu nie ma - pisze sie go piorem (`NamePad`, W19).
     fn active_edit(&mut self) -> Option<&mut String> {
         if self.feedback.open && matches!(self.feedback.phase, feedback::Phase::Edit) {
             return Some(&mut self.feedback.draft.text);
         }
-        self.toolbar
-            .title_edit
+        self.menu
+            .folder_edit
             .as_mut()
-            .or(self.menu.folder_edit.as_mut())
             .or(self.menu.token_edit.as_mut())
             .or(self.menu.share_edit.as_mut())
             .or(self.menu.open_edit.as_mut().map(|(_, b)| b))
@@ -4498,6 +4660,23 @@ impl App {
 
     /// Klawisz w polu tekstowym. `true` = zjedzony.
     fn edit_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool) -> bool {
+        // Pole pisania nazwy: Enter zatwierdza, Esc anuluje, Ctrl+Z cofa kreske.
+        // Reszta klawiszy dziala jak zwykle (pole nie przyjmuje tekstu).
+        if self.name_pad.is_some() {
+            if vk == VK_RETURN {
+                self.commit_title();
+            } else if vk == VK_ESCAPE {
+                self.cancel_name_pad();
+            } else if ctrl && vk.0 == 0x5A {
+                if let Some(p) = &mut self.name_pad {
+                    p.undo();
+                }
+            } else {
+                return false;
+            }
+            self.render();
+            return true;
+        }
         if self.active_edit().is_none() {
             return false;
         }
@@ -4565,9 +4744,7 @@ impl App {
             return true;
         }
         if vk == VK_RETURN {
-            if self.toolbar.title_edit.is_some() {
-                self.commit_title();
-            } else if self.menu.folder_edit.is_some() {
+            if self.menu.folder_edit.is_some() {
                 self.commit_folder_edit();
             } else if self.menu.share_edit.is_some() {
                 self.commit_share_edit();
@@ -4583,7 +4760,6 @@ impl App {
                 self.commit_token_edit();
             }
         } else if vk == VK_ESCAPE {
-            self.toolbar.title_edit = None;
             self.menu.folder_edit = None;
             self.menu.token_edit = None;
             self.menu.clear_lan_edits();
@@ -4658,6 +4834,7 @@ impl App {
             .map(|o| OfferView {
                 note: o.note.clone(),
                 title: o.title.clone(),
+                title_ink: namepad::decode_name(&o.title_ink),
                 author_dir: o.author_dir.clone(),
                 protected: o.protected,
                 state: if self.lan_open.get(&o.note) == Some(&o.instance) {
@@ -4691,15 +4868,13 @@ impl App {
         let Some(key) = self.lan.shares.get(note).copied() else {
             return;
         };
-        let title = self
-            .notes
-            .iter()
-            .find(|e| e.id == note)
-            .map(|e| e.title.clone())
-            .unwrap_or_default();
+        let entry = self.notes.iter().find(|e| e.id == note);
+        let title = entry.map(|e| e.title.clone()).unwrap_or_default();
+        let title_ink = entry.map(share_ink).unwrap_or_default();
         self.live.send(LiveJob::Share {
             note: note.to_string(),
             title,
+            title_ink,
             key,
         });
     }
@@ -5689,6 +5864,7 @@ impl App {
         };
 
         let title = self.title();
+        let title_ink = self.title_ink();
         let mut prims = std::mem::take(&mut self.ui_prims);
         prims.clear();
         // Zaznaczenie jest czescia canvasu, nie chrome: obrys w trakcie
@@ -5723,20 +5899,22 @@ impl App {
                 };
                 let y = over - hh;
                 let span = (w - pad_l - pad_r).max(0.0);
-                prims.push(UiPrim::Text {
-                    x: pad_l,
-                    y,
-                    // Tytul konczy sie przed data, zeby dlugi nie wszedl pod nia.
-                    w: (span - 150.0 * k).max(0.0),
-                    h: hh,
-                    text: if title.is_empty() {
-                        "untitled".into()
-                    } else {
-                        title.clone()
+                // Tytul konczy sie przed data, zeby dlugi nie wszedl pod nia.
+                // Pismo (W19) wypelnia pas z oddechem, jak w zakladce tytulu.
+                namepad::name_label(
+                    title_ink.as_ref(),
+                    &title,
+                    crate::ui::Rect {
+                        x: pad_l,
+                        y: y + 4.0 * k,
+                        w: (span - 150.0 * k).max(0.0),
+                        h: (hh - 8.0 * k).max(0.0),
                     },
-                    color: OVER_FG,
-                    font: UiFont::Header,
-                });
+                    UiFont::Header,
+                    OVER_FG,
+                    false,
+                    &mut prims,
+                );
                 prims.push(UiPrim::Text {
                     x: pad_l,
                     y,
@@ -5763,10 +5941,20 @@ impl App {
         }
         let mut st = self.ui_state();
         st.title = &title;
+        st.title_ink = title_ink.as_ref();
         // Podczas ochrony AMOLED zadnego chrome: ekran to sama notatka pod pasami.
         // Wyjatek: pasek, ktory wlasnie sie chowa, konczy swoj zjazd pod falami.
         if self.waves.is_none() || self.toolbar.animating() {
             self.toolbar.build(&st, &mut prims);
+        }
+        // Pole pisania nazwy nad paskiem i zakladkami (uklad co klatke: okno,
+        // DPI i dok paska moga sie zmienic, gdy pole jest otwarte).
+        if self.waves.is_none() {
+            let (anchor, view, k) = self.name_pad_anchor();
+            if let Some(p) = &mut self.name_pad {
+                p.layout(anchor, view, k);
+                p.build(&mut prims);
+            }
         }
         self.arm_menu_clock(self.menu.open && self.waves.is_none());
         // Panel i okno wyboru pokazuja miniatury - brakujace powstaja w klatce.
@@ -6096,6 +6284,7 @@ impl App {
             Mode::Erase => "ERASER".to_string(),
             Mode::Draw => format!("pen #{}", self.color_idx + 1),
             Mode::Menu => "MENU".to_string(),
+            Mode::NamePad => "WRITING NAME".to_string(),
             Mode::Lasso => "SELECTING".to_string(),
             Mode::Transform => "MOVING SELECTION".to_string(),
             Mode::Idle if self.buttons.eraser || self.eraser_tool => "eraser".to_string(),
@@ -6327,6 +6516,7 @@ fn entry_for(space: &Space, slot: usize, id: String) -> NoteEntry {
         created_ms: spectre_sync::ulid::timestamp_ms(&id).unwrap_or(0),
         id,
         title: meta.title,
+        title_ink: namepad::decode_name(&meta.title_ink),
         folder: meta.folder,
     }
 }
@@ -6355,17 +6545,29 @@ fn load_all_entries(spaces: &[SpaceSlot]) -> Vec<NoteEntry> {
     out
 }
 
+/// Pismo tytulu do listy udostepnien LAN (wartosc `title.ink`, pusta = brak).
+fn share_ink(e: &NoteEntry) -> String {
+    e.title_ink.as_ref().map(|n| n.encode()).unwrap_or_default()
+}
+
 /// Otwarty dokument jest zrodlem prawdy: poprawia wpis na liscie i cache.
 fn refresh_entry(space: &Space, entry: &mut NoteEntry, doc: &Document) {
     let title = doc.meta("title").unwrap_or("").to_string();
+    let ink_value = doc
+        .meta(spectre_core::inkname::TITLE_INK_KEY)
+        .unwrap_or("")
+        .to_string();
     let folder = doc.meta("folder").unwrap_or("").to_string();
-    if entry.title != title || entry.folder != folder {
+    let ink = namepad::decode_name(&ink_value);
+    if entry.title != title || entry.folder != folder || entry.title_ink != ink {
         entry.title = title;
+        entry.title_ink = ink;
         entry.folder = folder;
         let _ = space.write_note_meta(
             &entry.id,
             &spectre_sync::NoteMeta {
                 title: entry.title.clone(),
+                title_ink: ink_value,
                 folder: entry.folder.clone(),
             },
         );
@@ -6994,6 +7196,140 @@ pub unsafe extern "system" fn wndproc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pismo w polu pisania: zygzak w pikselach okna od lewego gornego rogu pola.
+    fn t7_write(pad: &mut NamePad, dx: f32) {
+        let pts: Vec<Sample> = (0..40)
+            .map(|i| Sample {
+                x: 560.0 + dx + i as f32 * 2.7,
+                y: 70.0 + ((i as f32) * 0.6).sin() * 18.0,
+                pressure: 0.35 + (i % 7) as f32 * 0.07,
+                tilt_x: 14.0,
+                tilt_y: -6.0,
+                t_us: 5_000_000 + i as u64 * 3761,
+            })
+            .collect();
+        pad.begin(false, &pts[..1]);
+        pad.feed(&pts[1..]);
+        pad.end();
+    }
+
+    fn t7_pad(target: NameTarget, current: Option<&InkName>) -> NamePad {
+        NamePad::open(
+            target,
+            current,
+            PALETTE[1],
+            crate::ui::Rect {
+                x: 520.0,
+                y: 0.0,
+                w: 400.0,
+                h: 36.0,
+            },
+            (1440.0, 900.0),
+            1.25,
+        )
+    }
+
+    /// T7 (W19): tytul notatki i nazwa plaszczyzny pisane piorem po zapisie
+    /// i ponownym otwarciu z dysku sa identyczne - w dokumencie, na liscie
+    /// notatek (wpis i cache) i po skanie op-logu (cache z v0.4.5).
+    #[test]
+    fn t7_nazwy_piorem_po_zapisie_i_otwarciu_identyczne() {
+        let root = std::env::temp_dir().join(format!("spectre-t7-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let space = Space::open_or_create(&root).unwrap();
+        let author = AuthorName::new("adi", "laptop");
+        let id = space.create_note().unwrap();
+
+        // Stara notatka: tytul tekstowy. Nic nie znika - wpis go pokazuje.
+        let (mut store, mut doc) = open_note(&space, &id, &author).unwrap();
+        store.append(&doc.set_meta("title", "Fizyka")).unwrap();
+        let mut entry = entry_for(&space, 0, id.clone());
+        refresh_entry(&space, &mut entry, &doc);
+        assert_eq!(entry.title, "Fizyka");
+        assert!(entry.title_ink.is_none());
+
+        // Tytul pisany piorem w polu pisania, zatwierdzony tak jak `commit_title`.
+        let mut pad = t7_pad(NameTarget::Title, None);
+        t7_write(&mut pad, 0.0);
+        t7_write(&mut pad, 140.0);
+        assert!(pad.changed());
+        let title = pad.result();
+        store
+            .append(&doc.set_meta(&pad.target.meta_key(), &title.encode()))
+            .unwrap();
+        // Nazwa plaszczyzny tym samym komponentem (lista plaszczyzn 3D).
+        let plane_key = "plane.1.name";
+        let mut ppad = t7_pad(NameTarget::Meta(plane_key.into()), None);
+        t7_write(&mut ppad, 30.0);
+        let plane = ppad.result();
+        store
+            .append(&doc.set_meta(&ppad.target.meta_key(), &plane.encode()))
+            .unwrap();
+        refresh_entry(&space, &mut entry, &doc);
+        assert_eq!(entry.title_ink.as_deref(), Some(&title));
+        store.sync().unwrap();
+        drop(store);
+
+        // Ponowne otwarcie z dysku.
+        let (_store, back) = open_note(&space, &id, &author).unwrap();
+        let t = namepad::decode_name(back.meta("title.ink").unwrap()).unwrap();
+        let p = namepad::decode_name(back.meta("plane.1.name.ink").unwrap()).unwrap();
+        assert_eq!(*t, title);
+        assert_eq!(*p, plane);
+        // Identyczne co do bajtu zapisu, nie tylko w granicach kwantyzacji.
+        assert_eq!(t.encode(), title.encode());
+        assert_eq!(p.encode(), plane.encode());
+        // Dawny tekst zostaje w notatce (starsza wersja dalej go pokazuje).
+        assert_eq!(back.meta("title"), Some("Fizyka"));
+
+        // Lista notatek po restarcie: z cache...
+        let listed = entry_for(&space, 0, id.clone());
+        assert_eq!(listed.title_ink.as_deref(), Some(&title));
+        // ...i z cache zapisanego przez v0.4.5 (bez pisma): skan op-logu.
+        std::fs::write(
+            root.join(".cache").join("meta").join(format!("{id}.txt")),
+            "title=Fizyka\nfolder=\n",
+        )
+        .unwrap();
+        let rescanned = entry_for(&space, 0, id.clone());
+        assert_eq!(rescanned.title_ink.as_deref(), Some(&title));
+        assert_eq!(rescanned.title, "Fizyka");
+
+        // Ponowne otwarcie pola z zapisanym pismem i Done bez zmian = nic nowego.
+        let again = t7_pad(NameTarget::Title, Some(&t));
+        assert!(!again.changed());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// T7 (W19): w aplikacji nie zostalo zadne pole tekstowe nazwy. Tytul nie
+    /// ma bufora edycji, klawiatura nie wpisuje tytulu, a jedyny zapis tekstowego
+    /// `title` to nazwa pliku przy imporcie PDF (nie pole, ktore ktos edytuje).
+    #[test]
+    fn t7_brak_pola_tekstowego_nazwy() {
+        let app_src = include_str!("app.rs");
+        let ui_src = include_str!("ui.rs");
+        let menu_src = include_str!("menu.rs");
+        let edit_field = ["title", "_edit"].concat();
+        assert!(!app_src.contains(&edit_field));
+        assert!(!ui_src.contains(&edit_field));
+        assert!(!menu_src.contains(&edit_field));
+        let text_title_write = ["set_meta(", "\"title\""].concat();
+        assert_eq!(
+            app_src.matches(&text_title_write).count(),
+            // import PDF + ten test (stara notatka z tekstowym tytulem)
+            2,
+            "tekstowy tytul zapisuje tylko import PDF"
+        );
+        // Pole tekstowe przyjmuje tylko ustawienia i LAN, nie nazwy notatek.
+        let active = app_src
+            .split("fn active_edit(")
+            .nth(1)
+            .and_then(|s| s.split("\n    }\n").next())
+            .unwrap();
+        assert!(!active.contains("title"));
+        assert!(!active.contains("plane"));
+    }
 
     /// Ochrona AMOLED ma liczyc bezczynnosc czlowieka, nie okna: praca w innej
     /// aplikacji (okno nie dostaje wtedy zadnego komunikatu wejscia) musi

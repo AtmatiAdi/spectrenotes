@@ -140,6 +140,11 @@ impl Replica {
         self.space_for(note).note_meta(note).title
     }
 
+    /// Tytul pisany piorem (wartosc `title.ink`), pusty = brak.
+    pub fn note_title_ink(&self, note: &str) -> String {
+        self.space_for(note).note_meta(note).title_ink
+    }
+
     /// Nazwy space'ow (bez `lan`), w kolejnosci slotow.
     pub fn space_names(&self) -> Vec<String> {
         self.slots
