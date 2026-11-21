@@ -6,6 +6,7 @@
 //! spectre-harness latency [--warp] [--rec plik] [--per-msg N] [--strokes N]
 //! spectre-harness record <plik>              zapis syntetycznego nagrania piora
 //! spectre-harness idle                       licznik klatek w spoczynku (T5.3)
+//! spectre-harness ops-roundtrip <we> <wy>    plik .ops przez czytnik tej wersji (T2.2)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -30,6 +31,7 @@ fn main() {
         "latency" => latency(&args),
         "record" => record(&args),
         "idle" => idle(),
+        "ops-roundtrip" => ops_roundtrip(&args),
         _ => {
             eprintln!("uzycie: spectre-harness t1|t1-compare|latency|record|idle (docs/08)");
             std::process::exit(2);
@@ -196,5 +198,63 @@ fn idle() -> Res {
     if n != 0 {
         return Err("scena rysuje w spoczynku".into());
     }
+    Ok(())
+}
+
+/// T2.2: plik `.ops` (np. notatka 3D z nowszej wersji) przez czytnik i zapis
+/// **tej** wersji, jak przy otwarciu i dalszym pisaniu: wszystkie operacje
+/// zapisane z powrotem, a za nimi jedna nowa kreska tego samego autora.
+/// Wynik: liczby operacji, nieznanych, pominietych i czy plik byl uciety.
+fn ops_roundtrip(args: &[String]) -> Res {
+    use spectre_core::{Document, OpKind, Rgba, Sample, StrokeData};
+    use spectre_proto::{OpsReader, OpsWriter};
+    let src = PathBuf::from(args.get(1).ok_or("brak pliku wejsciowego")?);
+    let dst = PathBuf::from(args.get(2).ok_or("brak pliku wyjsciowego")?);
+    let parsed = OpsReader::read_path(&src)
+        .map_err(|e| e.to_string())?
+        .ok_or("zly naglowek")?;
+    let unknown = parsed
+        .ops
+        .iter()
+        .filter(|o| matches!(o.kind, OpKind::Unknown { .. }))
+        .count();
+    let mut doc = Document::new(parsed.header.author);
+    for op in &parsed.ops {
+        doc.apply(op);
+    }
+    let _ = std::fs::remove_file(&dst);
+    let mut w = OpsWriter::open(&dst, parsed.header.author, parsed.header.base_lamport)
+        .map_err(|e| e.to_string())?;
+    for op in &parsed.ops {
+        w.append(op);
+    }
+    let new = doc.add_stroke(StrokeData {
+        tool: 0,
+        color: Rgba::rgb(216, 216, 216),
+        base_width: 3.2,
+        samples: (0..20)
+            .map(|i| Sample {
+                x: 100.0 + i as f32 * 3.0,
+                y: 100.0,
+                pressure: 0.5,
+                t_us: i * 3760,
+                ..Default::default()
+            })
+            .collect(),
+    });
+    w.append(&new);
+    w.sync().map_err(|e| e.to_string())?;
+    let id = match new.kind {
+        OpKind::StrokeAdd { id, .. } => id.seq,
+        _ => 0,
+    };
+    println!(
+        "operacje {} (nieznane {unknown}, pominiete {}), uciety: {}, zywe kreski: {}, nowa kreska seq {id} lamport {}",
+        parsed.ops.len(),
+        parsed.skipped,
+        parsed.truncated,
+        doc.live_count(),
+        new.lamport
+    );
     Ok(())
 }

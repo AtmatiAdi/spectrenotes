@@ -25,6 +25,7 @@ target\release\spectre-harness t1-compare <a> <b>       T1.1 piksel w piksel i T
 target\release\spectre-harness latency [--warp] [--per-msg N] [--strokes N] [--rec plik]
 target\release\spectre-harness record <plik>            nagranie syntetyczne do edycji
 target\release\spectre-harness idle                     klatki w spoczynku
+target\release\spectre-harness ops-roundtrip <we> <wy>  plik .ops przez czytnik i zapis tej wersji (T2.2)
 ```
 
 `latency` odtwarza pismo (6920 próbek) nad gęstą notatką 2880x1800 i mierzy dla każdego
