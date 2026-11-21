@@ -1686,10 +1686,13 @@ mod tests {
         t.build(&st, &mut gone);
         assert!(!t.animating());
         assert!(gone.iter().find(is_bar).is_none());
-        // Hover przy krawedzi wraca natychmiast.
+        // Hover przy krawedzi wraca natychmiast: pasek od razu stoi (prawie)
+        // na miejscu. Miedzy poczatkiem chowania a hoverem mija chwila - na
+        // wolnym runnerze CI kilka ms - wiec dopuszczamy koncowke wysuwania.
         t.hiding = Some(Instant::now());
         assert!(t.hover(5.0, 300.0));
-        assert!(t.visible && !t.animating());
+        assert!(t.visible);
+        assert!(t.show_progress().is_none_or(|s| s > 0.9), "{:?}", t.show_progress());
     }
 
     /// Uklad jest w pikselach fizycznych policzonych ze skali DPI: uchwyty
