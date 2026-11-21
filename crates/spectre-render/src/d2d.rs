@@ -58,6 +58,8 @@ use crate::geometry;
 use crate::tess::stroke_segments;
 use crate::tiles::{self, PageRect, TileKey};
 
+pub mod scene3d;
+
 /// Czysta czern: na AMOLED piksel jest wtedy fizycznie zgaszony (Z7).
 pub const BG_COLOR: D2D1_COLOR_F = D2D1_COLOR_F {
     r: 0.0,
@@ -470,6 +472,8 @@ pub struct Renderer {
     spark_buf: Vec<Spark>,
     /// Czas efektow ostatniej klatki - uniesione zaznaczenie mieni sie z reszta.
     fx_t: f32,
+    /// Tryb 3D: bitmapy plaszczyzn (`scene3d`).
+    tex3: scene3d::Tex3,
 }
 
 struct TileBmp {
@@ -771,6 +775,7 @@ impl Renderer {
                 spark: ctx_spark,
                 spark_buf: Vec::new(),
                 fx_t: 0.0,
+                tex3: Default::default(),
             };
             r.create_size_dependent()?;
             Ok(r)

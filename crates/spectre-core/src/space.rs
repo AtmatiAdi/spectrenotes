@@ -426,6 +426,32 @@ impl Camera3 {
     }
 }
 
+/// Wygladzenie animacji (smoothstep): start i koniec bez szarpniecia.
+pub fn ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+impl Camera3 {
+    /// Kamera pomiedzy `a` (t = 0) i `b` (t = 1): obrot najkrotsza droga,
+    /// zoom geometrycznie, cel liniowo, pole widzenia liniowo - czyli przejscie
+    /// ortografia <-> perspektywa jako "dolly zoom" ze stala skala w glebi
+    /// celu (W18: wlaczenie 3D plynnie przechodzi w perspektywe).
+    pub fn lerp(a: &Camera3, b: &Camera3, t: f64) -> Camera3 {
+        let t = t.clamp(0.0, 1.0);
+        let dyaw = wrap180(b.yaw - a.yaw);
+        Camera3 {
+            target: a.target + (b.target - a.target) * t,
+            yaw: wrap180(a.yaw + dyaw * t),
+            pitch: a.pitch + (b.pitch - a.pitch) * t,
+            zoom: a.zoom * (b.zoom / a.zoom).powf(t),
+            fov: a.fov + (b.fov - a.fov) * t,
+            w: b.w,
+            h: b.h,
+        }
+    }
+}
+
 /// Widoki kostki (W2): sciany i narozniki. (yaw, pitch) w stopniach.
 pub mod views {
     pub const FRONT: (f64, f64) = (0.0, 0.0);
@@ -771,6 +797,40 @@ mod tests {
         p.fov = FOV_DEG;
         let (a, _, _) = p.project(c.target + V3::X * 100.0).unwrap();
         assert!((a - (720.0 + 150.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn plynne_przejscie_kamery() {
+        let a = Camera3 {
+            target: V3::new(100.0, 200.0, 0.0),
+            yaw: 170.0,
+            pitch: 0.0,
+            zoom: 1.0,
+            fov: 0.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let b = Camera3 {
+            yaw: -170.0,
+            pitch: -90.0,
+            zoom: 4.0,
+            fov: FOV_DEG,
+            ..a
+        };
+        assert_eq!(Camera3::lerp(&a, &b, 0.0), a);
+        let e = Camera3::lerp(&a, &b, 1.0);
+        assert!((wrap180(e.yaw - b.yaw)).abs() < 1e-9 && e.zoom == 4.0 && e.fov == FOV_DEG);
+        // Najkrotsza droga: przez 180, nie przez 0.
+        let m = Camera3::lerp(&a, &b, 0.5);
+        assert!((m.yaw.abs() - 180.0).abs() < 1e-9);
+        assert!((m.zoom - 2.0).abs() < 1e-9);
+        // W polowie przejscia ortografia -> perspektywa skala w glebi celu stoi.
+        let mut c = Camera3 { yaw: 0.0, ..a };
+        c.fov = 25.0;
+        let (x, _, _) = c.project(a.target + V3::X * 10.0).unwrap();
+        assert!((x - 410.0).abs() < 1e-6);
+        assert_eq!(ease(0.0), 0.0);
+        assert_eq!(ease(1.0), 1.0);
     }
 
     #[test]

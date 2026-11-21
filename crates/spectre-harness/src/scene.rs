@@ -13,11 +13,15 @@
 use std::time::Instant;
 
 use spectre_core::background::Background;
-use spectre_core::{Bbox, Camera, Document, Op, Rgba, StrokeData};
+use spectre_core::space::{Camera3, Pose, FOV_DEG};
+use spectre_core::{Bbox, Camera, Document, Op, PlaneId, Rgba, StrokeData};
 use spectre_ink::{InkConfig, Segment, StrokeBuilder};
 use spectre_proto::{AuthorId, Sample};
+use spectre_render::scene3d::IDENTITY;
 use spectre_render::tiles::{self, PageRect, TileKey};
-use spectre_render::{Device, Overlay, PresentMode, Renderer};
+use spectre_render::{
+    segments_to_screen, Compose3Stats, Device, Overlay, PresentMode, Renderer, View3,
+};
 use windows::core::Result;
 
 use crate::pen::{PenMsg, Recording};
@@ -68,6 +72,38 @@ pub struct Scene {
     tail_buf: Vec<Segment>,
     tile_fn: Option<TileFn>,
     pub hud: Option<String>,
+    /// Tryb 3D (`None` = 2D). Ta sama logika co w aplikacji (`App::three`).
+    pub three: Option<State3>,
+    seg_screen: Vec<Segment>,
+    /// Operacje powstale w scenie (kreski z piora) - do zapisu notatki.
+    pub ops: Vec<Op>,
+    /// Ostatnia klatka wypalila mokre odcinki do warstwy suchej.
+    pub burned: bool,
+    /// Czasy klatek z ostatniego `replay`: (ms do klatki, wypalenie, nr probki w kresce).
+    pub trace: Vec<(f32, bool, usize, f32)>,
+}
+
+/// Stan trybu 3D sceny.
+#[derive(Debug, Clone)]
+pub struct State3 {
+    pub cam: Camera3,
+    /// Plaszczyzna rysowania (srodek kompasu).
+    pub draw: Pose,
+    /// Siatka z 2D (`None` = ramka).
+    pub grid: Option<Background>,
+    pub grid3d: bool,
+    /// Licznik zmian plaszczyzny zerowej.
+    pub zero_rev: u64,
+    /// Kamera stoi (przepieczenie dozwolone).
+    pub settled: bool,
+    /// Scena do zlozenia od nowa (ruch kamery, plaszczyzna rysowania, kreska).
+    pub dirty: bool,
+    /// Kamera 2D sprzed wejscia - wyjscie wraca do niej dokladnie (W18).
+    pub saved_2d: Camera,
+    planes_rev: u64,
+    pub last: Compose3Stats,
+    /// Ile razy scena byla skladana (`compose3d`).
+    pub composes: u64,
 }
 
 /// Opoznienie jednej paczki piora: do oddania klatki (CPU) i do jej
@@ -97,7 +133,75 @@ impl Scene {
             tail_buf: Vec::new(),
             tile_fn: None,
             hud: None,
+            three: None,
+            seg_screen: Vec::new(),
+            ops: Vec::new(),
+            burned: false,
+            trace: Vec::new(),
         })
+    }
+
+    /// Wejscie w 3D: kamera rownowazna 2D, potem perspektywa (bez animacji
+    /// w uprzezy), plaszczyzna rysowania = zerowa ze srodkiem na srodku okna.
+    pub fn enter_3d(&mut self, grid: Option<Background>) {
+        let (w, h) = self.size();
+        let mut cam = Camera3::from_2d(&self.cam, w as f64, h as f64);
+        cam.fov = FOV_DEG;
+        let draw = Pose::new(0.0, 0.0, cam.target);
+        self.three = Some(State3 {
+            cam,
+            draw,
+            grid,
+            grid3d: false,
+            zero_rev: 0,
+            settled: true,
+            dirty: true,
+            saved_2d: self.cam,
+            planes_rev: u64::MAX,
+            last: Compose3Stats::default(),
+            composes: 0,
+        });
+        self.renderer.clear_geometry();
+    }
+
+    /// Wyjscie z 3D: kamera 2D sprzed wejscia i pelna przebudowa jak w 2D.
+    pub fn exit_3d(&mut self) {
+        if let Some(st) = self.three.take() {
+            self.cam = st.saved_2d;
+        }
+        self.renderer.clear_3d();
+        self.renderer.clear_geometry();
+        self.dirty = Dirty::Full;
+    }
+
+    /// Uklad, w ktorym lezy siatka: istniejaca plaszczyzna (zerowa tez) albo
+    /// sama plaszczyzna rysowania.
+    pub fn grid_frame(&self, draw: &Pose) -> Pose {
+        match self.doc.find_plane(draw) {
+            Some(id) => self.doc.plane_pose(id).unwrap_or(*draw),
+            None => *draw,
+        }
+    }
+
+    pub fn view3(&self) -> Option<View3> {
+        let st = self.three.as_ref()?;
+        Some(View3 {
+            cam: st.cam,
+            draw_plane: st.draw,
+            grid_frame: self.grid_frame(&st.draw),
+            grid: st.grid,
+            grid3d: st.grid3d,
+            zero_rev: st.zero_rev,
+            settled: st.settled,
+        })
+    }
+
+    /// Kamera 3D sie zmienila (kostka, kolko) - scena do zlozenia.
+    pub fn touch_3d(&mut self, settled: bool) {
+        if let Some(st) = self.three.as_mut() {
+            st.dirty = true;
+            st.settled = settled;
+        }
     }
 
     /// Scena na WARP (testy obrazowe).
@@ -175,7 +279,15 @@ impl Scene {
 
     fn feed(&mut self, batch: &[Sample]) {
         for s in batch {
-            let (x, y) = self.cam.to_canvas(s.x, s.y);
+            // 3D: rzut odwrotny na plaszczyzne rysowania (jedno mnozenie na
+            // probke); poza plaszczyzna (horyzont) probka przepada.
+            let (x, y) = match &self.three {
+                Some(st) => match st.cam.unproject(s.x as f64, s.y as f64, &st.draw) {
+                    Some((u, v)) => (u as f32, v as f32),
+                    None => continue,
+                },
+                None => self.cam.to_canvas(s.x, s.y),
+            };
             self.builder.push(Sample { x, y, ..*s });
         }
     }
@@ -208,8 +320,23 @@ impl Scene {
             base_width: self.ink.base_width,
             samples,
         };
+        if let Some(st) = self.three.as_mut() {
+            let draw = st.draw;
+            let ops = self.doc.add_stroke_on(&draw, data);
+            self.ops.extend(ops.iter().cloned());
+            let st = self.three.as_mut().unwrap();
+            if ops
+                .iter()
+                .any(|o| matches!(o.kind, spectre_core::OpKind::StrokeAdd { .. }))
+            {
+                st.zero_rev += 1;
+            }
+            st.dirty = true;
+            return ops.into_iter().last();
+        }
         let bbox = Bbox::of(&data);
         let op = self.doc.add_stroke(data);
+        self.ops.push(op.clone());
         self.dirty = self.dirty.add_region(bbox);
         Some(op)
     }
@@ -226,6 +353,9 @@ impl Scene {
 
     /// Klatka jak `App::render` (czesc rysujaca).
     pub fn frame(&mut self) -> Result<()> {
+        if self.three.is_some() {
+            return self.frame_3d();
+        }
         if self.ensure_tiles()? && self.dirty == Dirty::Clean {
             self.dirty = Dirty::Full;
         }
@@ -241,6 +371,7 @@ impl Scene {
         if self.drawing {
             self.builder.commit(&mut self.commit_buf);
             self.wet_pending.extend_from_slice(&self.commit_buf);
+            self.burned = self.wet_pending.len() >= WET_BURN_SEGS;
             if self.wet_pending.len() >= WET_BURN_SEGS {
                 self.renderer
                     .commit(&self.wet_pending, self.color, &self.cam)?;
@@ -263,6 +394,65 @@ impl Scene {
         Ok(())
     }
 
+    fn frame_3d(&mut self) -> Result<()> {
+        let rev = self.doc.planes_rev();
+        let need = {
+            let st = self.three.as_ref().unwrap();
+            st.dirty || st.planes_rev != rev
+        };
+        if need {
+            let view = self.view3().unwrap();
+            let stats = self.renderer.compose3d(&self.doc, &view, &self.ink)?;
+            let st = self.three.as_mut().unwrap();
+            // Pieczenie nie zmiescilo sie w budzecie klatki: nastepna klatka
+            // sklada jeszcze raz (w aplikacji: timer jak przy zoomie).
+            st.dirty = stats.pending > 0;
+            st.planes_rev = rev;
+            st.last = stats;
+            st.composes += 1;
+        }
+        let (cam, draw) = {
+            let st = self.three.as_ref().unwrap();
+            (st.cam, st.draw)
+        };
+        self.commit_buf.clear();
+        self.tail_buf.clear();
+        if self.drawing {
+            self.builder.commit(&mut self.commit_buf);
+            self.wet_pending.extend_from_slice(&self.commit_buf);
+            self.burned = self.wet_pending.len() >= WET_BURN_SEGS;
+            if self.wet_pending.len() >= WET_BURN_SEGS {
+                self.seg_screen.clear();
+                segments_to_screen(&cam, &draw, &self.wet_pending, &mut self.seg_screen);
+                self.renderer
+                    .commit(&self.seg_screen, self.color, &IDENTITY)?;
+                self.wet_pending.clear();
+            }
+            // Niewypalone odcinki i czubek: z ukladu plaszczyzny na ekran.
+            self.seg_screen.clear();
+            self.seg_screen.extend_from_slice(&self.wet_pending);
+            self.builder.tail(&mut self.seg_screen);
+            segments_to_screen(&cam, &draw, &self.seg_screen, &mut self.tail_buf);
+        }
+        let overlay = Overlay {
+            hud: self.hud.as_deref(),
+            ..Default::default()
+        };
+        let mode = if self.drawing {
+            PresentMode::Immediate
+        } else {
+            PresentMode::Latest
+        };
+        self.renderer
+            .present(&self.tail_buf, self.color, &IDENTITY, overlay, mode)?;
+        Ok(())
+    }
+
+    /// Plaszczyzna istnieje? (po kresce: id plaszczyzny rysowania)
+    pub fn draw_plane_id(&self) -> Option<PlaneId> {
+        self.doc.find_plane(&self.three.as_ref()?.draw)
+    }
+
     pub fn pixels(&self) -> Result<Vec<u8>> {
         self.renderer.read_pixels()
     }
@@ -273,6 +463,8 @@ impl Scene {
     pub fn replay(&mut self, rec: &Recording, per_msg: usize, gpu: bool) -> Result<Latency> {
         let mut cpu = Vec::new();
         let mut gpu_ms = Vec::new();
+        self.trace.clear();
+        let mut k = 0usize;
         let f0 = self.renderer.presents();
         for msg in rec.messages(per_msg) {
             let t0 = Instant::now();
@@ -286,7 +478,12 @@ impl Scene {
             if msg != PenMsg::Up {
                 cpu.push(t_cpu);
                 gpu_ms.push(t_gpu);
+                self.trace.push((t_gpu, self.burned, k, t_cpu));
+                k += 1;
+            } else {
+                k = 0;
             }
+            self.burned = false;
         }
         Ok(Latency {
             cpu: summary(&cpu),

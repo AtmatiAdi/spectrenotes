@@ -15,6 +15,7 @@ mod tess;
 mod thumb;
 pub mod tiles;
 
+pub use d2d::scene3d::{self, segments_to_screen, Compose3Stats, View3};
 pub use d2d::{
     Device, DimMask, FxLayer, Lift, Overlay, PresentMode, Renderer, UiFont, UiPrim, WetTail,
     DIM_STEP,

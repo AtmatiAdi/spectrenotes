@@ -16,6 +16,7 @@
 pub mod notes;
 pub mod pen;
 pub mod png;
+pub mod room;
 pub mod scene;
 pub mod stats;
 
