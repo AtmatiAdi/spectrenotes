@@ -649,6 +649,9 @@ mod tests {
             }
         }
         assert_eq!(checked, 2000);
+        println!(
+            "T3.1: najwiekszy blad rzutu w obie strony {worst:.2e} px (2000 kamer i plaszczyzn)"
+        );
         assert!(worst < 0.01, "najwiekszy blad {worst} px");
     }
 
@@ -701,6 +704,11 @@ mod tests {
                 }
             }
         }
+        println!(
+            "T3.2: po 5000 krokach blad sumy X {:.2e}, Y {:.2e} st.",
+            (p.rx - sx).abs(),
+            (p.ry - sy).abs()
+        );
         assert!((p.rx - sx).abs() < 1e-3 && (p.ry - sy).abs() < 1e-3);
         // Przesuniecia wzdluz normalnych roznych ustawien nie sumuja sie po
         // osiach, ale kazde zmienia odleglosc od srodka dokladnie o krok.
@@ -715,6 +723,7 @@ mod tests {
     #[test]
     fn t3_3_na_wprost_plaszczyzny() {
         let mut r = Rng(7);
+        let (mut worst_ang, mut worst_dist) = (0f64, 0f64);
         for _ in 0..1000 {
             let plane = random_pose(&mut r);
             let persp = r.f() < 0.5;
@@ -723,6 +732,7 @@ mod tests {
             let cosang = cam.basis().n.dot(plane.basis().n);
             let ang = cosang.clamp(-1.0, 1.0).acos().to_degrees();
             assert!(ang < 0.01, "kat {ang}");
+            worst_ang = worst_ang.max(ang);
             // Kreska przez srodek ekranu: kazdy punkt na plaszczyznie.
             for k in 0..20 {
                 let sx = cam.w * 0.2 + k as f64 * cam.w * 0.03;
@@ -730,6 +740,7 @@ mod tests {
                 let (u, v) = cam.unproject(sx, sy, &plane).unwrap();
                 let p = plane.to_world(u, v);
                 assert!(plane.distance(p).abs() < 1e-3);
+                worst_dist = worst_dist.max(plane.distance(p).abs());
             }
             // Na wprost: osie plaszczyzny to osie ekranu.
             let h = cam.homography(&plane);
@@ -738,6 +749,7 @@ mod tests {
                 "bez skrotu perspektywy"
             );
         }
+        println!("T3.3: najwiekszy kat {worst_ang:.2e} st., odleglosc kreski od plaszczyzny {worst_dist:.2e} j.");
     }
 
     /// T3.4: obrot kompasem nie przesuwa srodka (< 0,001 j. po 1000 obrotach).
@@ -753,6 +765,10 @@ mod tests {
             d.feed(&mut p, r.r(-200.0, 200.0), dist, 1.5);
             e.feed(&mut p, r.r(-200.0, 200.0), dist, 1.5);
         }
+        println!(
+            "T3.4: przesuniecie srodka po 1000 obrotach {:.2e} j.",
+            (p.origin - start).len()
+        );
         assert!((p.origin - start).len() < 1e-3);
     }
 

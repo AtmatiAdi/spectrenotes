@@ -512,11 +512,30 @@ fn t4(args: &[String]) -> Res {
     let reopened = s3.pixels().map_err(e)?;
     // Plik trzyma probki co 1/32 j. (jak w 2D): obraz z pamieci rozni sie od
     // obrazu z pliku tylko antyaliasingiem. Drugi zapis i otwarcie - identyczny.
-    let strong = before
-        .chunks_exact(4)
-        .zip(reopened.chunks_exact(4))
-        .filter(|(a, b)| a[..3].iter().zip(&b[..3]).any(|(x, y)| x.abs_diff(*y) > 64))
-        .count();
+    // Wyraznie inny = zaden piksel w otoczeniu 1 px drugiego obrazu nie jest
+    // podobny (krawedz cienkiej linii przesunieta o ulamek piksela to nie zmiana).
+    let px_at = |p: &[u8], x: i64, y: i64| -> Option<[u8; 3]> {
+        (x >= 0 && y >= 0 && x < w as i64 && y < h as i64).then(|| {
+            let i = ((y * w as i64 + x) * 4) as usize;
+            [p[i], p[i + 1], p[i + 2]]
+        })
+    };
+    let close = |a: [u8; 3], b: [u8; 3]| a.iter().zip(&b).all(|(x, y)| x.abs_diff(*y) <= 64);
+    let mut strong = 0;
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            let a = px_at(&before, x, y).unwrap();
+            if close(a, px_at(&reopened, x, y).unwrap()) {
+                continue;
+            }
+            let near = (-1..=1).any(|dy| {
+                (-1..=1).any(|dx| px_at(&reopened, x + dx, y + dy).is_some_and(|b| close(a, b)))
+            });
+            if !near {
+                strong += 1;
+            }
+        }
+    }
     let soft = png::diff_pixels(&before, &reopened);
     let bytes2 =
         spectre_harness::notes::ops_bytes(&spectre_proto::OpsReader::parse(&bytes).unwrap().ops);
