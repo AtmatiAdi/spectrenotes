@@ -25,6 +25,7 @@ mod github;
 mod lan;
 mod live;
 mod menu;
+mod namepad;
 mod pdf;
 mod pdfedit;
 mod pdfview;
@@ -191,6 +192,7 @@ fn fill_white(space_dir: &std::path::Path) -> std::io::Result<()> {
         &id,
         &spectre_sync::NoteMeta {
             title: "Test AMOLED - biel".into(),
+            title_ink: String::new(),
             folder: String::new(),
         },
     )?;

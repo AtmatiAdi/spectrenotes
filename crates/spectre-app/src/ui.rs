@@ -12,6 +12,9 @@
 //! oba pola: tytul i przyciski sa wtedy elementami paska (i znikaja razem
 //! z nim). Ramke systemowa zastepuje `WM_NCCALCSIZE` w `app.rs`.
 
+use std::sync::Arc;
+
+use spectre_core::InkName;
 use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
 use std::time::Instant;
@@ -161,7 +164,8 @@ pub enum Action {
 /// Elementy okna: tytul notatki i przyciski - w zakladkach albo w pasku u gory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleAction {
-    EditTitle,
+    /// Tytul notatki: otwiera pole pisania nazwy piorem (W19).
+    WriteTitle,
     /// Pelny ekran (jak `F11`) - pierwszy z przyciskow, najdalej od `Close`.
     Fullscreen,
     Minimize,
@@ -182,7 +186,10 @@ pub struct UiState<'a> {
     /// Jest co kopiowac (zaznaczenie) i co wklejac (schowek aplikacji).
     pub can_copy: bool,
     pub can_paste: bool,
+    /// Dawny tytul tekstowy - pokazywany tylko, gdy nie ma pisma.
     pub title: &'a str,
+    /// Tytul pisany piorem (W19).
+    pub title_ink: Option<&'a Arc<InkName>>,
     pub zoom: f32,
     pub view_locked: bool,
     pub maximized: bool,
@@ -215,8 +222,8 @@ pub struct Toolbar {
     pub pinned: bool,
     items: Vec<Item>,
     hot: Option<Action>,
-    /// `Some` = trwa edycja tytulu z klawiatury.
-    pub title_edit: Option<String>,
+    /// Pole pisania tytulu otwarte: zakladka tytulu ma ramke akcentem.
+    pub naming: bool,
     /// Elementy okna (zakladki / pola w pasku) sa - nie w pelnym ekranie.
     pub chrome: bool,
     /// Trwa przeciaganie paska za uchwyt: aktualna pozycja rysika (jednostki
@@ -250,7 +257,7 @@ impl Toolbar {
             pinned: false,
             items: Vec::new(),
             hot: None,
-            title_edit: None,
+            naming: false,
             chrome: true,
             dragging: None,
             view: (0.0, 0.0),
@@ -682,7 +689,7 @@ impl Toolbar {
             }
         }
         if self.title_rect.is_some_and(|r| r.contains(x, y)) {
-            return Some(TitleAction::EditTitle);
+            return Some(TitleAction::WriteTitle);
         }
         None
     }
@@ -858,20 +865,7 @@ impl Toolbar {
         let Some(tr) = self.title_rect else {
             return;
         };
-        let editing = self.title_edit.is_some();
-        let text = match &self.title_edit {
-            Some(buf) => format!("{buf}|"),
-            None if s.title.is_empty() => "untitled".to_string(),
-            None => s.title.to_string(),
-        };
-        // Ochrona AMOLED czuwa: tarcza przed tytulem. Tytul jest wysrodkowany,
-        // wiec ikonka idzie w tym samym napisie - osobny prymityw nie wiedzialby,
-        // gdzie zaczyna sie tekst.
-        let text = if s.protected && !editing {
-            format!("{PROTECTED_GLYPH} {text}")
-        } else {
-            text
-        };
+        let editing = self.naming;
         if editing {
             out.push(UiPrim::Outline {
                 x: tr.x,
@@ -882,7 +876,7 @@ impl Toolbar {
                 width: 1.0,
                 r: 6.0 * k,
             });
-        } else if self.title_hot == Some(TitleAction::EditTitle) {
+        } else if self.title_hot == Some(TitleAction::WriteTitle) {
             out.push(UiPrim::Rect {
                 x: tr.x,
                 y: tr.y + 4.0 * k,
@@ -892,19 +886,61 @@ impl Toolbar {
                 r: 6.0 * k,
             });
         }
+        // Tytul pisany piorem: pismo w zakladce, wysrodkowane, z oddechem
+        // od krawedzi (zakladka 36 px -> pismo ok. 26 px, jak w makiecie).
+        if let Some(name) = s.title_ink {
+            let ink = Rect {
+                x: tr.x + 8.0 * k,
+                y: tr.y + 5.0 * k,
+                w: (tr.w - 16.0 * k).max(0.0),
+                h: (tr.h - 10.0 * k).max(0.0),
+            };
+            if s.protected && !editing {
+                // Tarcza ochrony AMOLED tuz przed poczatkiem pisma.
+                let (_, dx, _) = name.fit(ink.w, ink.h, spectre_core::Fit::Center);
+                let gw = 24.0 * k;
+                out.push(UiPrim::Text {
+                    x: (ink.x + dx - gw).max(tr.x),
+                    y: tr.y,
+                    w: gw,
+                    h: tr.h,
+                    text: PROTECTED_GLYPH.to_string(),
+                    color: FG,
+                    font: UiFont::Title,
+                });
+            }
+            crate::namepad::name_label(Some(name), "", ink, UiFont::Title, FG, true, out);
+            return;
+        }
+        // Bez pisma: dawny tytul tekstowy (tylko do odczytu) albo "untitled".
+        // Ochrona AMOLED czuwa: tarcza przed tytulem. Tytul jest wysrodkowany,
+        // wiec ikonka idzie w tym samym napisie - osobny prymityw nie wiedzialby,
+        // gdzie zaczyna sie tekst.
+        let text = if s.title.is_empty() {
+            crate::namepad::UNTITLED.to_string()
+        } else {
+            s.title.to_string()
+        };
+        let text = if s.protected && !editing {
+            format!("{PROTECTED_GLYPH} {text}")
+        } else {
+            text
+        };
         out.push(UiPrim::Text {
             x: tr.x,
             y: tr.y,
             w: tr.w,
             h: tr.h,
             text,
-            color: if editing || !s.title.is_empty() {
-                FG
-            } else {
-                FG_DIM
-            },
+            color: if !s.title.is_empty() { FG } else { FG_DIM },
             font: UiFont::Title,
         });
+    }
+
+    /// Zakladka tytulu (albo pole tytulu w pasku) z ostatniego `layout` -
+    /// kotwica pola pisania tytulu.
+    pub fn title_rect(&self) -> Option<Rect> {
+        self.title_rect
     }
 
     fn build_win_buttons(&self, s: &UiState, out: &mut Vec<UiPrim>) {
@@ -1423,6 +1459,11 @@ fn shift_fade(prims: &mut [UiPrim], dx: f32, dy: f32, alpha: f32) {
                 *y += dy;
                 fade(color);
             }
+            UiPrim::Ink { x, y, alpha: a, .. } => {
+                *x += dx;
+                *y += dy;
+                *a *= alpha.clamp(0.0, 1.0);
+            }
             UiPrim::Line {
                 x0,
                 y0,
@@ -1474,6 +1515,7 @@ mod tests {
             can_copy: false,
             can_paste: false,
             title: "t",
+            title_ink: None,
             zoom: 1.0,
             view_locked: false,
             maximized: false,
@@ -1548,7 +1590,7 @@ mod tests {
         assert_eq!(tab_w, 490.0, "35 % z 1400");
         let tab_x = (1400.0 - tab_w) * 0.5;
         assert!(t.caption_hit(tab_x + grip_w * 0.5, 25.0));
-        assert_eq!(t.title_hit(700.0, 25.0), Some(TitleAction::EditTitle));
+        assert_eq!(t.title_hit(700.0, 25.0), Some(TitleAction::WriteTitle));
         // Pod zakladka jest canvas.
         assert!(!t.caption_hit(700.0, px(TAB_H, S) + 2.0));
         // Puste miejsce paska z lewej (pod elementami, nad klodka) przesuwa okno,
@@ -1590,7 +1632,7 @@ mod tests {
         assert_eq!(t.hit(lock_cx, 30.0), Some(Action::LockPc));
         // Tytul: na srodku okna, gdy jest miejsce (szerokie okno).
         t.layout(2880.0, 1000.0, S, 6);
-        assert_eq!(t.title_hit(1440.0, 30.0), Some(TitleAction::EditTitle));
+        assert_eq!(t.title_hit(1440.0, 30.0), Some(TitleAction::WriteTitle));
         let r = t.title_rect.unwrap();
         assert!((r.x + r.w * 0.5 - 1440.0).abs() < 2.0, "{r:?}");
     }

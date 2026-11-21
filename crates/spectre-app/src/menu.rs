@@ -9,11 +9,15 @@
 //! i przycisk "synchronizuj teraz". Zakladka "Account" ma szczegoly (logowanie,
 //! budzet ruchu), "Settings" przelaczaja to, co juz jest w aplikacji.
 
+use std::sync::Arc;
+
+use spectre_core::InkName;
 use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
 use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
 
+use crate::namepad::name_label;
 use crate::sync::{Account as SyncAccount, Mark, Status as SyncStatus};
 use crate::ui::{Dock, Rect, ACCENT, ACTIVE, BG, FG, FG_DIM, HOT, LINE};
 
@@ -60,7 +64,10 @@ struct Card<'a> {
     active: bool,
     /// `None`, gdy tresci jeszcze nie mamy (cudza notatka z LAN, nieotwarta).
     thumb: Option<u64>,
+    /// Tekst tytulu: dawny tytul tekstowy albo nazwa od peera; pusty = `untitled`.
     title: &'a str,
+    /// Tytul pisany piorem (W19) - ma pierwszenstwo przed tekstem.
+    ink: Option<&'a Arc<InkName>>,
     sub: &'a str,
 }
 
@@ -201,7 +208,11 @@ pub struct NoteEntry {
     /// Ktory space (indeks w `App::spaces`; 0 = domyslny).
     pub space: usize,
     pub id: String,
+    /// Tytul tekstowy (notatki sprzed W19, import PDF); pokazywany tylko,
+    /// gdy nie ma pisma.
     pub title: String,
+    /// Tytul pisany piorem; `None` = jeszcze nie napisany.
+    pub title_ink: Option<Arc<InkName>>,
     /// Pusty = korzen.
     pub folder: String,
     pub created_ms: u64,
@@ -322,6 +333,8 @@ pub struct OfferView {
     /// Identyfikator notatki u peera - klucz miniatury, gdy juz ja otworzylismy.
     pub note: String,
     pub title: String,
+    /// Tytul pisany piorem od peera (W19); `None` = peer go nie przyslal.
+    pub title_ink: Option<Arc<InkName>>,
     pub author_dir: String,
     pub protected: bool,
     pub state: OfferState,
@@ -729,11 +742,7 @@ impl Menu {
     fn note_card(&mut self, s: &MenuState, i: usize, r: Rect, out: &mut Vec<UiPrim>) {
         let n = &s.notes[i];
         let hit = MenuHit::Note(i);
-        let title = if n.title.is_empty() {
-            "untitled"
-        } else {
-            n.title.as_str()
-        };
+        let title = n.title.as_str();
         // Notatka ze space'u wspoldzielonego: jego nazwa zamiast daty.
         let sub = match s.spaces.get(n.space) {
             Some(name) if n.space != 0 => format!("in {name}"),
@@ -744,6 +753,7 @@ impl Menu {
             active: i == s.note_idx,
             thumb: Some(thumb_key(&n.id)),
             title,
+            ink: n.title_ink.as_ref(),
             sub: &sub,
         };
         self.card(r, c, out);
@@ -756,6 +766,7 @@ impl Menu {
             active,
             thumb,
             title,
+            ink,
             sub,
         } = c;
         let k = self.scale;
@@ -787,15 +798,20 @@ impl Menu {
             color: CARD_BAND_BG,
             r: 0.0,
         });
-        out.push(UiPrim::Text {
-            x: r.x + 8.0 * k,
-            y: r.y + r.h - band,
-            w: r.w - 16.0 * k,
-            h: band * 0.58,
-            text: title.to_string(),
-            color: FG,
-            font: UiFont::Ui,
-        });
+        name_label(
+            ink,
+            title,
+            Rect {
+                x: r.x + 8.0 * k,
+                y: r.y + r.h - band + 2.0 * k,
+                w: r.w - 16.0 * k,
+                h: band * 0.58 - 2.0 * k,
+            },
+            UiFont::Ui,
+            FG,
+            false,
+            out,
+        );
         out.push(UiPrim::Text {
             x: r.x + 8.0 * k,
             y: r.y + r.h - band * 0.44,
@@ -833,11 +849,7 @@ impl Menu {
             .collect();
         self.grid(list, y, shown.len(), out, |m, out, slot, r| {
             let o = &s.offers[shown[slot]];
-            let title = if o.title.is_empty() {
-                "untitled"
-            } else {
-                o.title.as_str()
-            };
+            let title = o.title.as_str();
             let state = match o.state {
                 OfferState::Closed => "",
                 OfferState::Pending => " · opening",
@@ -855,6 +867,7 @@ impl Menu {
                     .is_some_and(|n| n.space == LAN_SLOT && n.id == o.note),
                 thumb,
                 title,
+                ink: o.title_ink.as_ref(),
                 sub: &sub,
             };
             m.card(r, c, out);
