@@ -3498,7 +3498,9 @@ impl App {
             let id = match &op.kind {
                 spectre_core::OpKind::StrokeAdd { id, .. }
                 | spectre_core::OpKind::StrokeErase { id } => *id,
-                spectre_core::OpKind::Meta { .. } => continue,
+                spectre_core::OpKind::Meta { .. } | spectre_core::OpKind::Unknown { .. } => {
+                    continue
+                }
             };
             match self.doc.get(id) {
                 Some(data) => self.dirty = self.dirty.add_region(Bbox::of(data)),
@@ -4516,6 +4518,8 @@ impl App {
                                 self.sync_entry();
                                 list_changed = true;
                             }
+                            // Operacja nowszej wersji: nic do narysowania (O12).
+                            OpKind::Unknown { .. } => {}
                         }
                     }
                 }

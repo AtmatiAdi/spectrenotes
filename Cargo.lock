@@ -658,6 +658,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "spectre-harness"
+version = "0.4.5"
+dependencies = [
+ "spectre-core",
+ "spectre-ink",
+ "spectre-proto",
+ "spectre-render",
+ "windows",
+]
+
+[[package]]
 name = "spectre-ink"
 version = "0.4.5"
 dependencies = [

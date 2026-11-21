@@ -1,0 +1,10 @@
+01-pusta-kratka 1440x900 img=03fc68f876948fa5 ops=7236bdc2dcd544bc ops_len=102
+02-pismo 1440x900 img=40e4ebf7fb764819 ops=c9f22a9d4cc6639b ops_len=58689
+03-linie-zoom 1440x900 img=f0f1241d88607277 ops=87ab706f301e52ad ops_len=126861
+04-kropki-oddalenie 1440x900 img=a05d750634f60807 ops=ebb2d312a496c3a7 ops_len=155412
+05-heksy-kolory 1440x900 img=a322de0274b45f17 ops=6e206a78a98653c0 ops_len=45619
+06-pdf 1440x900 img=e9d79f301b9ff032 ops=7d8158cc3f5419a3 ops_len=35794
+07-pdf-zoom-przewiniety 1440x900 img=4701ce1f8509a998 ops=00a7c03876f98516 ops_len=76110
+08-gesta-cienka 1440x900 img=4612547111876ed6 ops=17541cd5b16a42c4 ops_len=884028
+09-pelny-ekran-przewijanie 2880x1800 img=86304eaa3dca6905 ops=c7360be4ca3f3563 ops_len=343014
+10-gumka-cofanie 1440x900 img=fc706afa27e5bf42 ops=1e819a48e8f20348 ops_len=62882
