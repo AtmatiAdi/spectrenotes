@@ -761,10 +761,10 @@ impl App {
         renderer.set_ui_scale(ui_scale);
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
-        // Tryb 3D tylko z ustawieniem albo zmienna: wydanie go nie pokazuje,
-        // dopoki uzytkownik go nie przetestuje (2026-11-22).
-        toolbar.three = config.get("three_d") == Some("1")
-            || std::env::var_os("SPECTRENOTES_3D").is_some_and(|v| v != "0");
+        // Tryb 3D wydany (v0.4.7): domyslnie wlaczony; `three_d=0` albo
+        // `SPECTRENOTES_3D=0` go ukrywa.
+        toolbar.three = config.get("three_d") != Some("0")
+            && std::env::var_os("SPECTRENOTES_3D").is_none_or(|v| v != "0");
         toolbar.visible = toolbar_pin;
         toolbar.layout(w as f32, h as f32, ui_scale, SLOTS);
         let mut menu = Menu::new();
