@@ -420,8 +420,10 @@ impl Camera3 {
     /// pochylenia. Przechodzi przez biegun jak trackball.
     pub fn orbit_free(&mut self, dx: f64, dy: f64) {
         let b = self.basis();
-        // Ruch w prawo obraca kamere wokol jej osi "w dol" (v), w gore - wokol "w prawo" (u).
-        let r = rot_axis(b.v, -dx).mul(&rot_axis(b.u, dy));
+        // Jak kulka pod palcem: zlapany punkt idzie za piorem. Ten sam znak co
+        // w trybie pionu - ruch w prawo = obrot wokol osi ekranu "w dol" (v) jak
+        // `orbit(+dx)`, ruch w dol = wokol "w prawo" (u) jak `orbit(.., -dy)`.
+        let r = rot_axis(b.v, dx).mul(&rot_axis(b.u, -dy));
         self.set_basis(r.apply(b.u), r.apply(b.v));
     }
 

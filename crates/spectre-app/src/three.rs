@@ -74,8 +74,10 @@ pub enum Hit3 {
     Compass(Handle),
     ListRow(PlaneId),
     ListEye(PlaneId),
-    /// Ikonka piora przy nazwie: zmiana nazwy (sama nazwa tylko wybiera).
+    /// Ikonka piora: zmiana nazwy (sama nazwa tylko wybiera).
     ListPen(PlaneId),
+    /// Ikonka X: usuniecie plaszczyzny z jej kreskami (da sie cofnac).
+    ListDelete(PlaneId),
     /// Uchwyt z trzech kropek: zmiana kolejnosci przeciaganiem.
     ListGrip(PlaneId),
     /// Naglowek listy: przesuwanie listy po ekranie.
@@ -143,6 +145,10 @@ pub struct Three {
     /// Polozenie listy plaszczyzn (lewy gorny rog, px) - przeciagnieta za
     /// naglowek; `None` = pod kostka. Aplikacja zapisuje je w ustawieniach.
     pub list_pos: Option<(f32, f32)>,
+    /// Elementy okna, od ktorych lista sie odbija i ktorych nie zakrywa
+    /// (pasek, zakladki tytulu i przyciskow okna); kostke dolicza sama.
+    /// Aplikacja ustawia je przed kazda klatka i trafieniem.
+    pub obstacles: Vec<Rect>,
 }
 
 impl Three {
@@ -177,6 +183,7 @@ impl Three {
             list_first: 0,
             free: false,
             list_pos: None,
+            obstacles: Vec::new(),
             grid3d: false,
             hot: None,
         }
@@ -379,26 +386,74 @@ impl Three {
 
     const HEAD_H: f32 = 30.0;
     const ROW_H: f32 = 46.0;
-    const LIST_W: f32 = 290.0;
 
-    /// Lista plaszczyzn: pod kostka albo tam, gdzie ja przeciagnieto.
-    pub fn list_rect(&self, w: f32, h: f32, k: f32, right_inset: f32) -> Rect {
-        let pw = Self::LIST_W * k;
+    /// Nazwa plaszczyzny pisana piorem (W19), jesli jest.
+    pub fn plane_ink(doc: &Document, id: PlaneId) -> Option<std::sync::Arc<spectre_core::InkName>> {
+        crate::namepad::decode_name(
+            doc.meta(&spectre_core::inkname::ink_key(&Self::name_key(id)))
+                .unwrap_or(""),
+        )
+    }
+
+    /// Szerokosc listy z najdluzszej nazwy (i wspolrzednych), w granicach.
+    pub fn list_width(doc: &Document, k: f32) -> f32 {
+        let name_h = 24.0 * k;
+        let mut need: f32 = 0.0;
+        for (id, pose, _) in Self::list_rows(doc) {
+            let name_w = match Self::plane_ink(doc, id) {
+                Some(ink) => {
+                    let (sc, _, _) = ink.fit(10_000.0, name_h, spectre_core::Fit::Left);
+                    ink.bbox().map_or(0.0, |b| (b.max_x - b.min_x) * sc)
+                }
+                // Segoe UI 15: srednio ok. 7,4 px logicznego na znak.
+                None => doc.plane_auto_name(id).chars().count() as f32 * 7.4 * k,
+            };
+            let coords = coords_text(&pose).chars().count() as f32 * 6.0 * k;
+            need = need
+                .max(Self::NAME_X * k + name_w + Self::ICONS_W * k)
+                .max(Self::NAME_X * k + coords + 12.0 * k);
+        }
+        need.clamp(220.0 * k, 520.0 * k)
+    }
+
+    /// Wysokosc listy: naglowek i wiersze, ktore mieszcza sie w oknie.
+    fn list_height(doc: &Document, h: f32, k: f32) -> f32 {
+        let rows = Self::list_rows(doc).len() as f32;
+        (Self::HEAD_H * k + 6.0 * k + rows * Self::ROW_H * k)
+            .min((h - 16.0 * k).max(Self::HEAD_H * k))
+    }
+
+    /// Lista plaszczyzn: pod kostka albo tam, gdzie ja przeciagnieto. Szerokosc
+    /// z najdluzszej nazwy. Przyciaga sie do krawedzi paska, zakladek, przyciskow
+    /// okna i kostki i nigdy ich nie zakrywa.
+    pub fn list_rect(&self, doc: &Document, w: f32, h: f32, k: f32, right_inset: f32) -> Rect {
+        let pw = Self::list_width(doc, k).min(w);
+        let ph = Self::list_height(doc, h, k);
         let (x, y) = match self.list_pos {
-            Some((x, y)) => (
-                x.clamp(0.0, (w - pw).max(0.0)),
-                y.clamp(0.0, (h - Self::HEAD_H * k).max(0.0)),
-            ),
+            Some(p) => p,
             None => {
                 let (_, mode) = Self::cube_buttons(w, k, right_inset);
                 (w - right_inset - 16.0 * k - pw, mode.y + mode.h + 16.0 * k)
             }
         };
+        let mut obs = self.obstacles.clone();
+        let area = Self::cube_area(w, k, right_inset);
+        let (home, mode) = Self::cube_buttons(w, k, right_inset);
+        obs.push(union(union(area, home), mode));
+        dock(Rect { x, y, w: pw, h: ph }, &obs, (w, h), 8.0 * k, 18.0 * k)
+    }
+
+    /// Ikonki wiersza od prawej: oko, X, pioro - po 32 px pola trafienia (T6.2).
+    const NAME_X: f32 = 30.0;
+    const ICONS_W: f32 = 112.0;
+    fn icon_rect(lr: &Rect, row_y: f32, k: f32, slot: usize) -> Rect {
+        let b = 32.0 * k;
         Rect {
-            x,
-            y,
-            w: pw,
-            h: (h - y - 16.0 * k).max(Self::HEAD_H * k),
+            x: lr.x + lr.w - 8.0 * k - b * (slot + 1) as f32,
+            // W linii nazwy (pod nia sa wspolrzedne).
+            y: row_y,
+            w: b,
+            h: b,
         }
     }
 
@@ -465,13 +520,14 @@ impl Three {
         (t.max(0.0) as usize).min(planes.saturating_sub(1))
     }
 
+    fn eye_rect(lr: &Rect, row_y: f32, k: f32) -> Rect {
+        Self::icon_rect(lr, row_y, k, 0)
+    }
+    fn del_rect(lr: &Rect, row_y: f32, k: f32) -> Rect {
+        Self::icon_rect(lr, row_y, k, 1)
+    }
     fn pen_rect(lr: &Rect, row_y: f32, k: f32) -> Rect {
-        Rect {
-            x: lr.x + 146.0 * k,
-            y: row_y + 2.0 * k,
-            w: 32.0 * k,
-            h: 32.0 * k,
-        }
+        Self::icon_rect(lr, row_y, k, 2)
     }
 
     // ----- trafienia ---------------------------------------------------------
@@ -507,7 +563,7 @@ impl Three {
             return Some(self.cube_hit(x, y, cx, cy, s, k).unwrap_or(Hit3::Cube));
         }
         if self.list_on {
-            let lr = self.list_rect(w, h, k, right_inset);
+            let lr = self.list_rect(doc, w, h, k, right_inset);
             if lr.contains(x, y) {
                 if y < lr.y + Self::HEAD_H * k {
                     return Some(Hit3::ListHeader);
@@ -517,15 +573,18 @@ impl Three {
                 let i = ((y - lr.y - Self::HEAD_H * k) / rh).floor();
                 if let Some((id, _, _)) = rows.get(self.list_first + i.max(0.0) as usize) {
                     let row_y = lr.y + Self::HEAD_H * k + rh * i;
-                    if x > lr.x + lr.w - 44.0 * k {
+                    if Self::eye_rect(&lr, row_y, k).contains(x, y) {
                         return Some(Hit3::ListEye(*id));
                     }
                     if !id.is_zero() {
-                        if x < lr.x + 28.0 * k {
-                            return Some(Hit3::ListGrip(*id));
+                        if Self::del_rect(&lr, row_y, k).contains(x, y) {
+                            return Some(Hit3::ListDelete(*id));
                         }
                         if Self::pen_rect(&lr, row_y, k).contains(x, y) {
                             return Some(Hit3::ListPen(*id));
+                        }
+                        if x < lr.x + 28.0 * k {
+                            return Some(Hit3::ListGrip(*id));
                         }
                     }
                     return Some(Hit3::ListRow(*id));
@@ -562,6 +621,30 @@ impl Three {
         (V3::new(0.0, -1.0, 0.0), "Góra"),
         (V3::new(0.0, 1.0, 0.0), "Dół"),
     ];
+
+    /// Osie napisu na scianie o normalnej `f`: prawo i dol ekranu przy widoku
+    /// na wprost tej sciany (kamera z tej strony, pion).
+    fn face_axes(f: V3) -> (V3, V3) {
+        let look = -f;
+        let pitch = -look.y.clamp(-1.0, 1.0).asin().to_degrees();
+        let yaw = if look.x.abs() < 1e-9 && look.z.abs() < 1e-9 {
+            0.0
+        } else {
+            look.x.atan2(look.z).to_degrees()
+        };
+        let c = Camera3 {
+            target: V3::default(),
+            yaw,
+            pitch,
+            roll: 0.0,
+            zoom: 1.0,
+            fov: 0.0,
+            w: 1.0,
+            h: 1.0,
+        };
+        let b = c.basis();
+        (b.u, b.v)
+    }
 
     fn face_quad(n: V3) -> [V3; 4] {
         // Dwie osie prostopadle do normalnej.
@@ -769,13 +852,26 @@ impl Three {
                     width: 1.2 * k,
                 });
             }
-            // Napis tylko na scianach zwroconych do widza.
-            if f.dot(n) < -0.35 {
+            // Napis przyklejony do sciany: w jej ukladzie (prawo / dol, jak
+            // przy widoku na wprost tej sciany), obraca sie i przechyla z kostka.
+            if f.dot(n) < -0.2 {
                 let (lx, ly, _) = pr(*f);
-                out.push(UiPrim::Text {
-                    x: lx - 40.0 * k,
-                    y: ly - 10.0 * k,
-                    w: 80.0 * k,
+                let (fu, fv) = Self::face_axes(*f);
+                let cb = self.cam.basis();
+                // Jednostka sciany na ekranie: 0,36 boku kostki na jednostke swiata;
+                // tekst w pikselach przy widoku na wprost (100 px = 1 jednostka * s * 0,36).
+                let unit = 1.0 / (s * 0.36);
+                let sc = s * 0.36 * unit;
+                out.push(UiPrim::TextAt {
+                    m: [
+                        (fu.dot(cb.u) as f32) * sc,
+                        (fu.dot(cb.v) as f32) * sc,
+                        (fv.dot(cb.u) as f32) * sc,
+                        (fv.dot(cb.v) as f32) * sc,
+                        lx,
+                        ly,
+                    ],
+                    w: 66.0 * k,
                     h: 20.0 * k,
                     text: label.to_string(),
                     color: FG,
@@ -997,11 +1093,12 @@ impl Three {
         right_inset: f32,
         out: &mut Vec<UiPrim>,
     ) {
-        let lr = self.list_rect(w, h, k, right_inset);
+        let _ = names;
+        let lr = self.list_rect(doc, w, h, k, right_inset);
         let rows = Self::list_rows(doc);
         let rh = Self::ROW_H * k;
         let head = Self::HEAD_H * k;
-        let fit = ((lr.h - head - 8.0 * k) / rh).floor().max(1.0) as usize;
+        let fit = ((lr.h - head - 6.0 * k) / rh).floor().max(1.0) as usize;
         let shown = rows.len().saturating_sub(self.list_first).min(fit);
         let ph = head + 6.0 * k + shown as f32 * rh;
         out.push(UiPrim::Rect {
@@ -1083,72 +1180,92 @@ impl Three {
                 }
             }
             let name_r = Rect {
-                x: lr.x + 30.0 * k,
+                x: lr.x + Self::NAME_X * k,
                 y: y + 3.0 * k,
-                w: 112.0 * k,
+                w: (lr.w - (Self::NAME_X + Self::ICONS_W) * k).max(20.0 * k),
                 h: 24.0 * k,
             };
-            let ink = names(*id);
+            let ink = Self::plane_ink(doc, *id);
             let auto = doc.plane_auto_name(*id);
             crate::namepad::name_label(ink.as_ref(), &auto, name_r, UiFont::Ui, fg, false, out);
-            // Zmiana nazwy tylko ikonka piora (klik w nazwe wybiera plaszczyzne).
-            if !id.is_zero() {
-                let pr = Self::pen_rect(&lr, y, k);
-                pen_icon(
-                    &pr,
-                    if self.hot == Some(Hit3::ListPen(*id)) {
-                        FG
-                    } else {
-                        FG_DIM
-                    },
-                    k,
-                    out,
-                );
-            }
-            let (rx, ry) = pose.display_angles();
-            let o = pose.origin;
             out.push(UiPrim::Text {
-                x: lr.x + 30.0 * k,
+                x: lr.x + Self::NAME_X * k,
                 y: y + 26.0 * k,
-                w: lr.w - 80.0 * k,
+                w: lr.w - (Self::NAME_X + 8.0) * k,
                 h: 16.0 * k,
-                text: format!(
-                    "X {}° Y {}° · {} · {} · {}",
-                    fmt_num(rx),
-                    fmt_num(ry),
-                    fmt_num(o.x),
-                    fmt_num(o.y),
-                    fmt_num(o.z)
-                ),
+                text: coords_text(pose),
                 color: FG_DIM,
                 font: UiFont::Small,
             });
-            // Oko (widocznosc).
-            let ex = lr.x + lr.w - 24.0 * k;
-            let ey = y + rh * 0.5;
+            // Trzy male ikonki obok siebie: zmien nazwe, usun, widocznosc.
+            let hot = |h: Hit3| if self.hot == Some(h) { FG } else { FG_DIM };
+            if !id.is_zero() {
+                let pr = Self::pen_rect(&lr, y, k);
+                if self.hot == Some(Hit3::ListPen(*id)) {
+                    out.push(UiPrim::Rect {
+                        x: pr.x,
+                        y: pr.y,
+                        w: pr.w,
+                        h: pr.h,
+                        color: HOT,
+                        r: 6.0 * k,
+                    });
+                }
+                pen_icon(&pr, hot(Hit3::ListPen(*id)), k, out);
+                let dr = Self::del_rect(&lr, y, k);
+                if self.hot == Some(Hit3::ListDelete(*id)) {
+                    out.push(UiPrim::Rect {
+                        x: dr.x,
+                        y: dr.y,
+                        w: dr.w,
+                        h: dr.h,
+                        color: HOT,
+                        r: 6.0 * k,
+                    });
+                }
+                let c = hot(Hit3::ListDelete(*id));
+                let (cx, cy, d) = (dr.cx(), dr.cy(), 4.5 * k);
+                for sg in [-1.0f32, 1.0] {
+                    out.push(UiPrim::Line {
+                        x0: cx - d,
+                        y0: cy - d * sg,
+                        x1: cx + d,
+                        y1: cy + d * sg,
+                        color: c,
+                        width: 1.4 * k,
+                    });
+                }
+            }
+            let er = Self::eye_rect(&lr, y, k);
+            let (ex, ey) = (er.cx(), er.cy());
+            let ec = if *visible {
+                FG_DIM
+            } else {
+                Rgba { a: 120, ..FG_DIM }
+            };
             out.push(UiPrim::Outline {
-                x: ex - 11.0 * k,
-                y: ey - 6.5 * k,
-                w: 22.0 * k,
-                h: 13.0 * k,
-                color: fg,
-                width: 1.4 * k,
-                r: 6.5 * k,
+                x: ex - 7.5 * k,
+                y: ey - 4.5 * k,
+                w: 15.0 * k,
+                h: 9.0 * k,
+                color: ec,
+                width: 1.2 * k,
+                r: 4.5 * k,
             });
             out.push(UiPrim::Circle {
                 x: ex,
                 y: ey,
-                radius: 3.2 * k,
-                color: fg,
+                radius: 2.2 * k,
+                color: ec,
             });
             if !visible {
                 out.push(UiPrim::Line {
-                    x0: ex - 12.0 * k,
-                    y0: ey + 9.0 * k,
-                    x1: ex + 12.0 * k,
-                    y1: ey - 9.0 * k,
-                    color: fg,
-                    width: 1.6 * k,
+                    x0: ex - 8.0 * k,
+                    y0: ey + 6.0 * k,
+                    x1: ex + 8.0 * k,
+                    y1: ey - 6.0 * k,
+                    color: ec,
+                    width: 1.4 * k,
                 });
             }
         }
@@ -1219,23 +1336,136 @@ fn dashed_rect(r: &Rect, color: Rgba, width: f32, dash: f32, out: &mut Vec<UiPri
 /// Ikonka piora (zmiana nazwy): skosny trzonek z grotem.
 fn pen_icon(r: &Rect, color: Rgba, k: f32, out: &mut Vec<UiPrim>) {
     let (cx, cy) = (r.cx(), r.cy());
-    let d = 7.0 * k;
+    let d = 4.5 * k;
     out.push(UiPrim::Line {
         x0: cx - d,
         y0: cy + d,
         x1: cx + d,
         y1: cy - d,
         color,
-        width: 3.0 * k,
+        width: 2.2 * k,
     });
     out.push(UiPrim::Line {
         x0: cx - d,
         y0: cy + d,
-        x1: cx - d - 2.5 * k,
-        y1: cy + d + 2.5 * k,
+        x1: cx - d - 1.8 * k,
+        y1: cy + d + 1.8 * k,
         color,
-        width: 1.5 * k,
+        width: 1.2 * k,
     });
+}
+
+/// Wspolrzedne plaszczyzny w wierszu listy, zwiezle.
+fn coords_text(pose: &Pose) -> String {
+    let (rx, ry) = pose.display_angles();
+    let o = pose.origin;
+    format!(
+        "X {}° Y {}° · {} · {} · {}",
+        fmt_num(rx),
+        fmt_num(ry),
+        fmt_num(o.x),
+        fmt_num(o.y),
+        fmt_num(o.z)
+    )
+}
+
+fn union(a: Rect, b: Rect) -> Rect {
+    let (x0, y0) = (a.x.min(b.x), a.y.min(b.y));
+    let (x1, y1) = ((a.x + a.w).max(b.x + b.w), (a.y + a.h).max(b.y + b.h));
+    Rect {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    }
+}
+
+fn overlaps(a: &Rect, b: &Rect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+/// Dokowanie prostokata `r` w oknie `view`: przyciaganie (`snap`) do krawedzi
+/// okna i przeszkod z odstepem `gap`, potem wypchniecie z kazdej przeszkody
+/// najkrotsza droga (lista nigdy niczego nie zakrywa).
+pub fn dock(mut r: Rect, obs: &[Rect], view: (f32, f32), gap: f32, snap: f32) -> Rect {
+    let (w, h) = view;
+    let clamp = |r: &mut Rect| {
+        r.x = r.x.clamp(0.0, (w - r.w).max(0.0));
+        r.y = r.y.clamp(0.0, (h - r.h).max(0.0));
+    };
+    clamp(&mut r);
+    // Przyciaganie do krawedzi okna.
+    if r.x < snap {
+        r.x = 0.0;
+    }
+    if (w - r.x - r.w) < snap {
+        r.x = (w - r.w).max(0.0);
+    }
+    if r.y < snap {
+        r.y = 0.0;
+    }
+    if (h - r.y - r.h) < snap {
+        r.y = (h - r.h).max(0.0);
+    }
+    // Przyciaganie do krawedzi przeszkod (gdy sie stykaja w drugiej osi).
+    for o in obs {
+        let vert = r.y < o.y + o.h && o.y < r.y + r.h;
+        let horz = r.x < o.x + o.w && o.x < r.x + r.w;
+        if vert {
+            if (r.x - (o.x + o.w + gap)).abs() < snap {
+                r.x = o.x + o.w + gap;
+            } else if ((r.x + r.w) - (o.x - gap)).abs() < snap {
+                r.x = o.x - gap - r.w;
+            }
+        }
+        if horz {
+            if (r.y - (o.y + o.h + gap)).abs() < snap {
+                r.y = o.y + o.h + gap;
+            } else if ((r.y + r.h) - (o.y - gap)).abs() < snap {
+                r.y = o.y - gap - r.h;
+            }
+        }
+    }
+    // Wypchniecie z przeszkod.
+    for _ in 0..8 {
+        let mut moved = false;
+        for o in obs {
+            let e = Rect {
+                x: o.x - gap,
+                y: o.y - gap,
+                w: o.w + 2.0 * gap,
+                h: o.h + 2.0 * gap,
+            };
+            if !overlaps(&r, &e) {
+                continue;
+            }
+            let cands = [
+                (e.x - r.w, r.y),
+                (e.x + e.w, r.y),
+                (r.x, e.y - r.h),
+                (r.x, e.y + e.h),
+            ];
+            let best = cands
+                .iter()
+                .filter(|(x, y)| *x >= 0.0 && *y >= 0.0 && x + r.w <= w && y + r.h <= h)
+                .min_by(|a, b| {
+                    let da = (a.0 - r.x).abs() + (a.1 - r.y).abs();
+                    let db = (b.0 - r.x).abs() + (b.1 - r.y).abs();
+                    da.total_cmp(&db)
+                })
+                .copied();
+            if let Some((x, y)) = best {
+                r.x = x;
+                r.y = y;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    clamp(&mut r);
+    r
 }
 
 fn fmt_step(v: f64) -> String {
@@ -1385,6 +1615,9 @@ pub fn preview_png(dir: &std::path::Path) -> Result<(), String> {
         t.list_on = true;
         // Co drugi zrzut z wolna kostka (strzalki przechylu, przelacznik 360).
         t.free = i % 2 == 1;
+        if t.free {
+            t.cam.roll_by(20.0);
+        }
         // Podpowiedz kroku i strefy jak w trakcie przeciagania pierscienia
         // (co drugi zrzut - drugi bez stref, jak w spoczynku).
         t.drag = (i % 2 == 0).then_some(Drag3::Compass {
@@ -1595,9 +1828,9 @@ mod tests {
         let rows = Three::list_rows(&doc);
         assert_eq!(rows.len(), 2);
         let k = 1.0;
-        let lr = t.list_rect(1440.0, 900.0, k, 0.0);
+        let lr = t.list_rect(&doc, 1440.0, 900.0, k, 0.0);
         let y = lr.y + Three::HEAD_H * k + Three::ROW_H * k * 1.5;
-        let hit = t.hit(&doc, lr.x + 200.0 * k, y, (1440.0, 900.0), k, 0.0);
+        let hit = t.hit(&doc, lr.x + 60.0 * k, y, (1440.0, 900.0), k, 0.0);
         assert_eq!(hit, Some(Hit3::ListRow(rows[1].0)));
         // To, co robi aplikacja po trafieniu wiersza:
         t.draw = doc.plane_pose(rows[1].0).unwrap();
@@ -1791,7 +2024,7 @@ mod tests {
         doc.add_stroke_on(&Pose::new(0.0, 90.0, V3::new(5.0, 0.0, 0.0)), stroke());
         let rows = Three::list_rows(&doc);
         for k in [1.0f32, 1.75] {
-            let lr = t.list_rect(1440.0, 900.0, k, 0.0);
+            let lr = t.list_rect(&doc, 1440.0, 900.0, k, 0.0);
             let row_y = lr.y + Three::HEAD_H * k + Three::ROW_H * k;
             let name = (lr.x + 60.0 * k, row_y + 14.0 * k);
             assert_eq!(
@@ -1839,7 +2072,201 @@ mod tests {
             );
         }
         t.list_pos = Some((100.0, 200.0));
-        let lr = t.list_rect(1440.0, 900.0, 1.0, 0.0);
+        let lr = t.list_rect(&doc, 1440.0, 900.0, 1.0, 0.0);
         assert_eq!((lr.x, lr.y), (100.0, 200.0));
+    }
+
+    /// Po tescie 2026-11-22: przeciagniecie w prawo przesuwa widoczna przednia
+    /// sciane kostki w prawo, w dol - w dol; w trybie pionu i w trybie 360, takze
+    /// po przechyle (zlapany punkt idzie za piorem).
+    #[test]
+    fn obrot_kostki_idzie_za_piorem() {
+        for (free, roll) in [(false, 0.0), (true, 0.0), (true, 90.0), (true, -135.0)] {
+            let mut t = three();
+            t.cam.yaw = 15.0;
+            t.cam.pitch = -10.0;
+            t.free = free;
+            t.cam.roll = roll;
+            // Punkt na przedniej scianie kostki (widoczny).
+            let p = V3::new(0.0, 0.0, -1.0);
+            let scr = |t: &Three| {
+                let b = t.cam.basis();
+                (p.dot(b.u), p.dot(b.v))
+            };
+            let (x0, y0) = scr(&t);
+            t.drag_cube(4.0, 0.0);
+            let (x1, y1) = scr(&t);
+            assert!(x1 > x0 + 1e-3, "w prawo ({free}, {roll}): {x0} -> {x1}");
+            assert!(
+                (y1 - y0).abs() < (x1 - x0).abs(),
+                "bez duzego ruchu w pionie"
+            );
+            t.drag_cube(0.0, 4.0);
+            let (x2, y2) = scr(&t);
+            assert!(y2 > y1 + 1e-3, "w dol ({free}, {roll}): {y1} -> {y2}");
+            assert!((x2 - x1).abs() < (y2 - y1).abs());
+        }
+    }
+
+    /// Trzy male ikonki w wierszu (pioro, X, oko) z polami >= 32 px; X usuwa
+    /// plaszczyzne z kreskami jako jedna akcje, ktora cofanie przywraca;
+    /// notatki (plaszczyzny zerowej) nie da sie usunac.
+    #[test]
+    fn ikonki_i_usuwanie_plaszczyzny() {
+        let mut t = three();
+        t.list_on = true;
+        let mut doc = Document::new(spectre_core::AuthorId(1));
+        let wall = Pose::new(0.0, 90.0, V3::new(5.0, 0.0, 0.0));
+        doc.add_stroke_on(&wall, stroke());
+        doc.add_stroke_on(&wall, stroke());
+        let rows = Three::list_rows(&doc);
+        let id = rows[1].0;
+        for k in [1.0f32, 1.25, 1.75] {
+            let lr = t.list_rect(&doc, 1440.0, 900.0, k, 0.0);
+            let row_y = lr.y + Three::HEAD_H * k + Three::ROW_H * k;
+            let (p, d, e) = (
+                Three::pen_rect(&lr, row_y, k),
+                Three::del_rect(&lr, row_y, k),
+                Three::eye_rect(&lr, row_y, k),
+            );
+            for r in [p, d, e] {
+                assert!(r.w >= 32.0 && r.h >= 32.0);
+            }
+            assert!(
+                p.x + p.w <= d.x + 0.01 && d.x + d.w <= e.x + 0.01,
+                "obok siebie: pioro, X, oko"
+            );
+            let hit = |x: f32, y: f32| t.hit(&doc, x, y, (1440.0, 900.0), k, 0.0);
+            assert_eq!(hit(p.cx(), p.cy()), Some(Hit3::ListPen(id)));
+            assert_eq!(hit(d.cx(), d.cy()), Some(Hit3::ListDelete(id)));
+            assert_eq!(hit(e.cx(), e.cy()), Some(Hit3::ListEye(id)));
+            // Notatka: tylko oko.
+            let zy = lr.y + Three::HEAD_H * k;
+            assert_eq!(
+                hit(d.cx(), zy + 20.0 * k),
+                Some(Hit3::ListRow(PlaneId::ZERO))
+            );
+        }
+        // To, co robi aplikacja po X: kreski plaszczyzny jedna akcja.
+        let ids: Vec<_> = doc.plane_strokes(id).map(|(s, _, _)| s).collect();
+        doc.erase_strokes(&ids);
+        assert_eq!(
+            Three::list_rows(&doc).len(),
+            1,
+            "plaszczyzna zniknela z listy"
+        );
+        doc.undo();
+        assert_eq!(Three::list_rows(&doc).len(), 2, "cofniecie ja przywraca");
+        assert_eq!(doc.planes()[0].live, 2);
+    }
+
+    /// Szerokosc listy rosnie z najdluzsza nazwa (w granicach).
+    #[test]
+    fn szerokosc_listy_z_najdluzszej_nazwy() {
+        let mut doc = Document::new(spectre_core::AuthorId(1));
+        doc.add_stroke_on(&Pose::new(0.0, 90.0, V3::new(5.0, 0.0, 0.0)), stroke());
+        let short = Three::list_width(&doc, 1.0);
+        for i in 0..12 {
+            doc.add_stroke_on(
+                &Pose::new(-90.0, 0.0, V3::new(0.0, 100.0 * i as f64 + 0.5, 0.0)),
+                stroke(),
+            );
+        }
+        // "Pozioma 12" dluzsza niz "Pionowa 1"; wspolrzedne z ulamkiem tez.
+        let long = Three::list_width(&doc, 1.0);
+        assert!(long >= short);
+        assert!((220.0..=520.0).contains(&short) && (220.0..=520.0).contains(&long));
+    }
+
+    /// Lista odbija sie od paska, zakladek i kostki: po dokowaniu nie zakrywa
+    /// zadnej przeszkody, a blisko krawedzi przyciaga sie do niej.
+    #[test]
+    fn dokowanie_listy() {
+        let mut t = three();
+        t.list_on = true;
+        let mut doc = Document::new(spectre_core::AuthorId(1));
+        doc.add_stroke_on(&Pose::new(0.0, 90.0, V3::new(5.0, 0.0, 0.0)), stroke());
+        let k = 1.25;
+        let bar = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 60.0,
+            h: 900.0,
+        };
+        let title = Rect {
+            x: 500.0,
+            y: 0.0,
+            w: 440.0,
+            h: 45.0,
+        };
+        let win = Rect {
+            x: 1190.0,
+            y: 0.0,
+            w: 250.0,
+            h: 45.0,
+        };
+        t.obstacles = vec![bar, title, win];
+        let area = Three::cube_area(1440.0, k, 0.0);
+        let overl = |a: &Rect, b: &Rect| {
+            a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+        };
+        // Upuszczona na pasku, na zakladce tytulu, na kostce i przy przyciskach okna.
+        for pos in [
+            (10.0, 300.0),
+            (600.0, 10.0),
+            (area.x + 5.0, area.y + 5.0),
+            (1200.0, 5.0),
+            (30.0, 860.0),
+        ] {
+            t.list_pos = Some(pos);
+            let lr = t.list_rect(&doc, 1440.0, 900.0, k, 0.0);
+            for o in [bar, title, win, area] {
+                assert!(!overl(&lr, &o), "{pos:?}: lista {lr:?} zakrywa {o:?}");
+            }
+            assert!(lr.x >= 0.0 && lr.y >= 0.0 && lr.x + lr.w <= 1440.0 && lr.y + lr.h <= 900.0);
+        }
+        // Przyciaganie: puszczona tuz obok paska staje przy nim (z odstepem).
+        t.list_pos = Some((60.0 + 8.0 * k + 9.0, 300.0));
+        let lr = t.list_rect(&doc, 1440.0, 900.0, k, 0.0);
+        assert!(
+            (lr.x - (60.0 + 8.0 * k)).abs() < 0.01,
+            "przyciagnieta do paska: {}",
+            lr.x
+        );
+    }
+
+    /// Napisy na kostce sa przyklejone do scian: obracaja sie z kostka
+    /// (takze z przechylem w trybie 360).
+    #[test]
+    fn napisy_przyklejone_do_kostki() {
+        let mut t = three();
+        let doc = Document::new(spectre_core::AuthorId(1));
+        let label_m = |t: &Three| {
+            let mut out = Vec::new();
+            t.build_ui(&doc, &|_| None, (1440.0, 900.0), 1.0, 0.0, &mut out);
+            out.into_iter()
+                .find_map(|p| match p {
+                    UiPrim::TextAt { m, text, .. } if text == "Przód" => Some(m),
+                    _ => None,
+                })
+                .expect("napis na przedniej scianie")
+        };
+        let m0 = label_m(&t);
+        assert!(
+            (m0[0] - 1.0).abs() < 1e-5 && m0[1].abs() < 1e-5,
+            "na wprost: poziomo"
+        );
+        t.free = true;
+        t.cam.roll_by(30.0);
+        let m1 = label_m(&t);
+        let ang = m1[1].atan2(m1[0]).to_degrees();
+        assert!(
+            (ang.abs() - 30.0).abs() < 1e-3,
+            "napis obrocony z kostka: {ang}"
+        );
+        t.cam.roll = 0.0;
+        t.cam.yaw = 50.0;
+        let m2 = label_m(&t);
+        assert!(m2[0] < 0.9, "skrot perspektywy przy obrocie: {}", m2[0]);
     }
 }

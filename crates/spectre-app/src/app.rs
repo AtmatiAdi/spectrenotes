@@ -1391,6 +1391,7 @@ impl App {
             m || t
         };
         // 3D: podswietlenie scian kostki i przyciskow pod piorem.
+        self.sync_three_obstacles();
         let three_changed = match self.three.as_ref() {
             Some(t) => {
                 let (w, h) = self.renderer.size();
@@ -1411,6 +1412,7 @@ impl App {
                             | crate::three::Hit3::RollLeft
                             | crate::three::Hit3::RollRight
                             | crate::three::Hit3::ListPen(_)
+                            | crate::three::Hit3::ListDelete(_)
                     )
                 });
                 let t = self.three.as_mut().unwrap();
@@ -2387,7 +2389,16 @@ impl App {
 
     /// Dotkniecie w trybie 3D: kostka, przyciski pod nia, kompas, lista.
     /// `false` = nic z tego - pioro dziala na plaszczyznie.
+    /// Elementy okna, od ktorych odbija sie lista plaszczyzn.
+    fn sync_three_obstacles(&mut self) {
+        let obs = self.toolbar.chrome_rects();
+        if let Some(t) = self.three.as_mut() {
+            t.obstacles = obs;
+        }
+    }
+
     fn three_down(&mut self, x: f32, y: f32) -> bool {
+        self.sync_three_obstacles();
         use crate::three::{Drag3, Hit3};
         use spectre_core::space::compass::{self, Handle};
         let (w, h) = self.renderer.size();
@@ -2433,7 +2444,7 @@ impl App {
                 return true;
             }
             Hit3::ListHeader => {
-                let lr = t.list_rect(w as f32, h as f32, k, ri);
+                let lr = t.list_rect(&self.doc, w as f32, h as f32, k, ri);
                 t.drag = Some(Drag3::ListMove {
                     start: (x, y),
                     orig: (lr.x, lr.y),
@@ -2469,6 +2480,15 @@ impl App {
                     if vis { "0" } else { "1" },
                 );
                 self.persist(&[op]);
+                return true;
+            }
+            // X: plaszczyzna z jej kreskami znika jako jedna akcja historii -
+            // Ctrl+Z ja przywraca (pusta plaszczyzna nie jest na liscie).
+            Hit3::ListDelete(id) => {
+                let ids: Vec<_> = self.doc.plane_strokes(id).map(|(s, _, _)| s).collect();
+                let ops = self.doc.erase_strokes(&ids);
+                t.need_compose = true;
+                self.persist(&ops);
                 return true;
             }
             // Zmiana nazwy tylko ikonka piora - klik w nazwe wybiera (ListRow).
@@ -2578,7 +2598,7 @@ impl App {
                 let Some(t) = self.three.as_ref() else {
                     return;
                 };
-                let lr = t.list_rect(w as f32, h as f32, k, ri);
+                let lr = t.list_rect(&self.doc, w as f32, h as f32, k, ri);
                 let planes = crate::three::Three::list_rows(&self.doc).len() - 1;
                 let target = t.reorder_target(&lr, k, y, planes);
                 let cur = crate::three::Three::list_rows(&self.doc)
@@ -6593,6 +6613,7 @@ impl App {
             }
         }
         // Tryb 3D: kompas, kostka i lista nad scena, pod paskiem i menu.
+        self.sync_three_obstacles();
         if let (Some(t), None) = (&self.three, &self.waves) {
             let (w, h) = self.renderer.size();
             let doc = &self.doc;

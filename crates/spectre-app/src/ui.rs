@@ -1028,6 +1028,24 @@ impl Toolbar {
 
     /// Zakladka tytulu (albo pole tytulu w pasku) z ostatniego `layout` -
     /// kotwica pola pisania tytulu.
+    /// Elementy paska i okna na ekranie (pasek, zakladka tytulu, zakladka
+    /// przyciskow okna) - lista plaszczyzn 3D sie od nich odbija.
+    pub fn chrome_rects(&self) -> Vec<Rect> {
+        let mut v = Vec::new();
+        if self.visible {
+            v.push(self.bar_rect());
+        }
+        v.extend(self.title_tab_rect());
+        v.extend(self.win_tab_rect());
+        if let Some(t) = self.title_rect {
+            v.push(t);
+        }
+        if self.absorbs() {
+            v.extend(self.win_btns.iter().copied().filter(|r| r.w > 0.0));
+        }
+        v
+    }
+
     pub fn title_rect(&self) -> Option<Rect> {
         self.title_rect
     }
@@ -1674,6 +1692,11 @@ fn shift_fade(prims: &mut [UiPrim], dx: f32, dy: f32, alpha: f32) {
                 *y0 += dy;
                 *x1 += dx;
                 *y1 += dy;
+                fade(color);
+            }
+            UiPrim::TextAt { m, color, .. } => {
+                m[4] += dx;
+                m[5] += dy;
                 fade(color);
             }
             UiPrim::Poly { pts, color } => {

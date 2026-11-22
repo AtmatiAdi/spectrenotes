@@ -186,6 +186,17 @@ pub enum UiPrim {
         /// sie co probke, wiec rysuje bez niej.
         cache: bool,
     },
+    /// Tekst w prostokacie `w x h` wysrodkowanym w (0, 0), przeksztalconym
+    /// macierza `m` (`[M11, M12, M21, M22, M31, M32]`, jak `Matrix3x2`) -
+    /// napisy przyklejone do scian kostki widoku 3D.
+    TextAt {
+        m: [f32; 6],
+        w: f32,
+        h: f32,
+        text: String,
+        color: Rgba,
+        font: UiFont,
+    },
     /// Wypelniony wielokat (sciany kostki widoku w 3D), piksele ekranu.
     Poly {
         pts: Vec<(f32, f32)>,
@@ -2577,6 +2588,54 @@ impl Renderer {
                     self.ctx
                         .PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
                     depth += 1;
+                }
+                UiPrim::TextAt {
+                    m,
+                    w,
+                    h,
+                    text,
+                    color,
+                    font,
+                } => {
+                    let brush = self.brush(*color)?;
+                    let fmt = match font {
+                        UiFont::Mono => &self.fonts.mono,
+                        UiFont::Ui => &self.fonts.ui,
+                        UiFont::Center => &self.fonts.center,
+                        UiFont::Big => &self.fonts.big,
+                        UiFont::Title => &self.fonts.title,
+                        UiFont::Body => &self.fonts.body,
+                        UiFont::BodyTail => &self.fonts.body_tail,
+                        UiFont::Small => &self.fonts.small,
+                        UiFont::Header => &self.fonts.header,
+                        UiFont::HeaderRight => &self.fonts.header_right,
+                    };
+                    let wide: Vec<u16> = text.encode_utf16().collect();
+                    let rect = D2D_RECT_F {
+                        left: -w * 0.5,
+                        top: -h * 0.5,
+                        right: w * 0.5,
+                        bottom: h * 0.5,
+                    };
+                    let mut old = Matrix3x2::identity();
+                    self.ctx.GetTransform(&mut old);
+                    self.ctx.SetTransform(&Matrix3x2 {
+                        M11: m[0],
+                        M12: m[1],
+                        M21: m[2],
+                        M22: m[3],
+                        M31: m[4],
+                        M32: m[5],
+                    });
+                    self.ctx.DrawText(
+                        &wide,
+                        fmt,
+                        &rect,
+                        &brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    self.ctx.SetTransform(&old);
                 }
                 UiPrim::Poly { pts, color } => {
                     if pts.len() >= 3 {
