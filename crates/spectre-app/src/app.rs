@@ -1281,7 +1281,10 @@ impl App {
             match hit {
                 Some(PadHit::Area) => {
                     let eraser = batch.buttons.eraser || self.eraser_tool;
+                    // Kolor piora mogl sie zmienic na pasku przy otwartym polu.
+                    let color = self.name_color();
                     if let Some(p) = &mut self.name_pad {
+                        p.set_color(color);
                         p.begin(eraser, &batch.samples);
                     }
                     self.mode = Mode::NamePad;
@@ -1297,6 +1300,10 @@ impl App {
                     self.render();
                     return;
                 }
+                // Pasek narzedzi (kolor, grubosc, gumka...) nie zamyka pola: pioro
+                // pisze dalej w polu tym, co wybrano (poprawka po tescie 2026-11-22).
+                None if self.toolbar.pointer_inside(x, y)
+                    && self.toolbar.title_hit(x, y).is_none() => {}
                 None => {
                     let on_title = self.toolbar.title_hit(x, y) == Some(TitleAction::WriteTitle);
                     self.commit_title();
@@ -2817,6 +2824,9 @@ impl App {
             }
             Action::WidthDown => self.set_width(self.ink.base_width - 0.1),
             Action::WidthUp => self.set_width(self.ink.base_width + 0.1),
+            // Przy otwartym polu pisania nazwy cofanie dotyczy pola, nie notatki.
+            Action::Undo if self.name_pad.is_some() => self.pad_action(PadHit::Undo),
+            Action::Redo if self.name_pad.is_some() => self.pad_action(PadHit::Redo),
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
             Action::Copy => self.copy_selection(),
@@ -3523,6 +3533,11 @@ impl App {
             PadHit::Undo => {
                 if let Some(p) = &mut self.name_pad {
                     p.undo();
+                }
+            }
+            PadHit::Redo => {
+                if let Some(p) = &mut self.name_pad {
+                    p.redo();
                 }
             }
             PadHit::Clear => {
@@ -5149,7 +5164,7 @@ impl App {
 
     /// Klawisz w polu tekstowym. `true` = zjedzony.
     fn edit_key(&mut self, vk: VIRTUAL_KEY, ctrl: bool) -> bool {
-        // Pole pisania nazwy: Enter zatwierdza, Esc anuluje, Ctrl+Z cofa kreske.
+        // Pole pisania nazwy: Enter zatwierdza, Esc anuluje, Ctrl+Z cofa, Ctrl+Y ponawia.
         // Reszta klawiszy dziala jak zwykle (pole nie przyjmuje tekstu).
         if self.name_pad.is_some() {
             if vk == VK_RETURN {
@@ -5157,9 +5172,10 @@ impl App {
             } else if vk == VK_ESCAPE {
                 self.cancel_name_pad();
             } else if ctrl && vk.0 == 0x5A {
-                if let Some(p) = &mut self.name_pad {
-                    p.undo();
-                }
+                self.pad_action(PadHit::Undo);
+            } else if ctrl && vk.0 == 0x59 {
+                // Ctrl+Y - ponow kreske w polu.
+                self.pad_action(PadHit::Redo);
             } else {
                 return false;
             }

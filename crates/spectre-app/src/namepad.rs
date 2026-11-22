@@ -113,6 +113,7 @@ pub enum PadHit {
     /// Pole pisania - tu pioro pisze.
     Area,
     Undo,
+    Redo,
     Clear,
     Cancel,
     Done,
@@ -120,8 +121,9 @@ pub enum PadHit {
     Card,
 }
 
-const BUTTONS: [(PadHit, &str); 4] = [
+const BUTTONS: [(PadHit, &str); 5] = [
     (PadHit::Undo, "↶"),
+    (PadHit::Redo, "↷"),
     (PadHit::Clear, "Clear"),
     (PadHit::Cancel, "Cancel"),
     (PadHit::Done, "Done ✓"),
@@ -141,7 +143,10 @@ pub struct NamePad {
     scale: f32,
     card: Rect,
     area: Rect,
-    btns: [Rect; 4],
+    btns: [Rect; 5],
+    /// Kreski cofniete przez `undo` - `redo` przywraca je od konca. Nowa kreska,
+    /// gumka albo `clear` czyszcza te liste (jak w notatce).
+    redone: Vec<StrokeData>,
     hot: Option<PadHit>,
 }
 
@@ -167,7 +172,8 @@ impl NamePad {
             scale,
             card: Rect::ZERO,
             area: Rect::ZERO,
-            btns: [Rect::ZERO; 4],
+            btns: [Rect::ZERO; 5],
+            redone: Vec::new(),
             hot: None,
         };
         p.layout(anchor, view, scale);
@@ -197,7 +203,8 @@ impl NamePad {
             h: AREA_H * k,
         };
         let by = self.area.y + self.area.h + PAD * k;
-        let bw = (self.area.w - BTN_GAP * k * 3.0) / 4.0;
+        let n = self.btns.len() as f32;
+        let bw = (self.area.w - BTN_GAP * k * (n - 1.0)) / n;
         for (i, r) in self.btns.iter_mut().enumerate() {
             *r = Rect {
                 x: self.area.x + i as f32 * (bw + BTN_GAP * k),
@@ -276,28 +283,47 @@ impl NamePad {
         if let Some(c) = self.cur.take() {
             if !c.samples.is_empty() {
                 self.strokes.push(c);
+                self.redone.clear();
             }
         }
         self.erasing = false;
     }
 
     fn erase_at(&mut self, x: f32, y: f32) {
+        let before = self.strokes.len();
         self.strokes.retain(|s| {
             let r = ERASE_R + s.base_width * 0.5;
             !s.samples.iter().any(|p| (p.x - x).hypot(p.y - y) <= r)
         });
+        if self.strokes.len() != before {
+            self.redone.clear();
+        }
     }
 
     pub fn undo(&mut self) {
-        self.strokes.pop();
+        if let Some(s) = self.strokes.pop() {
+            self.redone.push(s);
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(s) = self.redone.pop() {
+            self.strokes.push(s);
+        }
+    }
+
+    /// Kolor nastepnych kresek - kolor piora zmieniony na pasku przy otwartym polu.
+    pub fn set_color(&mut self, color: Rgba) {
+        self.color = color;
     }
 
     pub fn clear(&mut self) {
         self.strokes.clear();
+        self.redone.clear();
         self.cur = None;
     }
 
-    /// Wynik: nazwa w postaci zapisu (znormalizowana i skwantyzowana).
+    /// Wynik: nazwa w postaci zapisu (skwantyzowana, w miejscu napisania).
     pub fn result(&self) -> InkName {
         InkName::from_strokes(self.strokes.clone())
     }
@@ -393,6 +419,7 @@ impl NamePad {
             let (hit, label) = BUTTONS[i];
             let enabled = match hit {
                 PadHit::Undo | PadHit::Clear => !self.strokes.is_empty(),
+                PadHit::Redo => !self.redone.is_empty(),
                 _ => true,
             };
             out.push(UiPrim::Rect {
@@ -486,7 +513,8 @@ mod tests {
         assert!(p.card.y >= 36.0);
         assert!(p.card.x >= 0.0 && p.card.x + p.card.w <= 1440.0);
         assert_eq!(p.hit(p.area.cx(), p.area.cy()), Some(PadHit::Area));
-        assert_eq!(p.hit(p.btns[3].cx(), p.btns[3].cy()), Some(PadHit::Done));
+        assert_eq!(p.hit(p.btns[4].cx(), p.btns[4].cy()), Some(PadHit::Done));
+        assert_eq!(p.hit(p.btns[1].cx(), p.btns[1].cy()), Some(PadHit::Redo));
         assert_eq!(p.hit(5.0, 800.0), None);
         // Kotwica na dole okna: karta nad nia.
         let mut q = pad();
@@ -518,9 +546,55 @@ mod tests {
         }
         p.undo();
         assert_eq!(p.strokes.len(), 1);
+        // Ponow przywraca cofnieta kreske; nowa kreska czysci liste ponowien.
+        p.redo();
+        assert_eq!(p.strokes.len(), 2);
+        p.redo();
+        assert_eq!(p.strokes.len(), 2);
+        p.undo();
+        write(&mut p, ax + 60.0, ay);
+        p.redo();
+        assert_eq!(p.strokes.len(), 2);
         p.clear();
         assert!(p.result().is_empty());
         assert!(!p.changed());
+    }
+
+    /// Poprawka po tescie (2026-11-22): napis w srodku pola po Done i ponownym
+    /// otwarciu lezy w tym samym miejscu pola (te same wspolrzedne, bez
+    /// wyrownania do lewej) - dla tytulu i dla nazwy plaszczyzny.
+    #[test]
+    fn napis_w_srodku_wraca_w_to_samo_miejsce() {
+        for target in [NameTarget::Title, NameTarget::Meta("plane.2.name".into())] {
+            let mut p = pad();
+            p.target = target.clone();
+            let (ax, ay) = (p.area.cx() - 40.0, p.area.y + 30.0);
+            write(&mut p, ax, ay);
+            let before: Vec<(f32, f32)> = p.strokes[0].samples.iter().map(|s| (s.x, s.y)).collect();
+            let saved = InkName::decode(&p.result().encode()).unwrap();
+            let q = NamePad::open(
+                target,
+                Some(&saved),
+                Rgba::rgb(216, 216, 216),
+                Rect {
+                    x: 500.0,
+                    y: 0.0,
+                    w: 300.0,
+                    h: 36.0,
+                },
+                (1440.0, 900.0),
+                1.0,
+            );
+            assert!(!q.changed());
+            for ((x0, y0), s) in before.iter().zip(&q.strokes[0].samples) {
+                assert!((x0 - s.x).abs() <= 1.0 / 64.0, "x {x0} -> {}", s.x);
+                assert!((y0 - s.y).abs() <= 1.0 / 64.0, "y {y0} -> {}", s.y);
+            }
+            // Na ekranie: pierwsza probka w tym samym pikselu pola.
+            let u = q.units();
+            let sx = q.area.x + q.strokes[0].samples[0].x * u;
+            assert!((sx - ax).abs() < 0.1);
+        }
     }
 
     #[test]

@@ -3,9 +3,10 @@
 //!
 //! # Uklad wspolrzednych
 //! Kreski nazwy leza w **jednostkach nazwy**: pole ma wysokosc [`NAME_H`],
-//! `y` rosnie w dol od gornej krawedzi pola, `x` od lewej krawedzi pisma
-//! (po [`InkName::from_strokes`] pismo zaczyna sie w `x = MARGIN`). Kto
-//! rysuje, skaluje pole do swojej wysokosci, wiec nazwa wyglada tak samo
+//! `y` rosnie w dol od gornej krawedzi pola, `x` od lewej krawedzi pola
+//! pisania. Pismo zostaje tam, gdzie je napisano (geometria zachowana: po
+//! ponownym otwarciu pola lezy w tym samym miejscu). Wyswietlanie dopasowuje
+//! sie do obwiedni pisma (`InkName::fit`), wiec nazwa wyglada tak samo
 //! w zakladce tytulu, na kafelku listy i w wierszu listy plaszczyzn.
 //!
 //! # Zapis (zgodnosc wstecz, O12)
@@ -25,8 +26,6 @@ use crate::document::Bbox;
 
 /// Wysokosc pola nazwy w jednostkach nazwy.
 pub const NAME_H: f32 = 40.0;
-/// Margines z lewej po normalizacji (jednostki nazwy).
-pub const MARGIN: f32 = 2.0;
 /// Dopisek klucza metadanej z pismem: `title` -> `title.ink`.
 pub const INK_SUFFIX: &str = ".ink";
 /// Klucz metadanej z odrecznym tytulem notatki.
@@ -67,33 +66,24 @@ impl PartialEq for InkName {
 }
 
 impl InkName {
-    /// Nazwa z kresek w jednostkach nazwy. Kreski sa przesuwane do lewej
-    /// krawedzi i kwantyzowane tak jak przy zapisie, wiec nazwa w pamieci jest
-    /// **identyczna** z ta, ktora wroci z dysku (T7).
+    /// Nazwa z kresek w jednostkach nazwy. Kreski zostaja tam, gdzie je
+    /// napisano (bez przesuwania - pole pisania otwiera sie z pismem w tym
+    /// samym miejscu), i sa kwantyzowane tak jak przy zapisie, wiec nazwa
+    /// w pamieci jest **identyczna** z ta, ktora wroci z dysku (T7).
     pub fn from_strokes(strokes: Vec<StrokeData>) -> Self {
         let strokes: Vec<StrokeData> = strokes
             .into_iter()
             .filter(|s| !s.samples.is_empty())
             .collect();
-        let min_x = strokes
-            .iter()
-            .flat_map(|s| s.samples.iter().map(|p| p.x))
-            .fold(f32::INFINITY, f32::min);
         let t0 = strokes
             .iter()
             .flat_map(|s| s.samples.iter().map(|p| p.t_us))
             .min()
             .unwrap_or(0);
-        let dx = if min_x.is_finite() {
-            MARGIN - min_x
-        } else {
-            0.0
-        };
         let shifted: Vec<StrokeData> = strokes
             .into_iter()
             .map(|mut s| {
                 for p in &mut s.samples {
-                    p.x += dx;
                     // Czas wzgledny: liczby male, a nazwa niezalezna od chwili pisania.
                     p.t_us -= t0;
                 }
@@ -136,9 +126,9 @@ impl InkName {
         })
     }
 
-    /// Szerokosc pisma w jednostkach nazwy (od 0 do prawej krawedzi pisma).
+    /// Szerokosc pisma w jednostkach nazwy (obwiednia, z grubosciami kresek).
     pub fn width(&self) -> f32 {
-        self.bbox().map_or(0.0, |b| b.max_x.max(0.0))
+        self.bbox().map_or(0.0, |b| b.max_x - b.min_x)
     }
 
     /// Dopasowanie do prostokata `w` x `h` (piksele): skala i przesuniecie
@@ -155,19 +145,25 @@ impl InkName {
         if mode == Fit::Box {
             return ((h / NAME_H).max(0.0), 0.0, 0.0);
         }
-        let (top, bottom) = self.bbox().map_or((0.0, NAME_H), |b| (b.min_y, b.max_y));
-        let ink_h = (bottom - top).max(NAME_H * MIN_FILL);
-        let mid = (top + bottom) * 0.5;
-        let name_w = (self.width() + MARGIN).max(1.0);
+        let b = self.bbox().unwrap_or(Bbox {
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: 0.0,
+            max_y: NAME_H,
+        });
+        let ink_h = (b.max_y - b.min_y).max(NAME_H * MIN_FILL);
+        let mid = (b.min_y + b.max_y) * 0.5;
+        let name_w = (b.max_x - b.min_x).max(1.0);
         let mut k = (h / ink_h).max(0.0);
         if name_w * k > w {
             k = (w / name_w).max(0.0);
         }
+        // Obwiednia pisma (nie lewa krawedz pola) na lewej krawedzi albo w srodku.
         let dx = if mode == Fit::Center {
             (w - name_w * k) * 0.5
         } else {
             0.0
-        };
+        } - b.min_x * k;
         let dy = h * 0.5 - mid * k;
         (k, dx, dy)
     }
@@ -336,16 +332,20 @@ mod tests {
         );
     }
 
+    /// Poprawka po tescie (2026-11-22): pismo w srodku pola po zapisie
+    /// i odczycie lezy w tym samym miejscu - bez wyrownania do lewej.
     #[test]
-    fn normalizacja_do_lewej_krawedzi() {
-        let name = sample_name();
-        let min_x = name
-            .strokes()
-            .iter()
-            .flat_map(|s| s.samples.iter().map(|p| p.x))
-            .fold(f32::INFINITY, f32::min);
-        assert!((min_x - MARGIN).abs() < 1.0 / 32.0);
-        assert!(name.width() > 60.0);
+    fn geometria_zachowana_po_zapisie() {
+        let raw = vec![stroke(180.3, 20.0, 40), stroke(230.1, 18.2, 25)];
+        let name = InkName::from_strokes(raw.clone());
+        let back = InkName::decode(&name.encode()).unwrap();
+        for (a, b) in raw.iter().zip(back.strokes()) {
+            for (p, q) in a.samples.iter().zip(&b.samples) {
+                assert!((p.x - q.x).abs() <= 1.0 / 64.0, "x {} -> {}", p.x, q.x);
+                assert!((p.y - q.y).abs() <= 1.0 / 64.0, "y {} -> {}", p.y, q.y);
+            }
+        }
+        assert!(back.bbox().unwrap().min_x > 170.0);
         assert_eq!(name.strokes()[0].samples[0].t_us, 0);
     }
 
@@ -369,7 +369,7 @@ mod tests {
     #[test]
     fn dopasowanie_do_pola() {
         let name = sample_name();
-        let wn = name.width() + MARGIN;
+        let wn = name.width();
         let b = name.bbox().unwrap();
         let ink_h = b.max_y - b.min_y;
         assert!(ink_h > NAME_H * MIN_FILL);
@@ -378,16 +378,19 @@ mod tests {
         // Szerokie pole: wysokosc pisma = wysokosc prostokata, pismo w srodku.
         let (k, dx, dy) = name.fit(10_000.0, 80.0, Fit::Left);
         assert!((k - 80.0 / ink_h).abs() < 1e-4);
-        assert_eq!(dx, 0.0);
+        assert!(
+            (dx + b.min_x * k).abs() < 1e-3,
+            "lewa krawedz pisma na lewej krawedzi pola"
+        );
         assert!((dy + b.min_y * k).abs() < 1e-3, "gora pisma na gorze pola");
         // Waskie pole: zwezone do szerokosci, dalej wysrodkowane w pionie.
         let (k, dx, dy) = name.fit(wn, 80.0, Fit::Center);
         assert!((k - 1.0).abs() < 1e-4);
-        assert!(dx.abs() < 1e-3);
+        assert!((dx + b.min_x).abs() < 1e-3);
         assert!((dy - (40.0 - (b.min_y + b.max_y) * 0.5)).abs() < 1e-3);
         // Wysrodkowanie w poziomie.
         let (k, dx, _) = name.fit(10_000.0, 40.0, Fit::Center);
-        assert!((dx - (10_000.0 - wn * k) * 0.5).abs() < 1e-2);
+        assert!((dx + b.min_x * k - (10_000.0 - wn * k) * 0.5).abs() < 1e-2);
         // Pojedyncza kreska pozioma nie rosnie ponad MIN_FILL pola.
         let flat = InkName::from_strokes(vec![StrokeData {
             samples: (0..10)
