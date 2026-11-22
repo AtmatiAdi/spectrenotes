@@ -3,6 +3,7 @@
 Wymagania: `briefs/spectrenotes-3d-wymagania.md` w repozytorium Wegi (W1–W19, O1–O18, T1–T7; późniejsze sekcje mają pierwszeństwo).
 
 ## Jak to działa dla użytkownika
+- **Włączenie (do czasu wydania 3D):** tryb jest ukryty. Pokazuje go ustawienie `three_d=1` w `config.txt` albo zmienna środowiska `SPECTRENOTES_3D=1`. Bez tego pasek nie ma przycisków 3D, kompasu i listy, a notatka zamknięta w 3D otwiera się w 2D (dane 3D zostają w pliku).
 - **Przycisk 3D** w pasku (podświetlony na zielono, gdy włączony) zmienia kamerę z ortograficznej na perspektywę (płynnie, ta sama skala w miejscu, na które się patrzy) i pokazuje kostkę widoku. Nic więcej.
 - **Wyjście z 3D:** przycisk 3D, „2D” pod kostką albo blokada widoku. Wraca dokładny stan 2D sprzed wejścia: kamera, zoom, miejsce, blokada, płaszczyzna zerowa. Kliknięcie 3D przy włączonej blokadzie ją zdejmuje.
 - **Kostka** (prawy górny róg): przeciągnięcie obraca całą przestrzeń, klik w ścianę ustawia widok z animacją, klik w narożnik daje izometrię, ⌂ wraca do widoku startowego.

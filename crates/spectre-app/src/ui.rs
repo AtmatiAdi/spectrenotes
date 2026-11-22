@@ -244,6 +244,9 @@ pub struct Toolbar {
     hot: Option<Action>,
     /// Pole pisania tytulu otwarte: zakladka tytulu ma ramke akcentem.
     pub naming: bool,
+    /// Tryb 3D dostepny (ustawienie `three_d=1` albo `SPECTRENOTES_3D`).
+    /// Wylaczony: pasek bez przyciskow 3D, kompasu i listy - jak przed 3D.
+    pub three: bool,
     /// Tytul biezacej notatki jest pisany piorem: zakladka ma szerokosc miniatury
     /// pola pisania (`inkname::NAME_W`), nie ulamka okna. Ustawia aplikacja
     /// (`set_title_kind`), zmiana przelicza uklad.
@@ -284,6 +287,7 @@ impl Toolbar {
             items: Vec::new(),
             hot: None,
             naming: false,
+            three: false,
             ink_title: false,
             ink_glyph: false,
             chrome: true,
@@ -397,10 +401,14 @@ impl Toolbar {
             (Action::ZoomIn, 0.0, item),
             (Action::ZoomActual, 0.0, px(ZOOM_W)),
             (Action::ViewLock, 0.0, item),
-            (Action::ThreeD, px(4.0), item),
-            (Action::Compass, 0.0, item),
-            (Action::Planes, 0.0, item),
         ]);
+        if self.three {
+            order.extend([
+                (Action::ThreeD, px(4.0), item),
+                (Action::Compass, 0.0, item),
+                (Action::Planes, 0.0, item),
+            ]);
+        }
 
         let horizontal = self.dock.horizontal();
         // Pasek u gory wchlania tytul i przyciski okna takze w pelnym ekranie -
@@ -1878,6 +1886,24 @@ mod tests {
         assert_eq!(t.hit(30.0, grip_cy), Some(Action::Grip));
         let lock_cy = bar_end - px(GRIP_LEN, S) - px(10.0, S) - px(ITEM_LEN, S) * 0.5;
         assert_eq!(t.hit(30.0, lock_cy), Some(Action::LockPc));
+    }
+
+    /// Tryb 3D ukryty (wydanie bez 3D): pasek bez przyciskow 3D, kompasu
+    /// i listy; wlaczony - trzy przyciski za blokada widoku.
+    #[test]
+    fn przyciski_3d_tylko_gdy_wlaczone() {
+        let has = |t: &Toolbar, a: Action| t.items.iter().any(|i| i.action == a);
+        let mut t = Toolbar::new(Dock::Left);
+        t.layout(1400.0, 1300.0, S, 6);
+        for a in [Action::ThreeD, Action::Compass, Action::Planes] {
+            assert!(!has(&t, a), "{a:?} bez 3D");
+        }
+        assert!(has(&t, Action::ViewLock));
+        t.three = true;
+        t.layout(1400.0, 1300.0, S, 6);
+        for a in [Action::ThreeD, Action::Compass, Action::Planes] {
+            assert!(has(&t, a), "{a:?} z 3D");
+        }
     }
 
     /// Pasek u gory wchlania przyciski okna: musza byc w oknie, a nie za nim.

@@ -761,6 +761,10 @@ impl App {
         renderer.set_ui_scale(ui_scale);
         let mut toolbar = Toolbar::new(dock);
         toolbar.pinned = toolbar_pin;
+        // Tryb 3D tylko z ustawieniem albo zmienna: wydanie go nie pokazuje,
+        // dopoki uzytkownik go nie przetestuje (2026-11-22).
+        toolbar.three = config.get("three_d") == Some("1")
+            || std::env::var_os("SPECTRENOTES_3D").is_some_and(|v| v != "0");
         toolbar.visible = toolbar_pin;
         toolbar.layout(w as f32, h as f32, ui_scale, SLOTS);
         let mut menu = Menu::new();
@@ -2282,6 +2286,9 @@ impl App {
     }
 
     fn toggle_3d(&mut self) {
+        if !self.toolbar.three {
+            return;
+        }
         if self.three.is_some() {
             self.exit_3d();
         } else {
@@ -2349,6 +2356,10 @@ impl App {
 
     /// Notatka zamknieta w 3D otwiera sie w 3D, w zapisanym widoku (O11).
     fn restore_3d(&mut self) {
+        // 3D ukryte: notatka zamknieta w 3D otwiera sie w 2D (dane zostaja).
+        if !self.toolbar.three {
+            return;
+        }
         let key = crate::three::view_key(self.doc.author());
         let Some(saved) = self.doc.meta(&key).filter(|v| v.starts_with("3d;")) else {
             return;
