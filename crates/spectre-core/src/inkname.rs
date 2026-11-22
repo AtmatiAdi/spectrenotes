@@ -26,6 +26,11 @@ use crate::document::Bbox;
 
 /// Wysokosc pola nazwy w jednostkach nazwy.
 pub const NAME_H: f32 = 40.0;
+/// Szerokosc pola nazwy w jednostkach nazwy - najdluzsza nazwa, jaka da sie
+/// napisac. Pole pisania ma te proporcje (`NAME_W` : `NAME_H`), a zakladka
+/// tytulu jest jego miniatura: kreska od brzegu do brzegu pola wypelnia ja
+/// cala (poprawka po tescie 2026-11-22).
+pub const NAME_W: f32 = 190.0;
 /// Dopisek klucza metadanej z pismem: `title` -> `title.ink`.
 pub const INK_SUFFIX: &str = ".ink";
 /// Klucz metadanej z odrecznym tytulem notatki.
@@ -45,6 +50,10 @@ pub enum Fit {
     Center,
     /// Cale pole nazwy 1:1 (pole pisania).
     Box,
+    /// Miniatura pola pisania (`NAME_W` x `NAME_H`) wpisana w prostokat
+    /// i wysrodkowana: pismo lezy tam, gdzie je napisano, a pelne pole
+    /// wypelnia prostokat o tych proporcjach (zakladka tytulu).
+    Miniature,
 }
 
 /// Gorna granica liczby kresek - chroni przed alokacja na uszkodzonej wartosci.
@@ -144,6 +153,10 @@ impl InkName {
     pub fn fit(&self, w: f32, h: f32, mode: Fit) -> (f32, f32, f32) {
         if mode == Fit::Box {
             return ((h / NAME_H).max(0.0), 0.0, 0.0);
+        }
+        if mode == Fit::Miniature {
+            let k = (h / NAME_H).min(w / NAME_W).max(0.0);
+            return (k, (w - NAME_W * k) * 0.5, (h - NAME_H * k) * 0.5);
         }
         let b = self.bbox().unwrap_or(Bbox {
             min_x: 0.0,

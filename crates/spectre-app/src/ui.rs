@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use spectre_core::inkname::{NAME_H, NAME_W};
 use spectre_core::InkName;
 use spectre_proto::Rgba;
 use spectre_render::{UiFont, UiPrim};
@@ -56,6 +57,12 @@ pub const WIN_BTN_W: f32 = 50.0;
 const TAB_GRIP_W: f32 = 24.0;
 /// Pole tytulu w pasku u gory musi miec tyle miejsca, zeby w ogole sie pokazac.
 const TITLE_MIN_W: f32 = 78.0;
+/// Oddech wokol pisma w polu tytulu (piksele logiczne): zakladka 36 px -> pismo
+/// 26 px wysokosci, jak w makiecie.
+const INK_PAD_X: f32 = 8.0;
+const INK_PAD_Y: f32 = 5.0;
+/// Miejsce na tarcze ochrony AMOLED przed pismem.
+const INK_GLYPH_W: f32 = 24.0;
 /// Pole procentu zoomu (przycisk "dopasuj szerokosc").
 const ZOOM_W: f32 = 48.0;
 /// Elementy paska, gdy nie mieszcza sie na jego dlugosci, kurcza sie
@@ -237,6 +244,12 @@ pub struct Toolbar {
     hot: Option<Action>,
     /// Pole pisania tytulu otwarte: zakladka tytulu ma ramke akcentem.
     pub naming: bool,
+    /// Tytul biezacej notatki jest pisany piorem: zakladka ma szerokosc miniatury
+    /// pola pisania (`inkname::NAME_W`), nie ulamka okna. Ustawia aplikacja
+    /// (`set_title_kind`), zmiana przelicza uklad.
+    ink_title: bool,
+    /// Tarcza ochrony AMOLED przed pismem - zakladka jest o nia szersza.
+    ink_glyph: bool,
     /// Elementy okna (zakladki / pola w pasku) sa - nie w pelnym ekranie.
     pub chrome: bool,
     /// Trwa przeciaganie paska za uchwyt: aktualna pozycja rysika (jednostki
@@ -271,6 +284,8 @@ impl Toolbar {
             items: Vec::new(),
             hot: None,
             naming: false,
+            ink_title: false,
+            ink_glyph: false,
             chrome: true,
             dragging: None,
             view: (0.0, 0.0),
@@ -504,7 +519,11 @@ impl Toolbar {
                 let free_l = along + px(16.0);
                 let free_r = lock_along - px(12.0);
                 let half = (w * 0.5 - free_l).min(free_r - w * 0.5);
-                let tab_w = self.tab_width();
+                let tab_w = if self.ink_title {
+                    self.ink_title_w(bar - px(20.0))
+                } else {
+                    self.tab_width()
+                };
                 let centred = tab_w.min(2.0 * half);
                 let min_w = px(TITLE_MIN_W);
                 let (x, tw) = if centred >= min_w {
@@ -539,7 +558,47 @@ impl Toolbar {
     /// Szerokosc zakladki tytulu (i pola tytulu w pasku u gory): ulamek
     /// szerokosci okna, w granicach - w pikselach.
     fn tab_width(&self) -> f32 {
+        if self.ink_title {
+            return self.ink_title_w(self.px(TAB_H)) + self.px(TAB_GRIP_W) + self.px(8.0);
+        }
         (self.view.0 * 0.35).clamp(self.px(160.0), self.px(480.0))
+    }
+
+    /// Szerokosc pola tytulu z pismem o wysokosci `h`: miniatura pola pisania
+    /// plus oddech po bokach (i tarcza ochrony, gdy czuwa).
+    fn ink_title_w(&self, h: f32) -> f32 {
+        let ink_h = (h - self.px(2.0 * INK_PAD_Y)).max(0.0);
+        let glyph = if self.ink_glyph {
+            self.px(INK_GLYPH_W)
+        } else {
+            0.0
+        };
+        ink_h * NAME_W / NAME_H + self.px(2.0 * INK_PAD_X) + glyph
+    }
+
+    /// Prostokat pisma w polu tytulu `tr` (to samo w ukladzie i w rysowaniu).
+    fn title_ink_rect(&self, tr: Rect) -> Rect {
+        let glyph = if self.ink_glyph {
+            self.px(INK_GLYPH_W)
+        } else {
+            0.0
+        };
+        Rect {
+            x: tr.x + self.px(INK_PAD_X) + glyph,
+            y: tr.y + self.px(INK_PAD_Y),
+            w: (tr.w - self.px(2.0 * INK_PAD_X) - glyph).max(0.0),
+            h: (tr.h - self.px(2.0 * INK_PAD_Y)).max(0.0),
+        }
+    }
+
+    /// Rodzaj tytulu biezacej notatki: pismo czy tekst, i czy przed pismem stoi
+    /// tarcza ochrony. `true` = zmiana, uklad trzeba przeliczyc (`layout`).
+    pub fn set_title_kind(&mut self, ink: bool, glyph: bool) -> bool {
+        let glyph = ink && glyph;
+        let changed = ink != self.ink_title || glyph != self.ink_glyph;
+        self.ink_title = ink;
+        self.ink_glyph = glyph;
+        changed
     }
 
     /// Zakladki nad canvasem: tytul posrodku (z uchwytem), przyciski w prawym
@@ -904,19 +963,15 @@ impl Toolbar {
         }
         // Tytul pisany piorem: pismo w zakladce, wysrodkowane, z oddechem
         // od krawedzi (zakladka 36 px -> pismo ok. 26 px, jak w makiecie).
+        // Zakladka jest miniatura pola pisania: pismo lezy tam, gdzie je
+        // napisano, a kreska przez cale pole wypelnia ja od brzegu do brzegu.
         if let Some(name) = s.title_ink {
-            let ink = Rect {
-                x: tr.x + 8.0 * k,
-                y: tr.y + 5.0 * k,
-                w: (tr.w - 16.0 * k).max(0.0),
-                h: (tr.h - 10.0 * k).max(0.0),
-            };
-            if s.protected && !editing {
-                // Tarcza ochrony AMOLED tuz przed poczatkiem pisma.
-                let (_, dx, _) = name.fit(ink.w, ink.h, spectre_core::Fit::Center);
-                let gw = 24.0 * k;
+            let ink = self.title_ink_rect(tr);
+            if s.protected && !editing && self.ink_glyph {
+                // Tarcza ochrony AMOLED w miejscu zarezerwowanym przed pismem.
+                let gw = self.px(INK_GLYPH_W);
                 out.push(UiPrim::Text {
-                    x: (ink.x + dx - gw).max(tr.x),
+                    x: ink.x - gw,
                     y: tr.y,
                     w: gw,
                     h: tr.h,
@@ -925,7 +980,17 @@ impl Toolbar {
                     font: UiFont::Title,
                 });
             }
-            crate::namepad::name_label(Some(name), "", ink, UiFont::Title, FG, true, out);
+            out.push(UiPrim::Ink {
+                x: ink.x,
+                y: ink.y,
+                w: ink.w,
+                h: ink.h,
+                name: name.clone(),
+                fit: spectre_core::Fit::Miniature,
+                color: None,
+                alpha: 1.0,
+                cache: true,
+            });
             return;
         }
         // Bez pisma: dawny tytul tekstowy (tylko do odczytu) albo "untitled".
@@ -1697,6 +1762,63 @@ mod tests {
             "{:?}",
             t.show_progress()
         );
+    }
+
+    /// Poprawka po tescie (2026-11-22): zakladka z pismem jest miniatura pola
+    /// pisania - kreska przez cala szerokosc pola wypelnia pole nazwy w zakladce
+    /// od brzegu do brzegu (margines najwyzej kilka pikseli), w zakladkach
+    /// i w pasku u gory, z tarcza ochrony i bez niej.
+    #[test]
+    fn kreska_przez_cale_pole_wypelnia_zakladke() {
+        use crate::namepad::{NamePad, NameTarget};
+        use spectre_core::Fit;
+        use spectre_proto::Sample;
+        // Pasek u gory potrzebuje szerszego okna, zeby tytul zmiescil sie obok przyciskow.
+        for (dock, glyph, vw) in [
+            (Dock::Left, false, 1440.0),
+            (Dock::Left, true, 1440.0),
+            (Dock::Top, false, 2400.0),
+        ] {
+            let mut t = Toolbar::new(dock);
+            t.visible = true;
+            t.set_title_kind(true, glyph);
+            t.layout(vw, 900.0, S, 6);
+            let tr = t.title_rect().unwrap();
+            let mut pad = NamePad::open(NameTarget::Title, None, FG, tr, (vw, 900.0), S);
+            // Kreska od lewej do prawej, poza brzegi pola (przytnie sie do nich).
+            let y = tr.y + tr.h + 200.0;
+            let pts: Vec<Sample> = (0..=60)
+                .map(|i| Sample {
+                    x: -50.0 + i as f32 * 30.0,
+                    y,
+                    pressure: 0.5,
+                    ..Default::default()
+                })
+                .collect();
+            pad.begin(false, &pts[..1]);
+            pad.feed(&pts[1..]);
+            pad.end();
+            let name = pad.result();
+            let ink = t.title_ink_rect(tr);
+            let (k, dx, _) = name.fit(ink.w, ink.h, Fit::Miniature);
+            let xs = name.strokes()[0]
+                .samples
+                .iter()
+                .map(|s| ink.x + dx + s.x * k);
+            let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+            assert!(
+                (lo - ink.x).abs() <= 2.0,
+                "{dock:?}: lewy brzeg {lo} vs {}",
+                ink.x
+            );
+            assert!(
+                (ink.x + ink.w - hi).abs() <= 2.0,
+                "{dock:?}: prawy brzeg {hi}"
+            );
+            // Pole nazwy nie ma pustych pasow: od brzegow zakladki tylko oddech.
+            assert!(ink.x - tr.x <= t.px(INK_PAD_X + INK_GLYPH_W) + 0.5);
+            assert!(tr.x + tr.w - (ink.x + ink.w) <= t.px(INK_PAD_X) + 0.5);
+        }
     }
 
     /// Uklad jest w pikselach fizycznych policzonych ze skali DPI: uchwyty

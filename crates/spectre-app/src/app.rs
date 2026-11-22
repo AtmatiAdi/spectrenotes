@@ -6542,6 +6542,14 @@ impl App {
                 &mut prims,
             );
         }
+        // Zakladka z pismem ma szerokosc miniatury pola pisania: przy zmianie
+        // rodzaju tytulu (albo tarczy ochrony przed nim) uklad sie przelicza.
+        if self
+            .toolbar
+            .set_title_kind(title_ink.is_some(), self.waves_armed())
+        {
+            self.relayout();
+        }
         let mut st = self.ui_state();
         st.title = &title;
         st.title_ink = title_ink.as_ref();

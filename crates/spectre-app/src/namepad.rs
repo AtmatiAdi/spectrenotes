@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use spectre_core::inkname::{self, Fit, InkName, NAME_H};
+use spectre_core::inkname::{self, Fit, InkName, NAME_H, NAME_W};
 use spectre_proto::{Rgba, Sample, StrokeData};
 use spectre_render::{UiFont, UiPrim};
 
@@ -187,8 +187,13 @@ impl NamePad {
         let k = scale;
         self.scale = k;
         let margin = 12.0 * k;
-        let w = (PAD_W * k).min(view.0 - 2.0 * margin).max(160.0 * k);
-        let h = PAD * k * 3.0 + AREA_H * k + BTN_H * k;
+        // Pole pisania ma stale proporcje pola nazwy (`NAME_W` : `NAME_H`): zakladka
+        // tytulu jest jego miniatura. Waskie okno zmniejsza cale pole.
+        let avail = (PAD_W * k).min(view.0 - 2.0 * margin) - 2.0 * PAD * k;
+        let u = (AREA_H * k / NAME_H).min(avail / NAME_W).max(0.5 * k);
+        let (aw, ah) = (NAME_W * u, NAME_H * u);
+        let w = aw + 2.0 * PAD * k;
+        let h = PAD * k * 3.0 + ah + BTN_H * k;
         let x = (anchor.cx() - w * 0.5).clamp(margin, (view.0 - w - margin).max(margin));
         let below = anchor.y + anchor.h + 8.0 * k;
         // Kotwica przy dolnej krawedzi (pasek na dole): karta nad nia.
@@ -201,8 +206,8 @@ impl NamePad {
         self.area = Rect {
             x: x + PAD * k,
             y: y + PAD * k,
-            w: w - 2.0 * PAD * k,
-            h: AREA_H * k,
+            w: aw,
+            h: ah,
         };
         let by = self.area.y + self.area.h + PAD * k;
         let n = self.btns.len() as f32;
