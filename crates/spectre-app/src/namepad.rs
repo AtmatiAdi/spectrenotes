@@ -29,9 +29,8 @@ const AREA_H: f32 = 104.0;
 const PAD: f32 = 12.0;
 const BTN_H: f32 = 34.0;
 const BTN_GAP: f32 = 8.0;
-/// Grubosc kreski nazwy w jednostkach nazwy (pole ma `NAME_H`): przy 40 j.
-/// wysokosci pisma to ok. 1/18 - czytelnie w zakladce i na kafelku.
-const NAME_STROKE_W: f32 = 2.2;
+/// Grubosc piora przed pierwszym `set_width` (domyslna grubosc piora).
+const DEFAULT_PEN_W: f32 = 3.2;
 /// Promien gumki w polu pisania (jednostki nazwy).
 const ERASE_R: f32 = 3.0;
 
@@ -139,6 +138,8 @@ pub struct NamePad {
     /// Pismo przed otwarciem - `Done` bez zmian niczego nie zapisuje.
     original: InkName,
     color: Rgba,
+    /// Grubosc piora z paska narzedzi, w pikselach ekranu (`inkname::screen_stroke`).
+    width: f32,
     erasing: bool,
     scale: f32,
     card: Rect,
@@ -168,6 +169,7 @@ impl NamePad {
             cur: None,
             original,
             color,
+            width: DEFAULT_PEN_W,
             erasing: false,
             scale,
             card: Rect::ZERO,
@@ -260,7 +262,7 @@ impl NamePad {
         self.cur = (!eraser).then(|| StrokeData {
             tool: 0,
             color: self.color,
-            base_width: NAME_STROKE_W,
+            base_width: self.width,
             samples: Vec::new(),
         });
         self.feed(samples);
@@ -290,9 +292,11 @@ impl NamePad {
     }
 
     fn erase_at(&mut self, x: f32, y: f32) {
+        let u = self.units().max(1e-6);
         let before = self.strokes.len();
         self.strokes.retain(|s| {
-            let r = ERASE_R + s.base_width * 0.5;
+            // Grubosc kreski jest w pikselach ekranu, gumka w jednostkach nazwy.
+            let r = ERASE_R + s.base_width * 0.5 / u;
             !s.samples.iter().any(|p| (p.x - x).hypot(p.y - y) <= r)
         });
         if self.strokes.len() != before {
@@ -315,6 +319,12 @@ impl NamePad {
     /// Kolor nastepnych kresek - kolor piora zmieniony na pasku przy otwartym polu.
     pub fn set_color(&mut self, color: Rgba) {
         self.color = color;
+    }
+
+    /// Grubosc nastepnych kresek = grubosc piora z paska (piksele ekranu, jak na
+    /// kanwie przy 100%). Poprawka po tescie 2026-11-22.
+    pub fn set_width(&mut self, width: f32) {
+        self.width = width;
     }
 
     pub fn clear(&mut self) {
@@ -595,6 +605,34 @@ mod tests {
             let sx = q.area.x + q.strokes[0].samples[0].x * u;
             assert!((sx - ax).abs() < 0.1);
         }
+    }
+
+    /// Poprawka po tescie (2026-11-22): grubosc kreski w nazwie = grubosc piora
+    /// z paska, takze po zapisie i ponownym otwarciu pola.
+    #[test]
+    fn grubosc_piora_w_nazwie_po_zapisie() {
+        let mut p = pad();
+        let (ax, ay) = (p.area.x + 30.0, p.area.y + 30.0);
+        p.set_width(1.1);
+        write(&mut p, ax, ay);
+        p.set_width(9.5);
+        write(&mut p, ax + 150.0, ay);
+        let saved = InkName::decode(&p.result().encode()).unwrap();
+        let widths: Vec<f32> = saved.strokes().iter().map(|s| s.base_width).collect();
+        assert_eq!(widths, vec![1.1, 9.5]);
+        let q = NamePad::open(
+            NameTarget::Title,
+            Some(&saved),
+            Rgba::rgb(216, 216, 216),
+            p.card,
+            (1440.0, 900.0),
+            1.0,
+        );
+        assert_eq!(q.strokes[0].base_width, 1.1);
+        assert_eq!(q.strokes[1].base_width, 9.5);
+        // Na ekranie w kazdej skali ta sama grubosc (piksele).
+        let k = q.units();
+        assert!((InkName::screen_stroke(&q.strokes[0], k).base_width * k - 1.1).abs() < 1e-5);
     }
 
     #[test]

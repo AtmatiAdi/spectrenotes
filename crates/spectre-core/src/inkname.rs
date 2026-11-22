@@ -168,6 +168,19 @@ impl InkName {
         (k, dx, dy)
     }
 
+    /// Kreska nazwy do narysowania w skali `k` (piksele ekranu na jednostke
+    /// nazwy). `base_width` kreski nazwy to grubosc piora w **pikselach ekranu**
+    /// (tak jak kreska kanwy przy 100%), nie w jednostkach nazwy: nazwa ma
+    /// te sama grubosc linii w polu pisania, zakladce, menu i liscie
+    /// plaszczyzn, jak ustawione pioro. Geometria budowana w jednostkach nazwy
+    /// dostaje wiec grubosc podzielona przez skale.
+    pub fn screen_stroke(data: &StrokeData, k: f32) -> StrokeData {
+        StrokeData {
+            base_width: data.base_width / k.max(1e-6),
+            ..data.clone()
+        }
+    }
+
     /// Wartosc metadanej: `ink1:` + base64url bez dopelnienia. Pusta nazwa =
     /// pusty tekst (nazwa wyczyszczona).
     pub fn encode(&self) -> String {
@@ -405,6 +418,22 @@ mod tests {
         }]);
         let (k, _, _) = flat.fit(10_000.0, 40.0, Fit::Left);
         assert!((k - 1.0 / MIN_FILL).abs() < 1e-4);
+    }
+
+    /// Grubosc piora w pikselach ekranu: w kazdej skali po przeliczeniu linia
+    /// ma te sama grubosc na ekranie, a zapis jej nie zmienia.
+    #[test]
+    fn grubosc_piora_niezalezna_od_skali() {
+        let mut s = stroke(10.0, 20.0, 12);
+        s.base_width = 1.4;
+        let name = InkName::from_strokes(vec![s]);
+        let back = InkName::decode(&name.encode()).unwrap();
+        assert_eq!(back.strokes()[0].base_width, 1.4);
+        for k in [0.25f32, 0.65, 1.0, 3.25] {
+            let d = InkName::screen_stroke(&back.strokes()[0], k);
+            assert!((d.base_width * k - 1.4).abs() < 1e-5, "k = {k}");
+            assert_eq!(d.samples, back.strokes()[0].samples);
+        }
     }
 
     #[test]

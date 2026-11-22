@@ -2641,7 +2641,9 @@ impl Renderer {
                 let mut res = Ok(());
                 for data in name.strokes() {
                     segs.clear();
-                    stroke_segments(data, &ink, &mut segs);
+                    // Grubosc piora w pikselach ekranu, niezalezna od skali nazwy.
+                    let scaled = InkName::screen_stroke(data, k);
+                    stroke_segments(&scaled, &ink, &mut segs);
                     match geometry::build(&self.factory2d, &segs, k) {
                         Ok(g) => shapes.push((g, data.color)),
                         Err(e) => {

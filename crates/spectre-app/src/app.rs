@@ -1281,10 +1281,13 @@ impl App {
             match hit {
                 Some(PadHit::Area) => {
                     let eraser = batch.buttons.eraser || self.eraser_tool;
-                    // Kolor piora mogl sie zmienic na pasku przy otwartym polu.
+                    // Kolor i grubosc piora mogly sie zmienic na pasku przy otwartym polu.
                     let color = self.name_color();
+                    let width = self.ink.base_width;
                     if let Some(p) = &mut self.name_pad {
                         p.set_color(color);
+                        // Grubosc z paska, jak na kanwie (poprawka po tescie 2026-11-22).
+                        p.set_width(width);
                         p.begin(eraser, &batch.samples);
                     }
                     self.mode = Mode::NamePad;
