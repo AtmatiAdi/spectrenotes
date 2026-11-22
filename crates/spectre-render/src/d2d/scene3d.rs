@@ -895,6 +895,7 @@ mod tests {
             target: V3::new(0.0, 0.0, 0.0),
             yaw: 0.0,
             pitch: 0.0,
+            roll: 0.0,
             zoom: 1.5,
             fov: 50.0,
             w: 800.0,

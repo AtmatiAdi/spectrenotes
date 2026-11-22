@@ -230,6 +230,7 @@ pub fn room_camera(w: f64, h: f64) -> Camera3 {
         target: V3::new(200.0, -125.0, 250.0),
         yaw: 30.0,
         pitch: -25.0,
+        roll: 0.0,
         zoom: 1.1,
         fov: spectre_core::space::FOV_DEG,
         w,

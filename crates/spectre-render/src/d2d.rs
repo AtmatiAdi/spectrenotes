@@ -220,6 +220,9 @@ struct TextFormats {
     /// Jak `body`, ale wyrownana do dolu prostokata - gdy tekst jest dluzszy
     /// niz pole, widac jego koniec (kursor), nie poczatek.
     body_tail: IDWriteTextFormat,
+    /// Segoe UI 12, do lewej, wysrodkowana w pionie, bez zawijania (drobne
+    /// wartosci: wspolrzedne na liscie plaszczyzn 3D).
+    small: IDWriteTextFormat,
     /// Segoe UI 17 semibold, do lewej, wysrodkowana w pionie (naglowek nad notatka).
     header: IDWriteTextFormat,
     /// Jak `header`, ale wyrownana do prawej krawedzi pola.
@@ -256,6 +259,9 @@ impl TextFormats {
         title.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         title.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         let body = make("Segoe UI", 15.0)?;
+        let small = make("Segoe UI", 12.0)?;
+        small.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        small.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
         let body_tail = make("Segoe UI", 15.0)?;
         body_tail.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_FAR)?;
         // Naglowek nad gora notatki: wiekszy i grubszy niz listy, bo to napis
@@ -286,6 +292,7 @@ impl TextFormats {
             title,
             body,
             body_tail,
+            small,
             header,
             header_right,
         })
@@ -312,6 +319,8 @@ pub enum UiFont {
     HeaderRight,
     /// Jak `Body`, przy dolnej krawedzi - dlugi tekst pokazuje koniec.
     BodyTail,
+    /// Segoe UI 12, do lewej (drobne wartosci).
+    Small,
 }
 
 /// Czubek cudzej kreski w trakcie rysowania (warstwa live), we wlasnym kolorze.
@@ -2483,6 +2492,7 @@ impl Renderer {
                         UiFont::Title => &self.fonts.title,
                         UiFont::Body => &self.fonts.body,
                         UiFont::BodyTail => &self.fonts.body_tail,
+                        UiFont::Small => &self.fonts.small,
                         UiFont::Header => &self.fonts.header,
                         UiFont::HeaderRight => &self.fonts.header_right,
                     };

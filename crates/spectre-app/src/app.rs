@@ -1407,7 +1407,10 @@ impl App {
                         h,
                         crate::three::Hit3::CubeView(_)
                             | crate::three::Hit3::Home
-                            | crate::three::Hit3::To2D
+                            | crate::three::Hit3::FreeToggle
+                            | crate::three::Hit3::RollLeft
+                            | crate::three::Hit3::RollRight
+                            | crate::three::Hit3::ListPen(_)
                     )
                 });
                 let t = self.three.as_mut().unwrap();
@@ -2279,6 +2282,12 @@ impl App {
         }
     }
 
+    /// Polozenie listy plaszczyzn przeciagnietej za naglowek (`planes_list=x,y`).
+    fn saved_list_pos(&self) -> Option<(f32, f32)> {
+        let (x, y) = self.config.get("planes_list")?.split_once(',')?;
+        Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+    }
+
     fn arm_settle_3d(&self, ms: u32) {
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_SETTLE3D, ms, None);
@@ -2304,7 +2313,8 @@ impl App {
         self.clear_selection();
         self.commit_title();
         let (w, h) = self.renderer.size();
-        let t = crate::three::Three::enter(&self.cam, w as f32, h as f32, self.view_locked);
+        let mut t = crate::three::Three::enter(&self.cam, w as f32, h as f32, self.view_locked);
+        t.list_pos = self.saved_list_pos();
         self.view_locked = false;
         self.three = Some(t);
         self.renderer.clear_3d();
@@ -2365,9 +2375,10 @@ impl App {
             return;
         };
         let (w, h) = self.renderer.size();
-        if let Some(t) =
+        if let Some(mut t) =
             crate::three::Three::restore(&self.cam, self.view_locked, saved, w as f32, h as f32)
         {
+            t.list_pos = self.saved_list_pos();
             self.view_locked = false;
             self.three = Some(t);
             self.renderer.clear_3d();
@@ -2410,10 +2421,25 @@ impl App {
                 self.arm_anim();
                 return true;
             }
-            Hit3::To2D => {
-                self.exit_3d();
+            // Przelacznik pod kostka: trzymanie pionu / wolna kostka (360).
+            Hit3::FreeToggle => {
+                t.toggle_free();
+                self.arm_anim();
                 return true;
             }
+            Hit3::RollLeft | Hit3::RollRight => {
+                t.roll_step(if hit == Hit3::RollLeft { -1.0 } else { 1.0 });
+                self.arm_anim();
+                return true;
+            }
+            Hit3::ListHeader => {
+                let lr = t.list_rect(w as f32, h as f32, k, ri);
+                t.drag = Some(Drag3::ListMove {
+                    start: (x, y),
+                    orig: (lr.x, lr.y),
+                });
+            }
+            Hit3::ListGrip(id) => t.drag = Some(Drag3::ListReorder { id, y }),
             Hit3::Compass(Handle::Center) => t.drag = Some(Drag3::Center),
             Hit3::Compass(hd) => {
                 let dir = t.handle_dir(hd, (x, y), k);
@@ -2445,7 +2471,8 @@ impl App {
                 self.persist(&[op]);
                 return true;
             }
-            Hit3::ListName(id) => {
+            // Zmiana nazwy tylko ikonka piora - klik w nazwe wybiera (ListRow).
+            Hit3::ListPen(id) => {
                 let key = crate::three::Three::name_key(id);
                 let current = crate::namepad::decode_name(
                     self.doc
@@ -2478,13 +2505,12 @@ impl App {
             }) => {
                 let moved = moved || (x - start.0).hypot(y - start.1) > 6.0 * k;
                 if moved {
-                    // Przeciagniecie obraca cala przestrzen (W2).
-                    t.anim = None;
-                    t.cam.orbit(
+                    // Przeciagniecie obraca cala przestrzen (W2); w wolnej
+                    // kostce w kazda strone, bez trzymania pionu.
+                    t.drag_cube(
                         ((x - last.0) * 0.45 / k) as f64,
-                        (-(y - last.1) * 0.45 / k) as f64,
+                        ((y - last.1) * 0.45 / k) as f64,
                     );
-                    t.moved();
                 }
                 t.drag = Some(Drag3::Cube {
                     start,
@@ -2510,6 +2536,10 @@ impl App {
                     last: (x, y),
                 });
             }
+            Some(Drag3::ListMove { start, orig }) => {
+                t.list_pos = Some((orig.0 + x - start.0, orig.1 + y - start.1));
+            }
+            Some(Drag3::ListReorder { id, .. }) => t.drag = Some(Drag3::ListReorder { id, y }),
             Some(Drag3::Center) => {
                 let draw = t.draw;
                 if let Some(p) = t.cam.hit(x as f64, y as f64, &draw) {
@@ -2540,6 +2570,36 @@ impl App {
                 self.arm_anim();
             }
             Some(Drag3::Cube { .. }) => self.arm_settle_3d(crate::three::SETTLE_MS),
+            // Kolejnosc listy: nowy klucz `order` przeniesionej plaszczyzny.
+            Some(Drag3::ListReorder { id, y }) => {
+                let (w, h) = self.renderer.size();
+                let k = self.toolbar.scale();
+                let ri = self.right_inset();
+                let Some(t) = self.three.as_ref() else {
+                    return;
+                };
+                let lr = t.list_rect(w as f32, h as f32, k, ri);
+                let planes = crate::three::Three::list_rows(&self.doc).len() - 1;
+                let target = t.reorder_target(&lr, k, y, planes);
+                let cur = crate::three::Three::list_rows(&self.doc)
+                    .iter()
+                    .skip(1)
+                    .position(|r| r.0 == id);
+                if cur != Some(target) {
+                    let key = crate::three::Three::reorder_key(&self.doc, id, target);
+                    let op =
+                        self.doc
+                            .set_plane_prop(id, crate::three::ORDER_KEY, &format!("{key}"));
+                    self.persist(&[op]);
+                }
+            }
+            // Polozenie listy zostaje w ustawieniach tej maszyny.
+            Some(Drag3::ListMove { .. }) => {
+                if let Some((x, y)) = self.three.as_ref().and_then(|t| t.list_pos) {
+                    self.config.set("planes_list", &format!("{x:.0},{y:.0}"));
+                    self.config.save();
+                }
+            }
             _ => {}
         }
     }

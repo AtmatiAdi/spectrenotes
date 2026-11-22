@@ -228,6 +228,8 @@ pub struct Camera3 {
     pub yaw: f64,
     /// Pochylenie: -90 = z gory, 90 = z dolu, stopnie.
     pub pitch: f64,
+    /// Przechyl wokol osi patrzenia, stopnie (wolna kostka); 0 = pion.
+    pub roll: f64,
     pub zoom: f64,
     /// Pole widzenia w pionie, stopnie; ponizej `ORTHO_FOV` = ortografia.
     pub fov: f64,
@@ -259,6 +261,7 @@ impl Camera3 {
             target: V3::new(tx as f64, ty as f64, 0.0),
             yaw: 0.0,
             pitch: 0.0,
+            roll: 0.0,
             zoom: cam.zoom as f64,
             fov: 0.0,
             w,
@@ -272,9 +275,11 @@ impl Camera3 {
 
     /// Osie kamery: w prawo, w dol ekranu, w glab.
     pub fn basis(&self) -> Basis {
-        // Kamera obrocona jak plaszczyzna: R = Ry(yaw) * Rx(pitch).
-        let u = rotate(V3::X, self.pitch, self.yaw);
-        let v = rotate(V3::Y, self.pitch, self.yaw);
+        // Kamera obrocona jak plaszczyzna, z przechylem:
+        // R = Ry(yaw) * Rx(pitch) * Rz(roll).
+        let (s, c) = self.roll.to_radians().sin_cos();
+        let u = rotate(V3::new(c, s, 0.0), self.pitch, self.yaw);
+        let v = rotate(V3::new(-s, c, 0.0), self.pitch, self.yaw);
         Basis {
             u,
             v,
@@ -399,6 +404,7 @@ impl Camera3 {
     pub fn look_at_plane(&mut self, plane: &Pose) {
         self.yaw = plane.ry;
         self.pitch = plane.rx;
+        self.roll = 0.0;
         self.target = plane.origin;
     }
 
@@ -407,6 +413,49 @@ impl Camera3 {
     pub fn orbit(&mut self, dyaw: f64, dpitch: f64) {
         self.yaw = wrap180(self.yaw + dyaw);
         self.pitch = (self.pitch + dpitch).clamp(-90.0, 90.0);
+    }
+
+    /// Wolna kostka (tryb 360): obrot przestrzeni wokol osi ekranu - pionowej
+    /// (`dx`) i poziomej (`dy`), stopnie - bez trzymania pionu i bez granicy
+    /// pochylenia. Przechodzi przez biegun jak trackball.
+    pub fn orbit_free(&mut self, dx: f64, dy: f64) {
+        let b = self.basis();
+        // Ruch w prawo obraca kamere wokol jej osi "w dol" (v), w gore - wokol "w prawo" (u).
+        let r = rot_axis(b.v, -dx).mul(&rot_axis(b.u, dy));
+        self.set_basis(r.apply(b.u), r.apply(b.v));
+    }
+
+    /// Przechyl wokol osi patrzenia (zagiete strzalki przy kostce).
+    pub fn roll_by(&mut self, deg: f64) {
+        self.roll = wrap180(self.roll + deg);
+    }
+
+    /// Kamera z zadanych osi ekranu (prawo, dol): rozklad na yaw, pitch, roll.
+    pub fn set_basis(&mut self, u: V3, v: V3) {
+        let n = u.cross(v).norm();
+        let pitch = -n.y.clamp(-1.0, 1.0).asin();
+        let yaw = if n.x.abs() < 1e-9 && n.z.abs() < 1e-9 {
+            // Na wprost w gore albo w dol: yaw dowolny, reszta idzie w roll.
+            self.yaw.to_radians()
+        } else {
+            n.x.atan2(n.z)
+        };
+        let (pd, yd) = (pitch.to_degrees(), yaw.to_degrees());
+        let u0 = rotate(V3::X, pd, yd);
+        let v0 = rotate(V3::Y, pd, yd);
+        let roll = (-v.dot(u0)).atan2(v.dot(v0));
+        self.yaw = wrap180(yd);
+        self.pitch = pd;
+        self.roll = wrap180(roll.to_degrees());
+    }
+
+    /// Ta sama kamera z pionem (przechyl 0) - powrot z wolnej kostki.
+    pub fn upright(&self) -> Camera3 {
+        Camera3 {
+            roll: 0.0,
+            pitch: self.pitch.clamp(-90.0, 90.0),
+            ..*self
+        }
     }
 
     /// Przesuniecie celu o piksele ekranu (w plaszczyznie widoku).
@@ -424,6 +473,54 @@ impl Camera3 {
             self.target = self.target + (a - b);
         }
     }
+}
+
+/// Macierz obrotu 3x3 (wiersze).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct M3(pub [[f64; 3]; 3]);
+
+impl M3 {
+    pub fn apply(&self, v: V3) -> V3 {
+        let m = &self.0;
+        V3::new(
+            m[0][0] * v.x + m[0][1] * v.y + m[0][2] * v.z,
+            m[1][0] * v.x + m[1][1] * v.y + m[1][2] * v.z,
+            m[2][0] * v.x + m[2][1] * v.y + m[2][2] * v.z,
+        )
+    }
+    pub fn mul(&self, o: &M3) -> M3 {
+        let mut r = [[0.0; 3]; 3];
+        for (i, row) in r.iter_mut().enumerate() {
+            for (j, c) in row.iter_mut().enumerate() {
+                *c = (0..3).map(|k| self.0[i][k] * o.0[k][j]).sum();
+            }
+        }
+        M3(r)
+    }
+}
+
+/// Obrot o `deg` stopni wokol osi `a` (Rodrigues).
+pub fn rot_axis(a: V3, deg: f64) -> M3 {
+    let a = a.norm();
+    let (s, c) = deg.to_radians().sin_cos();
+    let t = 1.0 - c;
+    M3([
+        [
+            t * a.x * a.x + c,
+            t * a.x * a.y - s * a.z,
+            t * a.x * a.z + s * a.y,
+        ],
+        [
+            t * a.x * a.y + s * a.z,
+            t * a.y * a.y + c,
+            t * a.y * a.z - s * a.x,
+        ],
+        [
+            t * a.x * a.z - s * a.y,
+            t * a.y * a.z + s * a.x,
+            t * a.z * a.z + c,
+        ],
+    ])
 }
 
 /// Wygladzenie animacji (smoothstep): start i koniec bez szarpniecia.
@@ -444,6 +541,7 @@ impl Camera3 {
             target: a.target + (b.target - a.target) * t,
             yaw: wrap180(a.yaw + dyaw * t),
             pitch: a.pitch + (b.pitch - a.pitch) * t,
+            roll: wrap180(a.roll + wrap180(b.roll - a.roll) * t),
             zoom: a.zoom * (b.zoom / a.zoom).powf(t),
             fov: a.fov + (b.fov - a.fov) * t,
             w: b.w,
@@ -591,6 +689,7 @@ mod tests {
             ),
             yaw: r.r(-180.0, 180.0),
             pitch: r.r(-90.0, 90.0),
+            roll: 0.0,
             zoom: r.r(0.1, 4.0),
             fov: if persp { r.r(10.0, 80.0) } else { 0.0 },
             w: 2880.0,
@@ -821,6 +920,7 @@ mod tests {
             target: V3::new(100.0, 200.0, 0.0),
             yaw: 170.0,
             pitch: 0.0,
+            roll: 0.0,
             zoom: 1.0,
             fov: 0.0,
             w: 800.0,
@@ -849,12 +949,65 @@ mod tests {
         assert_eq!(ease(1.0), 1.0);
     }
 
+    /// Wolna kostka: obrot przez biegun w kazda strone, przechyl wokol osi
+    /// patrzenia; osie zawsze ortonormalne; powrot do pionu zeruje przechyl.
+    #[test]
+    fn wolna_kostka_i_przechyl() {
+        let mut c = Camera3 {
+            target: V3::new(10.0, 20.0, 30.0),
+            yaw: 20.0,
+            pitch: -30.0,
+            roll: 0.0,
+            zoom: 1.0,
+            fov: FOV_DEG,
+            w: 800.0,
+            h: 600.0,
+        };
+        let check = |c: &Camera3| {
+            let b = c.basis();
+            assert!((b.u.len() - 1.0).abs() < 1e-9 && (b.v.len() - 1.0).abs() < 1e-9);
+            assert!(b.u.dot(b.v).abs() < 1e-9);
+        };
+        // 360 stopni w pionie malymi krokami: przez oba bieguny i z powrotem.
+        let n0 = c.basis().n;
+        for _ in 0..360 {
+            c.orbit_free(0.0, 1.0);
+            check(&c);
+        }
+        assert!(
+            (c.basis().n - n0).len() < 1e-6,
+            "pelny obrot wraca do startu"
+        );
+        // Ukos: po drodze kamera jest do gory nogami (przechyl ~180).
+        let mut d = c;
+        for _ in 0..180 {
+            d.orbit_free(0.0, 1.0);
+        }
+        assert!((d.basis().n + n0).len() < 1e-6);
+        // Przechyl: os patrzenia stoi, ekran sie obraca.
+        let before = c.basis();
+        c.roll_by(90.0);
+        let after = c.basis();
+        assert!((after.n - before.n).len() < 1e-9);
+        assert!((after.u - before.v).len() < 1e-9, "w prawo = dawne w dol");
+        // set_basis odtwarza dowolna orientacje.
+        let mut e = c;
+        e.set_basis(after.u, after.v);
+        let eb = e.basis();
+        assert!((eb.u - after.u).len() < 1e-9 && (eb.v - after.v).len() < 1e-9);
+        // Powrot do pionu: przechyl 0, kierunek patrzenia ten sam.
+        let up = c.upright();
+        assert_eq!(up.roll, 0.0);
+        assert!((up.basis().n - c.basis().n).len() < 1e-9);
+    }
+
     #[test]
     fn sciany_kostki() {
         let mut c = Camera3 {
             target: V3::default(),
             yaw: 0.0,
             pitch: 0.0,
+            roll: 0.0,
             zoom: 1.0,
             fov: FOV_DEG,
             w: 100.0,

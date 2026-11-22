@@ -599,6 +599,7 @@ fn t5(args: &[String]) -> Res {
             target: V3::new(0.0, 0.0, 0.0),
             yaw: 20.0,
             pitch: -20.0,
+            roll: 0.0,
             zoom: 1.6,
             fov: FOV_DEG,
             w: w as f64,
@@ -826,6 +827,7 @@ fn t51(args: &[String]) -> Res {
             target: V3::new(0.0, 0.0, 0.0),
             yaw: 0.0,
             pitch: 0.0,
+            roll: 0.0,
             // Ta sama skala co notatka 2D odniesienia (100%) w glebi celu.
             zoom: 1.0,
             fov: FOV_DEG,
